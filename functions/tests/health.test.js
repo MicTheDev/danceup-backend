@@ -12,6 +12,19 @@ jest.mock("firebase-admin", () => ({
   apps: [],
 }));
 
+jest.mock("firebase-admin/firestore", () => ({
+  getFirestore: jest.fn(() => ({
+    collection: jest.fn(() => ({
+      where: jest.fn(() => ({
+        limit: jest.fn(() => ({
+          get: jest.fn(),
+        })),
+      })),
+      add: jest.fn(),
+    })),
+  })),
+}));
+
 // Import app after mocks
 const {app} = require("../index");
 

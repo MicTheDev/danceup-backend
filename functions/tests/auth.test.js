@@ -58,6 +58,8 @@ const {app} = require("../index");
 describe("Auth Routes", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Set FIREBASE_WEB_API_KEY for login route tests
+    process.env.FIREBASE_WEB_API_KEY = "test-api-key";
   });
 
   describe("POST /v1/auth/register", () => {
@@ -180,6 +182,10 @@ describe("Auth Routes", () => {
         }),
       };
 
+      authService.verifyPassword.mockResolvedValue({
+        idToken: "test-token",
+        localId: "test-uid",
+      });
       authService.getUserByEmail.mockResolvedValue(mockUserRecord);
       authService.getUserDocumentByAuthUid.mockResolvedValue(mockUserDoc);
       authService.hasStudioOwnerRole.mockReturnValue(true);
@@ -209,6 +215,10 @@ describe("Auth Routes", () => {
     });
 
     test("should return 401 for non-existent user", async () => {
+      authService.verifyPassword.mockResolvedValue({
+        idToken: "test-token",
+        localId: "test-uid",
+      });
       authService.getUserByEmail.mockRejectedValue(
           new Error("User not found"),
       );
@@ -235,6 +245,10 @@ describe("Auth Routes", () => {
         }),
       };
 
+      authService.verifyPassword.mockResolvedValue({
+        idToken: "test-token",
+        localId: "test-uid",
+      });
       authService.getUserByEmail.mockResolvedValue(mockUserRecord);
       authService.getUserDocumentByAuthUid.mockResolvedValue(mockUserDoc);
       authService.hasStudioOwnerRole.mockReturnValue(false);
