@@ -25,6 +25,18 @@ jest.mock("firebase-admin/firestore", () => ({
   })),
 }));
 
+jest.mock("firebase-admin/storage", () => ({
+  getStorage: jest.fn(() => ({
+    bucket: jest.fn(() => ({
+      file: jest.fn(() => ({
+        save: jest.fn(),
+        makePublic: jest.fn(),
+        delete: jest.fn(),
+      })),
+    })),
+  })),
+}));
+
 // Import app after mocks
 const {app} = require("../index");
 
