@@ -1,0 +1,29 @@
+{
+  "name": "danceup-backend",
+  "version": "1.0.0",
+  "description": "Firebase Functions backend for DanceUp user-app and studio-owners-app",
+  "private": true,
+  "scripts": {
+    "install-functions": "cd functions && npm install",
+    "test": "cd functions && npm test",
+    "test:watch": "cd functions && npm run test:watch",
+    "test:coverage": "cd functions && npm run test:coverage",
+    "lint": "cd functions && npm run lint",
+    "serve": "firebase emulators:start --only functions",
+    "deploy:dev": "firebase deploy --only functions --project dev",
+    "deploy:staging": "firebase deploy --only functions --project staging",
+    "deploy:production": "firebase deploy --only functions --project production"
+  },
+  "keywords": [
+    "firebase",
+    "functions",
+    "backend",
+    "api"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "firebase-tools": "^13.0.0"
+  }
+}
+

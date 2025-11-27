@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+functions/node_modules/
+
+# Firebase
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+*.local
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+coverage/
+.nyc_output/
+
+# Build outputs
+dist/
+build/
+
+# Old backend (to be deleted manually)
+../backend/
+
