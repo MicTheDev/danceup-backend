@@ -7,6 +7,7 @@ const {
   validateLoginPayload,
 } = require("../utils/validation");
 
+// eslint-disable-next-line new-cap
 const router = express.Router();
 
 /**
@@ -157,9 +158,8 @@ router.post("/login", async (req, res) => {
     }
 
     // Verify password using Firebase Auth REST API
-    let passwordVerification;
     try {
-      passwordVerification = await authService.verifyPassword(
+      await authService.verifyPassword(
           email,
           password,
           apiKey,

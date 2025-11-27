@@ -1,5 +1,4 @@
 const request = require("supertest");
-const admin = require("firebase-admin");
 
 // Mock Firebase Admin
 jest.mock("firebase-admin", () => ({
@@ -137,7 +136,8 @@ describe("Auth Routes", () => {
     test("should handle registration with studio image", async () => {
       const dataWithImage = {
         ...validRegistrationData,
-        studioImageFile: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+        studioImageFile: "data:image/png;base64," +
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
       };
 
       const mockUserRecord = {

@@ -106,7 +106,7 @@ function validateUrl(url) {
   try {
     new URL(url);
     return {valid: true, message: ""};
-  } catch {
+  } catch (_) {
     return {valid: false, message: "Invalid URL format"};
   }
 }
