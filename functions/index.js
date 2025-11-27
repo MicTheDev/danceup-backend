@@ -13,11 +13,30 @@ const app = express();
 
 // CORS configuration
 const corsOptions = {
-  origin: true,
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    
+    // Allow localhost for development
+    if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      return callback(null, true);
+    }
+    
+    // Allow all origins for now (you can restrict this in production)
+    callback(null, true);
+  },
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Type', 'Authorization'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
+
+// Explicitly handle OPTIONS requests for preflight
+app.options('*', cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({extended: true}));
 
@@ -30,8 +49,8 @@ app.get("/health", (req, res) => {
   });
 });
 
-// API routes will be added here
-// Example: app.use("/api/v1/users", require("./routes/users"));
+// API routes
+app.use("/v1/auth", require("./routes/auth"));
 
 // 404 handler
 app.use((req, res) => {
