@@ -120,5 +120,5 @@ jobs:
       - name: Deploy to Firebase Functions
         run: |
           ENV="${{ steps.env.outputs.env }}"
-          firebase deploy --only functions --project $ENV --non-interactive
+          firebase deploy --only functions --project $ENV --non-interactive --force
 

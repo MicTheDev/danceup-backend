@@ -198,6 +198,160 @@ For CI/CD to work, you need to add Firebase service account secrets to GitHub:
 4. Select the environment (dev, staging, or production)
 5. Click "Run workflow"
 
+## Google Cloud Console Setup
+
+This section covers all the required setup steps in Google Cloud Console for CI/CD deployment to work properly. **You must complete these steps for each environment** (dev, staging, production).
+
+### Prerequisites
+
+Before starting, ensure you have:
+- Owner or Editor access to all three Firebase projects
+- Access to Google Cloud Console
+- The service account JSON files downloaded (from Firebase Console → Project Settings → Service Accounts)
+
+### Step 1: Get Firebase Service Account JSON Files
+
+For each environment (dev, staging, production):
+
+1. Go to [Firebase Console](https://console.firebase.google.com/)
+2. Select the project:
+   - **Dev**: `dev-danceup`
+   - **Staging**: `staging-danceup`
+   - **Production**: `production-danceup`
+3. Open **Project Settings** (gear icon next to "Project Overview")
+4. Go to **Service Accounts** tab
+5. Click **"Generate new private key"**
+6. Confirm in the dialog
+7. A JSON file will download (e.g., `dev-danceup-firebase-adminsdk-xxxxx.json`)
+8. **Save this file securely** - you'll need it for GitHub Secrets
+
+**Important**: Keep these JSON files secure and never commit them to the repository.
+
+### Step 2: Add Service Account Secrets to GitHub
+
+1. Go to your GitHub repository
+2. Navigate to **Settings** → **Secrets and variables** → **Actions**
+3. Click **"New repository secret"** for each environment:
+
+   **For Dev:**
+   - Name: `FIREBASE_SERVICE_ACCOUNT_DEV`
+   - Value: Paste the **entire JSON content** from the dev-danceup service account file
+   - Click **"Add secret"**
+
+   **For Staging:**
+   - Name: `FIREBASE_SERVICE_ACCOUNT_STAGING`
+   - Value: Paste the **entire JSON content** from the staging-danceup service account file
+   - Click **"Add secret"**
+
+   **For Production:**
+   - Name: `FIREBASE_SERVICE_ACCOUNT_PRODUCTION`
+   - Value: Paste the **entire JSON content** from the production-danceup service account file
+   - Click **"Add secret"**
+
+**Note**: The JSON must be complete, starting with `{` and ending with `}`. Copy the entire file content.
+
+### Step 3: Initialize Google App Engine
+
+Firebase Functions require App Engine to be initialized in each project.
+
+For each environment:
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Select the project:
+   - **Dev**: `dev-danceup`
+   - **Staging**: `staging-danceup`
+   - **Production**: `production-danceup`
+3. Navigate to **App Engine** in the left menu
+4. If you see **"Create Application"**:
+   - Click **"Create Application"**
+   - Select a region (recommended: `us-central`)
+   - Click **"Create"**
+   - Wait for initialization (2-5 minutes)
+5. If you see a dashboard, App Engine is already initialized
+
+**Alternative via Firebase Console:**
+1. Go to [Firebase Console](https://console.firebase.google.com/)
+2. Select the project
+3. Navigate to **App Engine** in the left menu
+4. Click **"Create App Engine app"** if prompted
+5. Select region and create
+
+### Step 4: Grant Firebase Admin Role
+
+The service account needs permission to access Firebase services.
+
+For each environment:
+
+1. Go to [Google Cloud Console IAM](https://console.cloud.google.com/iam-admin/iam)
+2. Select the project (dev-danceup, staging-danceup, or production-danceup)
+3. Find your service account:
+   - Look for email like: `firebase-adminsdk-xxxxx@<project-id>.iam.gserviceaccount.com`
+   - Or check the `client_email` field in your downloaded JSON file
+4. Click the **pencil icon (Edit)** next to the service account
+5. Click **"ADD ANOTHER ROLE"**
+6. Select **"Firebase Admin"** role
+7. Click **"SAVE"**
+
+**Direct Links:**
+- [Dev IAM](https://console.cloud.google.com/iam-admin/iam?project=dev-danceup)
+- [Staging IAM](https://console.cloud.google.com/iam-admin/iam?project=staging-danceup)
+- [Production IAM](https://console.cloud.google.com/iam-admin/iam?project=production-danceup)
+
+### Step 5: Grant Service Account User Role
+
+The service account needs permission to act as the App Engine default service account.
+
+For each environment:
+
+1. Go to [Google Cloud Console IAM](https://console.cloud.google.com/iam-admin/iam)
+2. Select the project
+3. Find your service account (same one from Step 4)
+4. Click the **pencil icon (Edit)**
+5. Click **"ADD ANOTHER ROLE"**
+6. Select **"Service Account User"** role
+7. Click **"SAVE"**
+
+**Why this is needed**: Firebase Functions deployment requires the service account to act as the App Engine default service account (`<project-id>@appspot.gserviceaccount.com`).
+
+### Verification Checklist
+
+After completing all steps, verify:
+
+- [ ] Service account JSON files downloaded for all 3 environments
+- [ ] GitHub secrets added: `FIREBASE_SERVICE_ACCOUNT_DEV`, `FIREBASE_SERVICE_ACCOUNT_STAGING`, `FIREBASE_SERVICE_ACCOUNT_PRODUCTION`
+- [ ] App Engine initialized for all 3 projects
+- [ ] "Firebase Admin" role granted to service accounts in all 3 projects
+- [ ] "Service Account User" role granted to service accounts in all 3 projects
+
+### Quick Reference: Service Account Emails
+
+To find your service account email, check the `client_email` field in each JSON file:
+
+- **Dev**: `firebase-adminsdk-xxxxx@dev-danceup.iam.gserviceaccount.com`
+- **Staging**: `firebase-adminsdk-xxxxx@staging-danceup.iam.gserviceaccount.com`
+- **Production**: `firebase-adminsdk-xxxxx@production-danceup.iam.gserviceaccount.com`
+
+### Troubleshooting Setup Issues
+
+**Error: "Missing permissions required for functions deploy"**
+- Ensure "Service Account User" role is granted (Step 5)
+
+**Error: "Could not authenticate service account"**
+- Verify App Engine is initialized (Step 3)
+- Check that service account JSON is correctly added to GitHub secrets
+
+**Error: "The caller does not have permission" (Extensions API)**
+- Ensure "Firebase Admin" role is granted (Step 4)
+
+**Error: "credentials_json is empty"**
+- Verify GitHub secrets are set correctly (Step 2)
+- Check that the entire JSON content was pasted (not just part of it)
+
+**Error: "Functions successfully deployed but could not set up cleanup policy"**
+- The `--force` flag is already included in the deployment command to automatically set up the cleanup policy
+- This policy automatically deletes old container images to prevent storage costs
+- If you still see this error, you can manually set it up: `firebase functions:artifacts:setpolicy`
+
 ## API Endpoints
 
 ### Health Check
