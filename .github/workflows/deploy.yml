@@ -75,6 +75,30 @@ jobs:
             echo "env=dev" >> $GITHUB_OUTPUT
           fi
 
+      - name: Validate environment and secrets
+        run: |
+          ENV="${{ steps.env.outputs.env }}"
+          echo "Deploying to environment: $ENV"
+          if [ "$ENV" == "production" ]; then
+            if [ -z "${{ secrets.FIREBASE_SERVICE_ACCOUNT_PRODUCTION }}" ]; then
+              echo "::error::FIREBASE_SERVICE_ACCOUNT_PRODUCTION secret is not set. Please configure it in GitHub repository settings."
+              exit 1
+            fi
+            echo "Using FIREBASE_SERVICE_ACCOUNT_PRODUCTION secret"
+          elif [ "$ENV" == "staging" ]; then
+            if [ -z "${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}" ]; then
+              echo "::error::FIREBASE_SERVICE_ACCOUNT_STAGING secret is not set. Please configure it in GitHub repository settings."
+              exit 1
+            fi
+            echo "Using FIREBASE_SERVICE_ACCOUNT_STAGING secret"
+          else
+            if [ -z "${{ secrets.FIREBASE_SERVICE_ACCOUNT_DEV }}" ]; then
+              echo "::error::FIREBASE_SERVICE_ACCOUNT_DEV secret is not set. Please configure it in GitHub repository settings."
+              exit 1
+            fi
+            echo "Using FIREBASE_SERVICE_ACCOUNT_DEV secret"
+          fi
+
       - name: Authenticate to Firebase (Dev)
         if: steps.env.outputs.env == 'dev'
         uses: google-github-actions/auth@v2
