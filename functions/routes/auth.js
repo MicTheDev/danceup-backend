@@ -97,6 +97,10 @@ router.post("/register", async (req, res, next) => {
       );
 
       // Generate custom token
+      console.log("Creating custom token for user:", {
+        uid: userRecord.uid,
+        email: userRecord.email,
+      });
       const customToken = await authService.createCustomToken(userRecord.uid);
 
       res.status(201).json({
@@ -108,18 +112,37 @@ router.post("/register", async (req, res, next) => {
         },
       });
     } catch (error) {
+      console.error("Registration inner error:", {
+        message: error.message,
+        code: error.code,
+        stack: error.stack,
+        userRecordExists: !!userRecord,
+        userRecordUid: userRecord?.uid,
+      });
       // Cleanup: delete Firebase Auth user if Firestore creation failed
       if (userRecord) {
-        await authService.deleteUser(userRecord.uid);
+        try {
+          await authService.deleteUser(userRecord.uid);
+        } catch (deleteError) {
+          console.error("Error during cleanup - deleting user:", deleteError);
+        }
         // Also delete uploaded image if it exists
         if (studioImageUrl) {
-          await storageService.deleteFile(studioImageUrl);
+          try {
+            await storageService.deleteFile(studioImageUrl);
+          } catch (deleteError) {
+            console.error("Error during cleanup - deleting image:", deleteError);
+          }
         }
       }
       throw error;
     }
   } catch (error) {
-    console.error("Registration error:", error);
+    console.error("Registration error:", {
+      message: error.message,
+      code: error.code,
+      stack: error.stack,
+    });
     res.status(400).json({
       error: "Registration Failed",
       message: error.message || "Failed to register user",
@@ -148,9 +171,24 @@ router.post("/login", async (req, res) => {
 
     // Get Firebase Web API key from environment
     // This should be set in Firebase Functions config or environment variables
-    const apiKey = process.env.FIREBASE_WEB_API_KEY;
+    // Fallback to project-specific keys if env var not set
+    const project = process.env.GCLOUD_PROJECT || process.env.FIREBASE_CONFIG ? JSON.parse(process.env.FIREBASE_CONFIG || '{}').projectId : null;
+    
+    let apiKey = process.env.FIREBASE_WEB_API_KEY;
+    
+    // Fallback: use project-specific API keys
     if (!apiKey) {
-      console.error("FIREBASE_WEB_API_KEY not configured");
+      if (project === 'dev-danceup') {
+        apiKey = 'AIzaSyBdXsPyCq4DM5SzbjSj8ZjnzvFSrlJaULY';
+      } else if (project === 'staging-danceup') {
+        apiKey = 'AIzaSyC9HuYCmv8oSkQQf_9hFjosfemcRMNKJi8';
+      } else if (project === 'production-danceup') {
+        apiKey = 'AIzaSyDCZuVCy4EDroXrIwgZ0uBSmEfzePRE-ec';
+      }
+    }
+    
+    if (!apiKey) {
+      console.error("FIREBASE_WEB_API_KEY not configured. Project:", project);
       return res.status(500).json({
         error: "Configuration Error",
         message: "Server configuration error",
@@ -200,6 +238,10 @@ router.post("/login", async (req, res) => {
     }
 
     // Generate custom token
+    console.log("Creating custom token for login:", {
+      uid: userRecord.uid,
+      email: userRecord.email,
+    });
     const customToken = await authService.createCustomToken(userRecord.uid);
 
     res.json({
@@ -211,7 +253,11 @@ router.post("/login", async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Login error:", error);
+    console.error("Login error:", {
+      message: error.message,
+      code: error.code,
+      stack: error.stack,
+    });
     res.status(500).json({
       error: "Login Failed",
       message: error.message || "Failed to login",

@@ -90,13 +90,72 @@ firebase use production # Switch to production
 
 ### 5. Environment Variables
 
+#### Required Environment Variables
+
+The backend requires the `FIREBASE_WEB_API_KEY` environment variable for authentication endpoints. This API key is used to verify passwords using the Firebase Auth REST API.
+
+The API keys for each environment are:
+- **Development**: `AIzaSyBdXsPyCq4DM5SzbjSj8ZjnzvFSrlJaULY`
+- **Staging**: `AIzaSyC9HuYCmv8oSkQQf_9hFjosfemcRMNKJi8`
+- **Production**: `AIzaSyDCZuVCy4EDroXrIwgZ0uBSmEfzePRE-ec`
+
+#### Local Development
+
 For local development, create a `.env` file in the `functions/` directory (not committed to git):
 
 ```env
 NODE_ENV=development
+FIREBASE_WEB_API_KEY=AIzaSyBdXsPyCq4DM5SzbjSj8ZjnzvFSrlJaULY
 ```
 
-Firebase Functions automatically have access to Firebase project configuration when deployed.
+**Note**: Make sure you're using the correct API key for the environment you're developing against (dev, staging, or production).
+
+#### Deployed Functions
+
+For deployed Firebase Functions, you must set the `FIREBASE_WEB_API_KEY` environment variable in each environment.
+
+**Option A: Using Google Cloud Console (Recommended)**
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Select the Firebase project (dev-danceup, staging-danceup, or production-danceup)
+3. Navigate to **Cloud Functions** in the left menu
+4. Click on the `api` function
+5. Click **"EDIT"** at the top
+6. Scroll down to **"Runtime, build, connections and security settings"**
+7. Expand **"Runtime environment variables"**
+8. Click **"ADD VARIABLE"**
+9. Add:
+   - **Name**: `FIREBASE_WEB_API_KEY`
+   - **Value**: The appropriate API key for that environment (see values above)
+10. Click **"DEPLOY"** to save and redeploy the function
+
+**Option B: Using gcloud CLI**
+
+```bash
+# For Production
+gcloud functions deploy api \
+  --project=production-danceup \
+  --set-env-vars FIREBASE_WEB_API_KEY=AIzaSyDCZuVCy4EDroXrIwgZ0uBSmEfzePRE-ec \
+  --region=us-central1
+
+# For Staging
+gcloud functions deploy api \
+  --project=staging-danceup \
+  --set-env-vars FIREBASE_WEB_API_KEY=AIzaSyC9HuYCmv8oSkQQf_9hFjosfemcRMNKJi8 \
+  --region=us-central1
+
+# For Dev
+gcloud functions deploy api \
+  --project=dev-danceup \
+  --set-env-vars FIREBASE_WEB_API_KEY=AIzaSyBdXsPyCq4DM5SzbjSj8ZjnzvFSrlJaULY \
+  --region=us-central1
+```
+
+**Important**: After setting the environment variable, the function will be automatically redeployed. Wait a few minutes for the deployment to complete before testing.
+
+#### Why This Is Needed
+
+The login endpoint (`POST /v1/auth/login`) uses the Firebase Auth REST API to verify user passwords. This requires the Firebase Web API key to authenticate the request. Without this environment variable, login attempts will fail with a 500 "Configuration Error".
 
 ## Local Development
 
@@ -197,6 +256,8 @@ For CI/CD to work, you need to add Firebase service account secrets to GitHub:
 3. Click "Run workflow"
 4. Select the environment (dev, staging, or production)
 5. Click "Run workflow"
+
+**Note**: The `FIREBASE_WEB_API_KEY` environment variable must be set in Google Cloud Console before deploying (see [Environment Variables](#5-environment-variables) section). Once set, it persists across all deployments and doesn't need to be reconfigured.
 
 ## Google Cloud Console Setup
 
@@ -313,6 +374,33 @@ For each environment:
 
 **Why this is needed**: Firebase Functions deployment requires the service account to act as the App Engine default service account (`<project-id>@appspot.gserviceaccount.com`).
 
+### Step 6: Grant Service Account Token Creator Role
+
+**IMPORTANT**: The Cloud Function runs with the App Engine default service account, which needs this role to create custom authentication tokens. This is required for the registration and login endpoints to work.
+
+For each environment:
+
+1. Go to [Google Cloud Console IAM](https://console.cloud.google.com/iam-admin/iam)
+2. Select the project (dev-danceup, staging-danceup, or production-danceup)
+3. Find the **App Engine default service account**: `<project-id>@appspot.gserviceaccount.com`
+   - **Dev**: `dev-danceup@appspot.gserviceaccount.com`
+   - **Staging**: `staging-danceup@appspot.gserviceaccount.com`
+   - **Production**: `production-danceup@appspot.gserviceaccount.com`
+4. Click the **pencil icon (Edit)** next to the App Engine service account
+5. Click **"ADD ANOTHER ROLE"**
+6. Select **"Service Account Token Creator"** role
+7. In the **"Grant access to"** field (if shown), you may need to specify the same service account or the Firebase Admin SDK service account
+8. Click **"SAVE"**
+
+**Why this is needed**: Creating custom tokens requires the `iam.serviceAccounts.signBlob` permission. The Cloud Function runs with the App Engine default service account, so that account needs the "Service Account Token Creator" role to sign blobs when creating custom tokens.
+
+**Note**: You may also need to grant this role to your Firebase Admin SDK service account (`firebase-adminsdk-xxxxx@<project-id>.iam.gserviceaccount.com`) if you're using explicit credentials.
+
+**Direct Links:**
+- [Dev IAM](https://console.cloud.google.com/iam-admin/iam?project=dev-danceup)
+- [Staging IAM](https://console.cloud.google.com/iam-admin/iam?project=staging-danceup)
+- [Production IAM](https://console.cloud.google.com/iam-admin/iam?project=production-danceup)
+
 ### Verification Checklist
 
 After completing all steps, verify:
@@ -322,6 +410,7 @@ After completing all steps, verify:
 - [ ] App Engine initialized for all 3 projects
 - [ ] "Firebase Admin" role granted to service accounts in all 3 projects
 - [ ] "Service Account User" role granted to service accounts in all 3 projects
+- [ ] **"Service Account Token Creator" role granted to service accounts in all 3 projects** (Required for custom tokens)
 
 ### Quick Reference: Service Account Emails
 
@@ -342,6 +431,21 @@ To find your service account email, check the `client_email` field in each JSON 
 
 **Error: "The caller does not have permission" (Extensions API)**
 - Ensure "Firebase Admin" role is granted (Step 4)
+
+**Error: "Permission 'iam.serviceAccounts.signBlob' denied"**
+- **This is the issue you're experiencing!** The Cloud Function runs with a different service account than the Firebase Admin SDK service account
+- **For 2nd Gen Cloud Functions**, the function uses the App Engine default service account: `<project-id>@appspot.gserviceaccount.com`
+- **You need to grant the "Service Account Token Creator" role to the App Engine default service account**, not just the Firebase Admin SDK service account
+- **Steps to fix:**
+  1. Go to [Google Cloud Console IAM](https://console.cloud.google.com/iam-admin/iam) for your project
+  2. Find the App Engine default service account: `<project-id>@appspot.gserviceaccount.com` (e.g., `dev-danceup@appspot.gserviceaccount.com`)
+  3. Click the **pencil icon (Edit)** next to it
+  4. Click **"ADD ANOTHER ROLE"**
+  5. Select **"Service Account Token Creator"** role
+  6. **Important**: In the "Grant access to" field, select the **same service account** (`<project-id>@appspot.gserviceaccount.com`) so it can sign blobs on itself
+  7. Click **"SAVE"**
+  8. Wait 1-2 minutes for permissions to propagate, then try again
+- **Alternative**: You can also grant the role to the Firebase Admin SDK service account, but the App Engine service account must have permission to act as it
 
 **Error: "credentials_json is empty"**
 - Verify GitHub secrets are set correctly (Step 2)
@@ -427,6 +531,28 @@ app.use('/api/v1/users', require('./routes/users'));
 1. Ensure Firebase CLI is installed globally
 2. Check if ports 5001, 8080, etc. are available
 3. Try clearing emulator cache: `firebase emulators:exec "echo 'cleared'"`
+
+### Login Returns 500 "Configuration Error"
+
+If you see the following error when trying to login:
+
+```json
+{"error":"Configuration Error","message":"Server configuration error"}
+```
+
+This means the `FIREBASE_WEB_API_KEY` environment variable is not set in your Firebase Functions.
+
+**Solution**:
+1. Follow the instructions in [Section 5: Environment Variables](#5-environment-variables) above
+2. Set the `FIREBASE_WEB_API_KEY` environment variable for the appropriate environment (dev, staging, or production)
+3. Redeploy the functions or wait for automatic redeployment
+4. Verify the environment variable is set by checking the function configuration in Google Cloud Console
+
+**To verify the environment variable is set**:
+1. Go to Google Cloud Console → Cloud Functions
+2. Select the `api` function
+3. Check the "Runtime environment variables" section
+4. Confirm `FIREBASE_WEB_API_KEY` is listed with the correct value
 
 ## Contributing
 

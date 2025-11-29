@@ -225,6 +225,414 @@ function validateLoginPayload(payload) {
   };
 }
 
+/**
+ * Validate time format (HH:mm)
+ * @param {string} time - Time string to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validateTimeFormat(time) {
+  if (!time || typeof time !== "string") {
+    return {valid: false, message: "Time is required"};
+  }
+
+  const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
+  if (!timeRegex.test(time.trim())) {
+    return {valid: false, message: "Time must be in HH:mm format (24-hour)"};
+  }
+
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate class level
+ * @param {string} level - Class level to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validateClassLevel(level) {
+  const validLevels = ["Beginner", "Intermediate", "Advanced", "All Levels"];
+  if (!level || !validLevels.includes(level)) {
+    return {
+      valid: false,
+      message: `Level must be one of: ${validLevels.join(", ")}`,
+    };
+  }
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate day of week
+ * @param {string} dayOfWeek - Day of week to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validateDayOfWeek(dayOfWeek) {
+  const validDays = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+  ];
+  if (!dayOfWeek || !validDays.includes(dayOfWeek)) {
+    return {
+      valid: false,
+      message: `Day of week must be one of: ${validDays.join(", ")}`,
+    };
+  }
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate cost
+ * @param {number} cost - Cost to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validateCost(cost) {
+  if (cost === undefined || cost === null) {
+    return {valid: false, message: "Cost is required"};
+  }
+
+  if (typeof cost !== "number" || isNaN(cost)) {
+    return {valid: false, message: "Cost must be a number"};
+  }
+
+  if (cost < 0) {
+    return {valid: false, message: "Cost must be greater than or equal to 0"};
+  }
+
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate instructor IDs array
+ * @param {Array} instructorIds - Instructor IDs to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validateInstructorIds(instructorIds) {
+  if (instructorIds === undefined || instructorIds === null) {
+    return {valid: false, message: "Instructor IDs are required"};
+  }
+
+  if (!Array.isArray(instructorIds)) {
+    return {valid: false, message: "Instructor IDs must be an array"};
+  }
+
+  // All items should be strings
+  if (!instructorIds.every((id) => typeof id === "string" && id.trim().length > 0)) {
+    return {valid: false, message: "All instructor IDs must be non-empty strings"};
+  }
+
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate create class payload
+ * @param {Object} payload - Class data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateCreateClassPayload(payload) {
+  const errors = [];
+
+  // Name validation
+  const nameValidation = validateRequiredString(payload.name, "Name");
+  if (!nameValidation.valid) {
+    errors.push({field: "name", message: nameValidation.message});
+  }
+
+  // Level validation
+  const levelValidation = validateClassLevel(payload.level);
+  if (!levelValidation.valid) {
+    errors.push({field: "level", message: levelValidation.message});
+  }
+
+  // Cost validation
+  const costValidation = validateCost(payload.cost);
+  if (!costValidation.valid) {
+    errors.push({field: "cost", message: costValidation.message});
+  }
+
+  // Day of week validation
+  const dayValidation = validateDayOfWeek(payload.dayOfWeek);
+  if (!dayValidation.valid) {
+    errors.push({field: "dayOfWeek", message: dayValidation.message});
+  }
+
+  // Start time validation
+  const startTimeValidation = validateTimeFormat(payload.startTime);
+  if (!startTimeValidation.valid) {
+    errors.push({field: "startTime", message: startTimeValidation.message});
+  }
+
+  // End time validation
+  const endTimeValidation = validateTimeFormat(payload.endTime);
+  if (!endTimeValidation.valid) {
+    errors.push({field: "endTime", message: endTimeValidation.message});
+  }
+
+  // Instructor IDs validation
+  const instructorIdsValidation = validateInstructorIds(payload.instructorIds);
+  if (!instructorIdsValidation.valid) {
+    errors.push({field: "instructorIds", message: instructorIdsValidation.message});
+  }
+
+  // IsActive validation
+  if (payload.isActive === undefined || payload.isActive === null) {
+    errors.push({field: "isActive", message: "IsActive is required"});
+  } else if (typeof payload.isActive !== "boolean") {
+    errors.push({field: "isActive", message: "IsActive must be a boolean"});
+  }
+
+  // Optional description validation
+  if (payload.description !== undefined && payload.description !== null) {
+    if (typeof payload.description !== "string") {
+      errors.push({field: "description", message: "Description must be a string"});
+    }
+  }
+
+  // Optional room validation
+  if (payload.room !== undefined && payload.room !== null) {
+    if (typeof payload.room !== "string") {
+      errors.push({field: "room", message: "Room must be a string"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate update class payload
+ * @param {Object} payload - Class update data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateUpdateClassPayload(payload) {
+  const errors = [];
+
+  // Name validation (optional for update)
+  if (payload.name !== undefined) {
+    const nameValidation = validateRequiredString(payload.name, "Name");
+    if (!nameValidation.valid) {
+      errors.push({field: "name", message: nameValidation.message});
+    }
+  }
+
+  // Level validation (optional for update)
+  if (payload.level !== undefined) {
+    const levelValidation = validateClassLevel(payload.level);
+    if (!levelValidation.valid) {
+      errors.push({field: "level", message: levelValidation.message});
+    }
+  }
+
+  // Cost validation (optional for update)
+  if (payload.cost !== undefined) {
+    const costValidation = validateCost(payload.cost);
+    if (!costValidation.valid) {
+      errors.push({field: "cost", message: costValidation.message});
+    }
+  }
+
+  // Day of week validation (optional for update)
+  if (payload.dayOfWeek !== undefined) {
+    const dayValidation = validateDayOfWeek(payload.dayOfWeek);
+    if (!dayValidation.valid) {
+      errors.push({field: "dayOfWeek", message: dayValidation.message});
+    }
+  }
+
+  // Start time validation (optional for update)
+  if (payload.startTime !== undefined) {
+    const startTimeValidation = validateTimeFormat(payload.startTime);
+    if (!startTimeValidation.valid) {
+      errors.push({field: "startTime", message: startTimeValidation.message});
+    }
+  }
+
+  // End time validation (optional for update)
+  if (payload.endTime !== undefined) {
+    const endTimeValidation = validateTimeFormat(payload.endTime);
+    if (!endTimeValidation.valid) {
+      errors.push({field: "endTime", message: endTimeValidation.message});
+    }
+  }
+
+  // Instructor IDs validation (optional for update)
+  if (payload.instructorIds !== undefined) {
+    const instructorIdsValidation = validateInstructorIds(payload.instructorIds);
+    if (!instructorIdsValidation.valid) {
+      errors.push({field: "instructorIds", message: instructorIdsValidation.message});
+    }
+  }
+
+  // IsActive validation (optional for update)
+  if (payload.isActive !== undefined && payload.isActive !== null) {
+    if (typeof payload.isActive !== "boolean") {
+      errors.push({field: "isActive", message: "IsActive must be a boolean"});
+    }
+  }
+
+  // Optional description validation
+  if (payload.description !== undefined && payload.description !== null) {
+    if (typeof payload.description !== "string") {
+      errors.push({field: "description", message: "Description must be a string"});
+    }
+  }
+
+  // Optional room validation
+  if (payload.room !== undefined && payload.room !== null) {
+    if (typeof payload.room !== "string") {
+      errors.push({field: "room", message: "Room must be a string"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate phone number format (optional)
+ * @param {string} phone - Phone number to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validatePhone(phone) {
+  if (!phone || phone.trim().length === 0) {
+    return {valid: true, message: ""}; // Optional field
+  }
+
+  // Basic phone validation - allows various formats
+  const phoneRegex = /^[\d\s\-\(\)\+\.]+$/;
+  if (!phoneRegex.test(phone.trim())) {
+    return {valid: false, message: "Invalid phone number format"};
+  }
+
+  // Remove all non-digits and check length
+  const digitsOnly = phone.replace(/\D/g, "");
+  if (digitsOnly.length < 10 || digitsOnly.length > 15) {
+    return {valid: false, message: "Phone number must be between 10 and 15 digits"};
+  }
+
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate create instructor payload
+ * @param {Object} payload - Instructor data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateCreateInstructorPayload(payload) {
+  const errors = [];
+
+  // First name validation
+  const firstNameValidation = validateRequiredString(payload.firstName, "First name");
+  if (!firstNameValidation.valid) {
+    errors.push({field: "firstName", message: firstNameValidation.message});
+  }
+
+  // Last name validation
+  const lastNameValidation = validateRequiredString(payload.lastName, "Last name");
+  if (!lastNameValidation.valid) {
+    errors.push({field: "lastName", message: lastNameValidation.message});
+  }
+
+  // Email validation (optional)
+  if (payload.email !== undefined && payload.email !== null && payload.email.trim() !== "") {
+    if (!isValidEmail(payload.email)) {
+      errors.push({field: "email", message: "Invalid email format"});
+    }
+  }
+
+  // Phone validation (optional)
+  if (payload.phone !== undefined && payload.phone !== null && payload.phone.trim() !== "") {
+    const phoneValidation = validatePhone(payload.phone);
+    if (!phoneValidation.valid) {
+      errors.push({field: "phone", message: phoneValidation.message});
+    }
+  }
+
+  // Bio validation (optional)
+  if (payload.bio !== undefined && payload.bio !== null) {
+    if (typeof payload.bio !== "string") {
+      errors.push({field: "bio", message: "Bio must be a string"});
+    }
+  }
+
+  // Photo URL validation (optional, usually set by backend after upload)
+  if (payload.photoUrl !== undefined && payload.photoUrl !== null) {
+    if (typeof payload.photoUrl !== "string") {
+      errors.push({field: "photoUrl", message: "Photo URL must be a string"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate update instructor payload
+ * @param {Object} payload - Instructor update data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateUpdateInstructorPayload(payload) {
+  const errors = [];
+
+  // First name validation (optional for update)
+  if (payload.firstName !== undefined) {
+    const firstNameValidation = validateRequiredString(payload.firstName, "First name");
+    if (!firstNameValidation.valid) {
+      errors.push({field: "firstName", message: firstNameValidation.message});
+    }
+  }
+
+  // Last name validation (optional for update)
+  if (payload.lastName !== undefined) {
+    const lastNameValidation = validateRequiredString(payload.lastName, "Last name");
+    if (!lastNameValidation.valid) {
+      errors.push({field: "lastName", message: lastNameValidation.message});
+    }
+  }
+
+  // Email validation (optional for update)
+  if (payload.email !== undefined && payload.email !== null && payload.email.trim() !== "") {
+    if (!isValidEmail(payload.email)) {
+      errors.push({field: "email", message: "Invalid email format"});
+    }
+  }
+
+  // Phone validation (optional for update)
+  if (payload.phone !== undefined && payload.phone !== null && payload.phone.trim() !== "") {
+    const phoneValidation = validatePhone(payload.phone);
+    if (!phoneValidation.valid) {
+      errors.push({field: "phone", message: phoneValidation.message});
+    }
+  }
+
+  // Bio validation (optional for update)
+  if (payload.bio !== undefined && payload.bio !== null) {
+    if (typeof payload.bio !== "string") {
+      errors.push({field: "bio", message: "Bio must be a string"});
+    }
+  }
+
+  // Photo URL validation (optional for update)
+  if (payload.photoUrl !== undefined && payload.photoUrl !== null) {
+    if (typeof payload.photoUrl !== "string") {
+      errors.push({field: "photoUrl", message: "Photo URL must be a string"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
 module.exports = {
   isValidEmail,
   validatePassword,
@@ -235,6 +643,16 @@ module.exports = {
   validateMembership,
   validateRegistrationPayload,
   validateLoginPayload,
+  validateTimeFormat,
+  validateClassLevel,
+  validateDayOfWeek,
+  validateCost,
+  validateInstructorIds,
+  validateCreateClassPayload,
+  validateUpdateClassPayload,
+  validatePhone,
+  validateCreateInstructorPayload,
+  validateUpdateInstructorPayload,
 };
 
 

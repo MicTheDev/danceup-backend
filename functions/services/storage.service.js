@@ -1,11 +1,34 @@
 const {getStorage} = require("firebase-admin/storage");
 
-const bucket = getStorage().bucket();
-
 /**
  * Service for handling file uploads to Firebase Storage
  */
 class StorageService {
+  /**
+   * Get the storage bucket (lazy initialization)
+   * @returns {Bucket}
+   */
+  getBucket() {
+    try {
+      const admin = require("firebase-admin");
+      const storage = getStorage();
+      
+      // Try to get bucket from storageBucket option or project ID
+      const app = admin.app();
+      const storageBucket = app.options.storageBucket || 
+                           (app.options.projectId ? `${app.options.projectId}.appspot.com` : null);
+      
+      if (storageBucket) {
+        return storage.bucket(storageBucket);
+      }
+      
+      // Fallback to default bucket
+      return storage.bucket();
+    } catch (error) {
+      console.error("Error getting storage bucket:", error);
+      throw new Error("Storage bucket not available. Please configure Firebase Storage in your project.");
+    }
+  }
   /**
    * Upload studio image to Firebase Storage
    * @param {Buffer} fileBuffer - File buffer
@@ -40,6 +63,7 @@ class StorageService {
       const storageFileName = `studio-images/${timestamp}-${sanitizedFileName}`;
 
       // Upload file
+      const bucket = this.getBucket();
       const file = bucket.file(storageFileName);
       await file.save(fileBuffer, {
         metadata: {
@@ -83,6 +107,7 @@ class StorageService {
         }
       }
 
+      const bucket = this.getBucket();
       const file = bucket.file(filePath);
       await file.delete();
     } catch (error) {
@@ -113,6 +138,65 @@ class StorageService {
   getMimeTypeFromBase64(base64String) {
     const match = base64String.match(/^data:([^;]+);base64,/);
     return match ? match[1] : "image/png"; // Default to PNG
+  }
+
+  /**
+   * Upload instructor photo to Firebase Storage
+   * @param {Buffer} fileBuffer - File buffer
+   * @param {string} fileName - Original file name
+   * @param {string} mimeType - File MIME type
+   * @returns {Promise<string>} Download URL
+   */
+  async uploadInstructorPhoto(fileBuffer, fileName, mimeType) {
+    try {
+      // Validate file type
+      const allowedMimeTypes = [
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/webp",
+      ];
+      if (!allowedMimeTypes.includes(mimeType)) {
+        throw new Error(
+            "Invalid file type. Only JPEG, PNG, and WebP images are allowed",
+        );
+      }
+
+      // Validate file size (max 5MB)
+      const maxSize = 5 * 1024 * 1024; // 5MB
+      if (fileBuffer.length > maxSize) {
+        throw new Error("File size exceeds 5MB limit");
+      }
+
+      // Generate unique file name
+      const timestamp = Date.now();
+      const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
+      const storageFileName = `instructor-photos/${timestamp}-${sanitizedFileName}`;
+
+      // Upload file
+      const bucket = this.getBucket();
+      const file = bucket.file(storageFileName);
+      await file.save(fileBuffer, {
+        metadata: {
+          contentType: mimeType,
+        },
+      });
+
+      // Make file publicly accessible
+      await file.makePublic();
+
+      // Get public URL
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${storageFileName}`;
+
+      return publicUrl;
+    } catch (error) {
+      console.error("Error uploading instructor photo:", error);
+      if (error.message.includes("Invalid file type") ||
+          error.message.includes("File size")) {
+        throw error;
+      }
+      throw new Error("Failed to upload instructor photo");
+    }
   }
 }
 
