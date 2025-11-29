@@ -172,7 +172,20 @@ router.post("/login", async (req, res) => {
     // Get Firebase Web API key from environment
     // This should be set in Firebase Functions config or environment variables
     // Fallback to project-specific keys if env var not set
-    const project = process.env.GCLOUD_PROJECT || process.env.FIREBASE_CONFIG ? JSON.parse(process.env.FIREBASE_CONFIG || '{}').projectId : null;
+    
+    // Get project ID - Cloud Functions automatically sets GCLOUD_PROJECT
+    let project = process.env.GCLOUD_PROJECT;
+    if (!project && process.env.FIREBASE_CONFIG) {
+      try {
+        const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
+        project = firebaseConfig.projectId;
+      } catch (error) {
+        console.warn("Failed to parse FIREBASE_CONFIG:", error.message);
+      }
+    }
+    
+    // Log project for debugging
+    console.log("Login attempt - Project:", project || "unknown");
     
     let apiKey = process.env.FIREBASE_WEB_API_KEY;
     
@@ -180,15 +193,18 @@ router.post("/login", async (req, res) => {
     if (!apiKey) {
       if (project === 'dev-danceup') {
         apiKey = 'AIzaSyBdXsPyCq4DM5SzbjSj8ZjnzvFSrlJaULY';
+        console.log("Using dev API key (fallback)");
       } else if (project === 'staging-danceup') {
         apiKey = 'AIzaSyC9HuYCmv8oSkQQf_9hFjosfemcRMNKJi8';
+        console.log("Using staging API key (fallback)");
       } else if (project === 'production-danceup') {
         apiKey = 'AIzaSyDCZuVCy4EDroXrIwgZ0uBSmEfzePRE-ec';
+        console.log("Using production API key (fallback)");
       }
     }
     
     if (!apiKey) {
-      console.error("FIREBASE_WEB_API_KEY not configured. Project:", project);
+      console.error("FIREBASE_WEB_API_KEY not configured. Project:", project, "GCLOUD_PROJECT:", process.env.GCLOUD_PROJECT);
       return res.status(500).json({
         error: "Configuration Error",
         message: "Server configuration error",

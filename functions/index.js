@@ -9,14 +9,42 @@ if (!admin.apps.length) {
   // This is needed for createCustomToken to work properly
   let credential = null;
   
+  // Get project ID from environment (Cloud Functions sets GCLOUD_PROJECT automatically)
+  let projectId = process.env.GCLOUD_PROJECT;
+  if (!projectId && process.env.FIREBASE_CONFIG) {
+    try {
+      const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
+      projectId = firebaseConfig.projectId;
+    } catch (error) {
+      console.warn("Failed to parse FIREBASE_CONFIG:", error.message);
+    }
+  }
+  // Fallback to functions config (may not be available in all environments)
+  if (!projectId) {
+    try {
+      const firebaseConfig = functions.config().firebase;
+      if (firebaseConfig && firebaseConfig.projectId) {
+        projectId = firebaseConfig.projectId;
+      }
+    } catch (error) {
+      // functions.config() may not be available, that's okay
+      console.warn("Could not get project from functions.config():", error.message);
+    }
+  }
+  
   // Check if service account credentials are provided via environment variable
   // This would be set in Google Cloud Console as a secret or environment variable
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     try {
       const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
       credential = admin.credential.cert(serviceAccount);
+      // Use project ID from service account if available (most reliable)
+      if (serviceAccount.project_id) {
+        projectId = serviceAccount.project_id;
+      }
       console.log("Initializing Firebase Admin with explicit service account credentials");
       console.log("Service account email:", serviceAccount.client_email);
+      console.log("Project ID:", projectId);
       console.log("IMPORTANT: This service account needs 'Service Account Token Creator' role on itself");
       console.log("Grant the role to:", serviceAccount.client_email);
     } catch (error) {
@@ -24,16 +52,41 @@ if (!admin.apps.length) {
     }
   }
   
+  // Build initialization options
+  const initOptions = {};
+  
   if (credential) {
-    admin.initializeApp({
-      credential: credential,
-    });
+    initOptions.credential = credential;
+  }
+  
+  // Always set projectId explicitly to avoid configuration errors
+  // This is critical for proper Firebase Admin initialization
+  if (projectId) {
+    initOptions.projectId = projectId;
+    console.log("Setting Firebase Admin projectId:", projectId);
+  } else {
+    console.warn("WARNING: Could not determine project ID. Firebase Admin may not initialize correctly.");
+    console.warn("GCLOUD_PROJECT:", process.env.GCLOUD_PROJECT);
+    console.warn("FIREBASE_CONFIG:", process.env.FIREBASE_CONFIG ? "present" : "not set");
+  }
+  
+  // Initialize with options
+  if (Object.keys(initOptions).length > 0) {
+    admin.initializeApp(initOptions);
   } else {
     // Use Application Default Credentials (ADC)
     // This uses the Cloud Function's service account
     admin.initializeApp();
     console.log("Firebase Admin initialized with Application Default Credentials");
     console.log("Note: The function's service account needs 'Service Account Token Creator' role");
+  }
+  
+  // Log the initialized project for debugging
+  try {
+    const app = admin.app();
+    console.log("Firebase Admin initialized successfully. Project:", app.options.projectId || projectId || "unknown");
+  } catch (error) {
+    console.warn("Could not verify Firebase Admin initialization:", error.message);
   }
 }
 
