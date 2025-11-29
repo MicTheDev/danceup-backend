@@ -3,11 +3,6 @@ const {getFirestore} = require("firebase-admin/firestore");
 
 // Get database name based on project
 function getDatabaseName() {
-  // Ensure admin is initialized
-  if (!admin.apps.length) {
-    admin.initializeApp();
-  }
-  
   const project = process.env.GCLOUD_PROJECT || 
                  (process.env.FIREBASE_CONFIG ? JSON.parse(process.env.FIREBASE_CONFIG || '{}').projectId : null);
   
@@ -23,8 +18,14 @@ function getDatabaseName() {
   return '(default)';
 }
 
-// Initialize Firestore with the correct database name
-const db = getFirestore(admin.app(), getDatabaseName());
+// Lazy-load Firestore instance to ensure Firebase Admin is initialized first
+function getDb() {
+  // Ensure admin is initialized (should already be done in index.js)
+  if (!admin.apps.length) {
+    throw new Error("Firebase Admin not initialized. This should be initialized in index.js first.");
+  }
+  return getFirestore(admin.app(), getDatabaseName());
+}
 
 /**
  * Service for authentication operations using Firebase Admin SDK
@@ -120,10 +121,9 @@ class AuthService {
    */
   async createCustomToken(uid) {
     try {
-      // Ensure admin is initialized
+      // Ensure admin is initialized (should already be done in index.js)
       if (!admin.apps.length) {
-        console.warn("Firebase Admin not initialized, initializing now...");
-        admin.initializeApp();
+        throw new Error("Firebase Admin not initialized. This should be initialized in index.js first.");
       }
 
       // Log which service account is being used (for debugging)
@@ -224,6 +224,7 @@ class AuthService {
    */
   async getUserDocumentByAuthUid(authUid) {
     try {
+      const db = getDb();
       const usersRef = db.collection("users");
       const snapshot = await usersRef
           .where("authUid", "==", authUid)
@@ -249,6 +250,7 @@ class AuthService {
    */
   async createUserDocument(authUid, userData) {
     try {
+      const db = getDb();
       const usersRef = db.collection("users");
       const docRef = await usersRef.add({
         ...userData,

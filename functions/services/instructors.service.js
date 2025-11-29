@@ -4,11 +4,6 @@ const authService = require("./auth.service");
 
 // Get database name based on project
 function getDatabaseName() {
-  // Ensure admin is initialized
-  if (!admin.apps.length) {
-    admin.initializeApp();
-  }
-  
   const project = process.env.GCLOUD_PROJECT || 
                  (process.env.FIREBASE_CONFIG ? JSON.parse(process.env.FIREBASE_CONFIG || '{}').projectId : null);
   
@@ -24,8 +19,14 @@ function getDatabaseName() {
   return '(default)';
 }
 
-// Initialize Firestore with the correct database name
-const db = getFirestore(admin.app(), getDatabaseName());
+// Lazy-load Firestore instance to ensure Firebase Admin is initialized first
+function getDb() {
+  // Ensure admin is initialized (should already be done in index.js)
+  if (!admin.apps.length) {
+    throw new Error("Firebase Admin not initialized. This should be initialized in index.js first.");
+  }
+  return getFirestore(admin.app(), getDatabaseName());
+}
 
 /**
  * Service for instructors operations using Firebase Admin SDK
@@ -62,6 +63,7 @@ class InstructorsService {
    */
   async getInstructors(studioOwnerId) {
     try {
+      const db = getDb();
       const instructorsRef = db.collection("instructors");
       const snapshot = await instructorsRef
           .where("studioOwnerId", "==", studioOwnerId)
@@ -89,6 +91,7 @@ class InstructorsService {
    */
   async getInstructorById(instructorId, studioOwnerId) {
     try {
+      const db = getDb();
       const instructorRef = db.collection("instructors").doc(instructorId);
       const instructorDoc = await instructorRef.get();
 
@@ -124,6 +127,7 @@ class InstructorsService {
    */
   async createInstructor(payload, studioOwnerId) {
     try {
+      const db = getDb();
       const instructorsRef = db.collection("instructors");
       
       // Prepare instructor data
@@ -166,6 +170,7 @@ class InstructorsService {
    */
   async updateInstructor(instructorId, payload, studioOwnerId) {
     try {
+      const db = getDb();
       const instructorRef = db.collection("instructors").doc(instructorId);
       const instructorDoc = await instructorRef.get();
 
@@ -223,6 +228,7 @@ class InstructorsService {
    */
   async deleteInstructor(instructorId, studioOwnerId) {
     try {
+      const db = getDb();
       const instructorRef = db.collection("instructors").doc(instructorId);
       const instructorDoc = await instructorRef.get();
 

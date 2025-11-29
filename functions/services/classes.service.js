@@ -4,11 +4,6 @@ const authService = require("./auth.service");
 
 // Get database name based on project
 function getDatabaseName() {
-  // Ensure admin is initialized
-  if (!admin.apps.length) {
-    admin.initializeApp();
-  }
-  
   const project = process.env.GCLOUD_PROJECT || 
                  (process.env.FIREBASE_CONFIG ? JSON.parse(process.env.FIREBASE_CONFIG || '{}').projectId : null);
   
@@ -24,8 +19,14 @@ function getDatabaseName() {
   return '(default)';
 }
 
-// Initialize Firestore with the correct database name
-const db = getFirestore(admin.app(), getDatabaseName());
+// Lazy-load Firestore instance to ensure Firebase Admin is initialized first
+function getDb() {
+  // Ensure admin is initialized (should already be done in index.js)
+  if (!admin.apps.length) {
+    throw new Error("Firebase Admin not initialized. This should be initialized in index.js first.");
+  }
+  return getFirestore(admin.app(), getDatabaseName());
+}
 
 /**
  * Service for classes operations using Firebase Admin SDK
@@ -62,6 +63,7 @@ class ClassesService {
    */
   async getClasses(studioOwnerId) {
     try {
+      const db = getDb();
       const classesRef = db.collection("classes");
       const snapshot = await classesRef
           .where("studioOwnerId", "==", studioOwnerId)
@@ -89,6 +91,7 @@ class ClassesService {
    */
   async getClassById(classId, studioOwnerId) {
     try {
+      const db = getDb();
       const classRef = db.collection("classes").doc(classId);
       const classDoc = await classRef.get();
 
@@ -124,6 +127,7 @@ class ClassesService {
    */
   async createClass(payload, studioOwnerId) {
     try {
+      const db = getDb();
       const classesRef = db.collection("classes");
       
       // Prepare class data
@@ -166,6 +170,7 @@ class ClassesService {
    */
   async updateClass(classId, payload, studioOwnerId) {
     try {
+      const db = getDb();
       const classRef = db.collection("classes").doc(classId);
       const classDoc = await classRef.get();
 
@@ -235,6 +240,7 @@ class ClassesService {
    */
   async deleteClass(classId, studioOwnerId) {
     try {
+      const db = getDb();
       const classRef = db.collection("classes").doc(classId);
       const classDoc = await classRef.get();
 
