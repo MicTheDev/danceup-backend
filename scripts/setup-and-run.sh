@@ -56,3 +56,5 @@ echo ""
 cd "$(dirname "$0")/.."
 node scripts/set-env-vars.js
 
+
+

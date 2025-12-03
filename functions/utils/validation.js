@@ -633,6 +633,121 @@ function validateUpdateInstructorPayload(payload) {
   };
 }
 
+/**
+ * Validate update profile payload
+ * @param {Object} payload - Profile update data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateUpdateProfilePayload(payload) {
+  const errors = [];
+
+  // First name validation (optional for update)
+  if (payload.firstName !== undefined) {
+    const firstNameValidation = validateRequiredString(payload.firstName, "First name");
+    if (!firstNameValidation.valid) {
+      errors.push({field: "firstName", message: firstNameValidation.message});
+    }
+  }
+
+  // Last name validation (optional for update)
+  if (payload.lastName !== undefined) {
+    const lastNameValidation = validateRequiredString(payload.lastName, "Last name");
+    if (!lastNameValidation.valid) {
+      errors.push({field: "lastName", message: lastNameValidation.message});
+    }
+  }
+
+  // Studio name validation (optional for update)
+  if (payload.studioName !== undefined) {
+    const studioNameValidation = validateRequiredString(payload.studioName, "Studio name");
+    if (!studioNameValidation.valid) {
+      errors.push({field: "studioName", message: studioNameValidation.message});
+    }
+  }
+
+  // Studio address line 1 validation (optional for update)
+  if (payload.studioAddressLine1 !== undefined) {
+    const addressValidation = validateRequiredString(payload.studioAddressLine1, "Studio address line 1");
+    if (!addressValidation.valid) {
+      errors.push({field: "studioAddressLine1", message: addressValidation.message});
+    }
+  }
+
+  // Studio address line 2 validation (optional, can be null or empty)
+  if (payload.studioAddressLine2 !== undefined && payload.studioAddressLine2 !== null) {
+    if (typeof payload.studioAddressLine2 !== "string") {
+      errors.push({field: "studioAddressLine2", message: "Studio address line 2 must be a string"});
+    }
+  }
+
+  // City validation (optional for update)
+  if (payload.city !== undefined) {
+    const cityValidation = validateRequiredString(payload.city, "City");
+    if (!cityValidation.valid) {
+      errors.push({field: "city", message: cityValidation.message});
+    }
+  }
+
+  // State validation (optional for update)
+  if (payload.state !== undefined) {
+    const stateValidation = validateState(payload.state);
+    if (!stateValidation.valid) {
+      errors.push({field: "state", message: stateValidation.message});
+    }
+  }
+
+  // ZIP validation (optional for update)
+  if (payload.zip !== undefined) {
+    const zipValidation = validateZip(payload.zip);
+    if (!zipValidation.valid) {
+      errors.push({field: "zip", message: zipValidation.message});
+    }
+  }
+
+  // Social media URL validations (all optional)
+  if (payload.facebook !== undefined && payload.facebook !== null && payload.facebook.trim() !== "") {
+    const facebookValidation = validateUrl(payload.facebook);
+    if (!facebookValidation.valid) {
+      errors.push({field: "facebook", message: facebookValidation.message});
+    }
+  }
+
+  if (payload.instagram !== undefined && payload.instagram !== null && payload.instagram.trim() !== "") {
+    const instagramValidation = validateUrl(payload.instagram);
+    if (!instagramValidation.valid) {
+      errors.push({field: "instagram", message: instagramValidation.message});
+    }
+  }
+
+  if (payload.tiktok !== undefined && payload.tiktok !== null && payload.tiktok.trim() !== "") {
+    const tiktokValidation = validateUrl(payload.tiktok);
+    if (!tiktokValidation.valid) {
+      errors.push({field: "tiktok", message: tiktokValidation.message});
+    }
+  }
+
+  if (payload.youtube !== undefined && payload.youtube !== null && payload.youtube.trim() !== "") {
+    const youtubeValidation = validateUrl(payload.youtube);
+    if (!youtubeValidation.valid) {
+      errors.push({field: "youtube", message: youtubeValidation.message});
+    }
+  }
+
+  // Studio image file validation (optional, base64 string)
+  if (payload.studioImageFile !== undefined && payload.studioImageFile !== null) {
+    if (typeof payload.studioImageFile !== "string") {
+      errors.push({field: "studioImageFile", message: "Studio image file must be a base64 string"});
+    } else if (!payload.studioImageFile.startsWith("data:image/")) {
+      errors.push({field: "studioImageFile", message: "Studio image file must be a valid base64 image data URL"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
 module.exports = {
   isValidEmail,
   validatePassword,
@@ -653,6 +768,7 @@ module.exports = {
   validatePhone,
   validateCreateInstructorPayload,
   validateUpdateInstructorPayload,
+  validateUpdateProfilePayload,
 };
 
 

@@ -121,3 +121,5 @@ echo ""
 echo "The functions are now deployed with FIREBASE_WEB_API_KEY set."
 echo "Wait 2-3 minutes for the deployment to fully complete, then test login."
 
+
+
