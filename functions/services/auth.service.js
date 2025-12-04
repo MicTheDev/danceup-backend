@@ -52,16 +52,26 @@ class AuthService {
    * @returns {Promise<Object>}
    */
   async verifyPassword(email, password, apiKey) {
-    const axios = require("axios");
-    const response = await axios.post(
-        `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
-        {
-          email,
-          password,
-          returnSecureToken: true,
-        },
-    );
-    return response.data;
+    const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`;
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email,
+        password,
+        returnSecureToken: true,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error?.message || 'Failed to verify password');
+    }
+
+    return response.json();
   }
 
   /**
