@@ -198,6 +198,154 @@ class StorageService {
       throw new Error("Failed to upload instructor photo");
     }
   }
+
+  /**
+   * Upload workshop image to Firebase Storage
+   * @param {Buffer} fileBuffer - File buffer
+   * @param {string} fileName - Original file name
+   * @param {string} mimeType - File MIME type
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @param {string} workshopId - Workshop document ID
+   * @returns {Promise<string>} Download URL
+   */
+  async uploadWorkshopImage(fileBuffer, fileName, mimeType, studioOwnerId, workshopId) {
+    try {
+      // Validate file type
+      const allowedMimeTypes = [
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/webp",
+      ];
+      if (!allowedMimeTypes.includes(mimeType)) {
+        throw new Error(
+            "Invalid file type. Only JPEG, PNG, and WebP images are allowed",
+        );
+      }
+
+      // Validate file size (max 5MB)
+      const maxSize = 5 * 1024 * 1024; // 5MB
+      if (fileBuffer.length > maxSize) {
+        throw new Error("File size exceeds 5MB limit");
+      }
+
+      // Generate unique file name
+      const timestamp = Date.now();
+      const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
+      // Extract file extension from mimeType (e.g., "image/png" -> "png")
+      const extension = mimeType.split("/")[1] || "jpg";
+      const storageFileName = `workshops/${studioOwnerId}/${workshopId}/${timestamp}-${sanitizedFileName}`;
+
+      // Upload file
+      const bucket = this.getBucket();
+      const file = bucket.file(storageFileName);
+      await file.save(fileBuffer, {
+        metadata: {
+          contentType: mimeType,
+        },
+      });
+
+      // Make file publicly accessible
+      await file.makePublic();
+
+      // Get public URL
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${storageFileName}`;
+
+      return publicUrl;
+    } catch (error) {
+      console.error("Error uploading workshop image:", error);
+      console.error("Error details:", {
+        message: error.message,
+        stack: error.stack,
+        fileName,
+        mimeType,
+        studioOwnerId,
+        workshopId,
+        fileSize: fileBuffer?.length,
+      });
+      // Preserve original error message if it's a known validation error
+      if (error.message.includes("Invalid file type") ||
+          error.message.includes("File size") ||
+          error.message.includes("Storage bucket not available")) {
+        throw error;
+      }
+      // Include original error message in the new error
+      throw new Error(`Failed to upload workshop image: ${error.message}`);
+    }
+  }
+
+  /**
+   * Upload event image to Firebase Storage
+   * @param {Buffer} fileBuffer - File buffer
+   * @param {string} fileName - Original file name
+   * @param {string} mimeType - File MIME type
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @param {string} eventId - Event document ID
+   * @returns {Promise<string>} Download URL
+   */
+  async uploadEventImage(fileBuffer, fileName, mimeType, studioOwnerId, eventId) {
+    try {
+      // Validate file type
+      const allowedMimeTypes = [
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/webp",
+      ];
+      if (!allowedMimeTypes.includes(mimeType)) {
+        throw new Error(
+            "Invalid file type. Only JPEG, PNG, and WebP images are allowed",
+        );
+      }
+
+      // Validate file size (max 5MB)
+      const maxSize = 5 * 1024 * 1024; // 5MB
+      if (fileBuffer.length > maxSize) {
+        throw new Error("File size exceeds 5MB limit");
+      }
+
+      // Generate unique file name
+      const timestamp = Date.now();
+      const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
+      const storageFileName = `events/${studioOwnerId}/${eventId}/${timestamp}-${sanitizedFileName}`;
+
+      // Upload file
+      const bucket = this.getBucket();
+      const file = bucket.file(storageFileName);
+      await file.save(fileBuffer, {
+        metadata: {
+          contentType: mimeType,
+        },
+      });
+
+      // Make file publicly accessible
+      await file.makePublic();
+
+      // Get public URL
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${storageFileName}`;
+
+      return publicUrl;
+    } catch (error) {
+      console.error("Error uploading event image:", error);
+      console.error("Error details:", {
+        message: error.message,
+        stack: error.stack,
+        fileName,
+        mimeType,
+        studioOwnerId,
+        eventId,
+        fileSize: fileBuffer?.length,
+      });
+      // Preserve original error message if it's a known validation error
+      if (error.message.includes("Invalid file type") ||
+          error.message.includes("File size") ||
+          error.message.includes("Storage bucket not available")) {
+        throw error;
+      }
+      // Include original error message in the new error
+      throw new Error(`Failed to upload event image: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new StorageService();

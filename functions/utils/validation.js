@@ -748,6 +748,685 @@ function validateUpdateProfilePayload(payload) {
   };
 }
 
+/**
+ * Validate workshop level
+ * @param {string} level - Workshop level to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validateWorkshopLevel(level) {
+  const validLevels = ["beginner", "intermediate", "advanced"];
+  if (!level || !validLevels.includes(level.toLowerCase())) {
+    return {
+      valid: false,
+      message: `Level must be one of: ${validLevels.join(", ")}`,
+    };
+  }
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate workshop levels array
+ * @param {Array} levels - Workshop levels to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validateWorkshopLevels(levels) {
+  if (levels === undefined || levels === null) {
+    return {valid: false, message: "Levels are required"};
+  }
+
+  if (!Array.isArray(levels) || levels.length === 0) {
+    return {valid: false, message: "Levels must be a non-empty array"};
+  }
+
+  for (const level of levels) {
+    const levelValidation = validateWorkshopLevel(level);
+    if (!levelValidation.valid) {
+      return {valid: false, message: levelValidation.message};
+    }
+  }
+
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate ISO datetime string
+ * @param {string} dateTime - ISO datetime string to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validateISODateTime(dateTime) {
+  if (!dateTime || typeof dateTime !== "string") {
+    return {valid: false, message: "DateTime is required"};
+  }
+
+  const date = new Date(dateTime);
+  if (isNaN(date.getTime())) {
+    return {valid: false, message: "DateTime must be a valid ISO datetime string"};
+  }
+
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate price tier
+ * @param {Object} tier - Price tier object
+ * @returns {{valid: boolean, message: string}}
+ */
+function validatePriceTier(tier) {
+  if (!tier || typeof tier !== "object") {
+    return {valid: false, message: "Price tier must be an object"};
+  }
+
+  if (!tier.name || typeof tier.name !== "string" || tier.name.trim().length === 0) {
+    return {valid: false, message: "Price tier name is required"};
+  }
+
+  if (tier.price === undefined || tier.price === null || typeof tier.price !== "number" || tier.price < 0) {
+    return {valid: false, message: "Price tier price must be a non-negative number"};
+  }
+
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate price tiers array
+ * @param {Array} priceTiers - Price tiers to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validatePriceTiers(priceTiers) {
+  if (priceTiers === undefined || priceTiers === null) {
+    return {valid: false, message: "Price tiers are required"};
+  }
+
+  if (!Array.isArray(priceTiers) || priceTiers.length === 0) {
+    return {valid: false, message: "Price tiers must be a non-empty array"};
+  }
+
+  for (let i = 0; i < priceTiers.length; i++) {
+    const tierValidation = validatePriceTier(priceTiers[i]);
+    if (!tierValidation.valid) {
+      return {valid: false, message: `Price tier ${i + 1}: ${tierValidation.message}`};
+    }
+  }
+
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate event type
+ * @param {string} type - Event type to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validateEventType(type) {
+  const validTypes = ["social", "festival", "congress"];
+  if (!type || !validTypes.includes(type.toLowerCase())) {
+    return {
+      valid: false,
+      message: `Event type must be one of: ${validTypes.join(", ")}`,
+    };
+  }
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate create workshop payload
+ * @param {Object} payload - Workshop data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateCreateWorkshopPayload(payload) {
+  const errors = [];
+
+  // Name validation
+  const nameValidation = validateRequiredString(payload.name, "Name");
+  if (!nameValidation.valid) {
+    errors.push({field: "name", message: nameValidation.message});
+  }
+
+  // Levels validation
+  const levelsValidation = validateWorkshopLevels(payload.levels);
+  if (!levelsValidation.valid) {
+    errors.push({field: "levels", message: levelsValidation.message});
+  }
+
+  // Start time validation
+  const startTimeValidation = validateISODateTime(payload.startTime);
+  if (!startTimeValidation.valid) {
+    errors.push({field: "startTime", message: startTimeValidation.message});
+  }
+
+  // End time validation
+  const endTimeValidation = validateISODateTime(payload.endTime);
+  if (!endTimeValidation.valid) {
+    errors.push({field: "endTime", message: endTimeValidation.message});
+  }
+
+  // Price tiers validation
+  const priceTiersValidation = validatePriceTiers(payload.priceTiers);
+  if (!priceTiersValidation.valid) {
+    errors.push({field: "priceTiers", message: priceTiersValidation.message});
+  }
+
+  // Address validation
+  const addressLine1Validation = validateRequiredString(payload.addressLine1, "Address line 1");
+  if (!addressLine1Validation.valid) {
+    errors.push({field: "addressLine1", message: addressLine1Validation.message});
+  }
+
+  const cityValidation = validateRequiredString(payload.city, "City");
+  if (!cityValidation.valid) {
+    errors.push({field: "city", message: cityValidation.message});
+  }
+
+  const stateValidation = validateState(payload.state);
+  if (!stateValidation.valid) {
+    errors.push({field: "state", message: stateValidation.message});
+  }
+
+  const zipValidation = validateZip(payload.zip);
+  if (!zipValidation.valid) {
+    errors.push({field: "zip", message: zipValidation.message});
+  }
+
+  // Description validation (optional)
+  if (payload.description !== undefined && payload.description !== null) {
+    if (typeof payload.description !== "string") {
+      errors.push({field: "description", message: "Description must be a string"});
+    }
+  }
+
+  // Address line 2 validation (optional)
+  if (payload.addressLine2 !== undefined && payload.addressLine2 !== null) {
+    if (typeof payload.addressLine2 !== "string") {
+      errors.push({field: "addressLine2", message: "Address line 2 must be a string"});
+    }
+  }
+
+  // Location name validation (optional)
+  if (payload.locationName !== undefined && payload.locationName !== null) {
+    if (typeof payload.locationName !== "string") {
+      errors.push({field: "locationName", message: "Location name must be a string"});
+    }
+  }
+
+  // Image file validation (optional, base64 string)
+  if (payload.imageFile !== undefined && payload.imageFile !== null) {
+    if (typeof payload.imageFile !== "string") {
+      errors.push({field: "imageFile", message: "Image file must be a base64 string"});
+    } else if (!payload.imageFile.startsWith("data:image/")) {
+      errors.push({field: "imageFile", message: "Image file must be a valid base64 image data URL"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate update workshop payload
+ * @param {Object} payload - Workshop update data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateUpdateWorkshopPayload(payload) {
+  const errors = [];
+
+  // Name validation (optional for update)
+  if (payload.name !== undefined) {
+    const nameValidation = validateRequiredString(payload.name, "Name");
+    if (!nameValidation.valid) {
+      errors.push({field: "name", message: nameValidation.message});
+    }
+  }
+
+  // Levels validation (optional for update)
+  if (payload.levels !== undefined) {
+    const levelsValidation = validateWorkshopLevels(payload.levels);
+    if (!levelsValidation.valid) {
+      errors.push({field: "levels", message: levelsValidation.message});
+    }
+  }
+
+  // Start time validation (optional for update)
+  if (payload.startTime !== undefined) {
+    const startTimeValidation = validateISODateTime(payload.startTime);
+    if (!startTimeValidation.valid) {
+      errors.push({field: "startTime", message: startTimeValidation.message});
+    }
+  }
+
+  // End time validation (optional for update)
+  if (payload.endTime !== undefined) {
+    const endTimeValidation = validateISODateTime(payload.endTime);
+    if (!endTimeValidation.valid) {
+      errors.push({field: "endTime", message: endTimeValidation.message});
+    }
+  }
+
+  // Price tiers validation (optional for update)
+  if (payload.priceTiers !== undefined) {
+    const priceTiersValidation = validatePriceTiers(payload.priceTiers);
+    if (!priceTiersValidation.valid) {
+      errors.push({field: "priceTiers", message: priceTiersValidation.message});
+    }
+  }
+
+  // Address validation (optional for update)
+  if (payload.addressLine1 !== undefined) {
+    const addressLine1Validation = validateRequiredString(payload.addressLine1, "Address line 1");
+    if (!addressLine1Validation.valid) {
+      errors.push({field: "addressLine1", message: addressLine1Validation.message});
+    }
+  }
+
+  if (payload.city !== undefined) {
+    const cityValidation = validateRequiredString(payload.city, "City");
+    if (!cityValidation.valid) {
+      errors.push({field: "city", message: cityValidation.message});
+    }
+  }
+
+  if (payload.state !== undefined) {
+    const stateValidation = validateState(payload.state);
+    if (!stateValidation.valid) {
+      errors.push({field: "state", message: stateValidation.message});
+    }
+  }
+
+  if (payload.zip !== undefined) {
+    const zipValidation = validateZip(payload.zip);
+    if (!zipValidation.valid) {
+      errors.push({field: "zip", message: zipValidation.message});
+    }
+  }
+
+  // Optional fields
+  if (payload.description !== undefined && payload.description !== null) {
+    if (typeof payload.description !== "string") {
+      errors.push({field: "description", message: "Description must be a string"});
+    }
+  }
+
+  if (payload.addressLine2 !== undefined && payload.addressLine2 !== null) {
+    if (typeof payload.addressLine2 !== "string") {
+      errors.push({field: "addressLine2", message: "Address line 2 must be a string"});
+    }
+  }
+
+  if (payload.locationName !== undefined && payload.locationName !== null) {
+    if (typeof payload.locationName !== "string") {
+      errors.push({field: "locationName", message: "Location name must be a string"});
+    }
+  }
+
+  // Image file validation (optional, base64 string)
+  if (payload.imageFile !== undefined && payload.imageFile !== null) {
+    if (typeof payload.imageFile !== "string") {
+      errors.push({field: "imageFile", message: "Image file must be a base64 string"});
+    } else if (!payload.imageFile.startsWith("data:image/")) {
+      errors.push({field: "imageFile", message: "Image file must be a valid base64 image data URL"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate create event payload
+ * @param {Object} payload - Event data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateCreateEventPayload(payload) {
+  const errors = [];
+
+  // Name validation
+  const nameValidation = validateRequiredString(payload.name, "Name");
+  if (!nameValidation.valid) {
+    errors.push({field: "name", message: nameValidation.message});
+  }
+
+  // Type validation
+  const typeValidation = validateEventType(payload.type);
+  if (!typeValidation.valid) {
+    errors.push({field: "type", message: typeValidation.message});
+  }
+
+  // Start time validation
+  const startTimeValidation = validateISODateTime(payload.startTime);
+  if (!startTimeValidation.valid) {
+    errors.push({field: "startTime", message: startTimeValidation.message});
+  }
+
+  // End time validation (optional - treat empty strings as undefined)
+  if (payload.endTime !== undefined && payload.endTime !== null && payload.endTime !== "") {
+    const endTimeValidation = validateISODateTime(payload.endTime);
+    if (!endTimeValidation.valid) {
+      errors.push({field: "endTime", message: endTimeValidation.message});
+    }
+  }
+
+  // Price tiers validation
+  const priceTiersValidation = validatePriceTiers(payload.priceTiers);
+  if (!priceTiersValidation.valid) {
+    errors.push({field: "priceTiers", message: priceTiersValidation.message});
+  }
+
+  // Address validation
+  const addressLine1Validation = validateRequiredString(payload.addressLine1, "Address line 1");
+  if (!addressLine1Validation.valid) {
+    errors.push({field: "addressLine1", message: addressLine1Validation.message});
+  }
+
+  const cityValidation = validateRequiredString(payload.city, "City");
+  if (!cityValidation.valid) {
+    errors.push({field: "city", message: cityValidation.message});
+  }
+
+  const stateValidation = validateState(payload.state);
+  if (!stateValidation.valid) {
+    errors.push({field: "state", message: stateValidation.message});
+  }
+
+  const zipValidation = validateZip(payload.zip);
+  if (!zipValidation.valid) {
+    errors.push({field: "zip", message: zipValidation.message});
+  }
+
+  // Optional fields
+  if (payload.description !== undefined && payload.description !== null) {
+    if (typeof payload.description !== "string") {
+      errors.push({field: "description", message: "Description must be a string"});
+    }
+  }
+
+  if (payload.addressLine2 !== undefined && payload.addressLine2 !== null) {
+    if (typeof payload.addressLine2 !== "string") {
+      errors.push({field: "addressLine2", message: "Address line 2 must be a string"});
+    }
+  }
+
+  if (payload.locationName !== undefined && payload.locationName !== null) {
+    if (typeof payload.locationName !== "string") {
+      errors.push({field: "locationName", message: "Location name must be a string"});
+    }
+  }
+
+  // Image file validation (optional, base64 string)
+  if (payload.imageFile !== undefined && payload.imageFile !== null) {
+    if (typeof payload.imageFile !== "string") {
+      errors.push({field: "imageFile", message: "Image file must be a base64 string"});
+    } else if (!payload.imageFile.startsWith("data:image/")) {
+      errors.push({field: "imageFile", message: "Image file must be a valid base64 image data URL"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate update event payload
+ * @param {Object} payload - Event update data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateUpdateEventPayload(payload) {
+  const errors = [];
+
+  // Name validation (optional for update)
+  if (payload.name !== undefined) {
+    const nameValidation = validateRequiredString(payload.name, "Name");
+    if (!nameValidation.valid) {
+      errors.push({field: "name", message: nameValidation.message});
+    }
+  }
+
+  // Type validation (optional for update)
+  if (payload.type !== undefined) {
+    const typeValidation = validateEventType(payload.type);
+    if (!typeValidation.valid) {
+      errors.push({field: "type", message: typeValidation.message});
+    }
+  }
+
+  // Start time validation (optional for update)
+  if (payload.startTime !== undefined) {
+    const startTimeValidation = validateISODateTime(payload.startTime);
+    if (!startTimeValidation.valid) {
+      errors.push({field: "startTime", message: startTimeValidation.message});
+    }
+  }
+
+  // End time validation (optional for update - treat empty strings as undefined)
+  if (payload.endTime !== undefined && payload.endTime !== null && payload.endTime !== "") {
+    const endTimeValidation = validateISODateTime(payload.endTime);
+    if (!endTimeValidation.valid) {
+      errors.push({field: "endTime", message: endTimeValidation.message});
+    }
+  }
+
+  // Price tiers validation (optional for update)
+  if (payload.priceTiers !== undefined) {
+    const priceTiersValidation = validatePriceTiers(payload.priceTiers);
+    if (!priceTiersValidation.valid) {
+      errors.push({field: "priceTiers", message: priceTiersValidation.message});
+    }
+  }
+
+  // Address validation (optional for update)
+  if (payload.addressLine1 !== undefined) {
+    const addressLine1Validation = validateRequiredString(payload.addressLine1, "Address line 1");
+    if (!addressLine1Validation.valid) {
+      errors.push({field: "addressLine1", message: addressLine1Validation.message});
+    }
+  }
+
+  if (payload.city !== undefined) {
+    const cityValidation = validateRequiredString(payload.city, "City");
+    if (!cityValidation.valid) {
+      errors.push({field: "city", message: cityValidation.message});
+    }
+  }
+
+  if (payload.state !== undefined) {
+    const stateValidation = validateState(payload.state);
+    if (!stateValidation.valid) {
+      errors.push({field: "state", message: stateValidation.message});
+    }
+  }
+
+  if (payload.zip !== undefined) {
+    const zipValidation = validateZip(payload.zip);
+    if (!zipValidation.valid) {
+      errors.push({field: "zip", message: zipValidation.message});
+    }
+  }
+
+  // Optional fields
+  if (payload.description !== undefined && payload.description !== null) {
+    if (typeof payload.description !== "string") {
+      errors.push({field: "description", message: "Description must be a string"});
+    }
+  }
+
+  if (payload.addressLine2 !== undefined && payload.addressLine2 !== null) {
+    if (typeof payload.addressLine2 !== "string") {
+      errors.push({field: "addressLine2", message: "Address line 2 must be a string"});
+    }
+  }
+
+  if (payload.locationName !== undefined && payload.locationName !== null) {
+    if (typeof payload.locationName !== "string") {
+      errors.push({field: "locationName", message: "Location name must be a string"});
+    }
+  }
+
+  // Image file validation (optional, base64 string)
+  if (payload.imageFile !== undefined && payload.imageFile !== null) {
+    if (typeof payload.imageFile !== "string") {
+      errors.push({field: "imageFile", message: "Image file must be a base64 string"});
+    } else if (!payload.imageFile.startsWith("data:image/")) {
+      errors.push({field: "imageFile", message: "Image file must be a valid base64 image data URL"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate class IDs array
+ * @param {Array} classIds - Class IDs to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validateClassIds(classIds) {
+  if (classIds === undefined || classIds === null) {
+    return {valid: false, message: "Class IDs are required"};
+  }
+
+  if (!Array.isArray(classIds)) {
+    return {valid: false, message: "Class IDs must be an array"};
+  }
+
+  // All items should be strings
+  if (!classIds.every((id) => typeof id === "string" && id.trim().length > 0)) {
+    return {valid: false, message: "All class IDs must be non-empty strings"};
+  }
+
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate create package payload
+ * @param {Object} payload - Package data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateCreatePackagePayload(payload) {
+  const errors = [];
+
+  // Name validation
+  const nameValidation = validateRequiredString(payload.name, "Name");
+  if (!nameValidation.valid) {
+    errors.push({field: "name", message: nameValidation.message});
+  }
+
+  // Price validation
+  const priceValidation = validateCost(payload.price);
+  if (!priceValidation.valid) {
+    errors.push({field: "price", message: priceValidation.message});
+  }
+
+  // Credits validation
+  if (payload.credits === undefined || payload.credits === null) {
+    errors.push({field: "credits", message: "Credits are required"});
+  } else if (typeof payload.credits !== "number" || isNaN(payload.credits) || payload.credits < 1) {
+    errors.push({field: "credits", message: "Credits must be a positive number"});
+  }
+
+  // Expiration days validation
+  if (payload.expirationDays === undefined || payload.expirationDays === null) {
+    errors.push({field: "expirationDays", message: "Expiration days are required"});
+  } else if (typeof payload.expirationDays !== "number" || isNaN(payload.expirationDays) || payload.expirationDays < 1) {
+    errors.push({field: "expirationDays", message: "Expiration days must be a positive number"});
+  }
+
+  // Class IDs validation
+  const classIdsValidation = validateClassIds(payload.classIds);
+  if (!classIdsValidation.valid) {
+    errors.push({field: "classIds", message: classIdsValidation.message});
+  }
+
+  // Is active validation
+  if (payload.isActive === undefined || payload.isActive === null) {
+    errors.push({field: "isActive", message: "Is active is required"});
+  } else if (typeof payload.isActive !== "boolean") {
+    errors.push({field: "isActive", message: "Is active must be a boolean"});
+  }
+
+  // Description validation (optional)
+  if (payload.description !== undefined && payload.description !== null) {
+    if (typeof payload.description !== "string") {
+      errors.push({field: "description", message: "Description must be a string"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate update package payload
+ * @param {Object} payload - Package update data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateUpdatePackagePayload(payload) {
+  const errors = [];
+
+  // Name validation (optional for update)
+  if (payload.name !== undefined) {
+    const nameValidation = validateRequiredString(payload.name, "Name");
+    if (!nameValidation.valid) {
+      errors.push({field: "name", message: nameValidation.message});
+    }
+  }
+
+  // Price validation (optional for update)
+  if (payload.price !== undefined) {
+    const priceValidation = validateCost(payload.price);
+    if (!priceValidation.valid) {
+      errors.push({field: "price", message: priceValidation.message});
+    }
+  }
+
+  // Credits validation (optional for update)
+  if (payload.credits !== undefined) {
+    if (typeof payload.credits !== "number" || isNaN(payload.credits) || payload.credits < 1) {
+      errors.push({field: "credits", message: "Credits must be a positive number"});
+    }
+  }
+
+  // Expiration days validation (optional for update)
+  if (payload.expirationDays !== undefined) {
+    if (typeof payload.expirationDays !== "number" || isNaN(payload.expirationDays) || payload.expirationDays < 1) {
+      errors.push({field: "expirationDays", message: "Expiration days must be a positive number"});
+    }
+  }
+
+  // Class IDs validation (optional for update)
+  if (payload.classIds !== undefined) {
+    const classIdsValidation = validateClassIds(payload.classIds);
+    if (!classIdsValidation.valid) {
+      errors.push({field: "classIds", message: classIdsValidation.message});
+    }
+  }
+
+  // Is active validation (optional for update)
+  if (payload.isActive !== undefined) {
+    if (typeof payload.isActive !== "boolean") {
+      errors.push({field: "isActive", message: "Is active must be a boolean"});
+    }
+  }
+
+  // Description validation (optional)
+  if (payload.description !== undefined && payload.description !== null) {
+    if (typeof payload.description !== "string") {
+      errors.push({field: "description", message: "Description must be a string"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
 module.exports = {
   isValidEmail,
   validatePassword,
@@ -769,6 +1448,12 @@ module.exports = {
   validateCreateInstructorPayload,
   validateUpdateInstructorPayload,
   validateUpdateProfilePayload,
+  validateCreateWorkshopPayload,
+  validateUpdateWorkshopPayload,
+  validateCreateEventPayload,
+  validateUpdateEventPayload,
+  validateCreatePackagePayload,
+  validateUpdatePackagePayload,
 };
 
 

@@ -1,41 +1,100 @@
-const express = require("express");
+const functions = require("firebase-functions");
 const admin = require("firebase-admin");
-const authService = require("../services/auth.service");
-const storageService = require("../services/storage.service");
-const {verifyToken} = require("../middleware/auth.middleware");
-const {validateUpdateProfilePayload} = require("../utils/validation");
+const express = require("express");
+const cors = require("cors");
+const authService = require("./services/auth.service");
+const storageService = require("./services/storage.service");
+const {verifyToken} = require("./utils/auth");
+const {validateUpdateProfilePayload} = require("./utils/validation");
+const {getFirestore} = require("./utils/firestore");
+const {
+  sendJsonResponse,
+  sendErrorResponse,
+  handleError,
+} = require("./utils/http");
 
-// eslint-disable-next-line new-cap
-const router = express.Router();
+// Initialize Firebase Admin
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
+
+// Initialize Express app
+const app = express();
+
+// Explicit CORS handling - must be before other middleware
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  
+  // Set CORS headers
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Max-Age", "3600");
+  
+  // Handle preflight requests
+  if (req.method === "OPTIONS") {
+    return res.status(204).send("");
+  }
+  
+  next();
+});
+
+// CORS configuration (backup)
+const corsOptions = {
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+      return callback(null, true);
+    }
+    callback(null, true);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  exposedHeaders: ["Content-Type", "Authorization"],
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+app.use(express.json());
+app.use(express.urlencoded({extended: true}));
 
 /**
- * GET /v1/profile
+ * GET /
  * Get current authenticated user's studio profile
  */
-router.get("/", verifyToken, async (req, res) => {
+app.get("/", async (req, res) => {
   try {
-    const {uid} = req.user;
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
 
     // Get user document from Firestore
-    const userDoc = await authService.getUserDocumentByAuthUid(uid);
+    const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
     if (!userDoc) {
-      return res.status(404).json({
-        error: "Not Found",
-        message: "User profile not found",
-      });
+      return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
     }
 
     const userData = userDoc.data();
 
     // Verify user has studio_owner role
     if (!authService.hasStudioOwnerRole(userDoc)) {
-      return res.status(403).json({
-        error: "Access Denied",
-        message: "This account does not have studio owner access",
-      });
+      return sendErrorResponse(req, res, 403, "Access Denied", "This account does not have studio owner access");
     }
 
-    res.json({
+    sendJsonResponse(req, res, 200, {
       firstName: userData.firstName,
       lastName: userData.lastName,
       studioName: userData.studioName,
@@ -54,46 +113,41 @@ router.get("/", verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Get profile error:", error);
-    res.status(500).json({
-      error: "Internal Server Error",
-      message: "Failed to retrieve profile",
-    });
+    handleError(req, res, error);
   }
 });
 
 /**
- * PUT /v1/profile
+ * PUT /
  * Update current authenticated user's studio profile
  */
-router.put("/", verifyToken, async (req, res) => {
+app.put("/", async (req, res) => {
   try {
-    const {uid} = req.user;
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
 
     // Validate input
     const validation = validateUpdateProfilePayload(req.body);
     if (!validation.valid) {
-      return res.status(400).json({
-        error: "Validation Error",
-        message: "Invalid profile data",
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid profile data", {
         errors: validation.errors,
       });
     }
 
     // Get user document from Firestore
-    const userDoc = await authService.getUserDocumentByAuthUid(uid);
+    const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
     if (!userDoc) {
-      return res.status(404).json({
-        error: "Not Found",
-        message: "User profile not found",
-      });
+      return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
     }
 
     // Verify user has studio_owner role
     if (!authService.hasStudioOwnerRole(userDoc)) {
-      return res.status(403).json({
-        error: "Access Denied",
-        message: "This account does not have studio owner access",
-      });
+      return sendErrorResponse(req, res, 403, "Access Denied", "This account does not have studio owner access");
     }
 
     const {
@@ -120,7 +174,7 @@ router.put("/", verifyToken, async (req, res) => {
       try {
         const fileBuffer = storageService.base64ToBuffer(studioImageFile);
         const mimeType = storageService.getMimeTypeFromBase64(studioImageFile);
-        const fileName = `studio-image-${uid}.${mimeType.split("/")[1]}`;
+        const fileName = `studio-image-${user.uid}.${mimeType.split("/")[1]}`;
 
         studioImageUrl = await storageService.uploadStudioImage(
             fileBuffer,
@@ -139,10 +193,7 @@ router.put("/", verifyToken, async (req, res) => {
         }
       } catch (imageError) {
         console.error("Error uploading studio image:", imageError);
-        return res.status(400).json({
-          error: "Image Upload Failed",
-          message: imageError.message || "Failed to upload studio image",
-        });
+        return sendErrorResponse(req, res, 400, "Image Upload Failed", imageError.message || "Failed to upload studio image");
       }
     }
 
@@ -192,14 +243,14 @@ router.put("/", verifyToken, async (req, res) => {
     }
 
     // Update Firestore document
-    const db = admin.firestore();
+    const db = getFirestore();
     await db.collection("users").doc(userDoc.id).update(updateData);
 
     // Get updated document
     const updatedDoc = await db.collection("users").doc(userDoc.id).get();
     const updatedData = updatedDoc.data();
 
-    res.json({
+    sendJsonResponse(req, res, 200, {
       firstName: updatedData.firstName,
       lastName: updatedData.lastName,
       studioName: updatedData.studioName,
@@ -218,12 +269,16 @@ router.put("/", verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Update profile error:", error);
-    res.status(500).json({
-      error: "Internal Server Error",
-      message: error.message || "Failed to update profile",
-    });
+    handleError(req, res, error);
   }
 });
 
-module.exports = router;
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error("Error:", err);
+  handleError(req, res, err);
+});
+
+// Export Express app as Firebase Function
+exports.profile = functions.https.onRequest(app);
 

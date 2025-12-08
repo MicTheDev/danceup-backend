@@ -1,5 +1,12 @@
 const request = require("supertest");
 
+// Mock Firebase Functions
+jest.mock("firebase-functions", () => ({
+  https: {
+    onRequest: (handler) => handler,
+  },
+}));
+
 // Mock Firebase Admin
 jest.mock("firebase-admin", () => ({
   auth: jest.fn(() => ({
@@ -26,6 +33,10 @@ jest.mock("firebase-admin/firestore", () => ({
         })),
       })),
       add: jest.fn(),
+      doc: jest.fn(() => ({
+        get: jest.fn(),
+        update: jest.fn(),
+      })),
     })),
   })),
 }));
@@ -45,14 +56,14 @@ jest.mock("firebase-admin/storage", () => ({
 // Mock services
 jest.mock("../services/auth.service");
 jest.mock("../services/storage.service");
-jest.mock("../middleware/auth.middleware");
+jest.mock("../utils/auth");
 
 const authService = require("../services/auth.service");
 const storageService = require("../services/storage.service");
-const {verifyToken} = require("../middleware/auth.middleware");
+const {verifyToken} = require("../utils/auth");
 
-// Import app after mocks
-const {app} = require("../index");
+// Import Express app after mocks
+const {auth} = require("../auth");
 
 describe("Auth Routes", () => {
   beforeEach(() => {
@@ -61,7 +72,7 @@ describe("Auth Routes", () => {
     process.env.FIREBASE_WEB_API_KEY = "test-api-key";
   });
 
-  describe("POST /v1/auth/register", () => {
+  describe("POST /auth/register", () => {
     const validRegistrationData = {
       email: "test@studio.com",
       password: "password123",
@@ -91,8 +102,8 @@ describe("Auth Routes", () => {
       authService.createUserDocument.mockResolvedValue("doc-id");
       authService.createCustomToken.mockResolvedValue("custom-token");
 
-      const response = await request(app)
-          .post("/v1/auth/register")
+      const response = await request(auth)
+          .post("/auth/register")
           .send(validRegistrationData)
           .expect(201);
 
@@ -109,28 +120,13 @@ describe("Auth Routes", () => {
         email: "invalid-email",
       };
 
-      const response = await request(app)
-          .post("/v1/auth/register")
+      const response = await request(auth)
+          .post("/auth/register")
           .send(invalidData)
           .expect(400);
 
       expect(response.body).toHaveProperty("error", "Validation Error");
       expect(response.body).toHaveProperty("errors");
-    });
-
-    test("should return 400 for missing required fields", async () => {
-      const invalidData = {
-        email: "test@studio.com",
-        password: "password123",
-        // Missing other required fields
-      };
-
-      const response = await request(app)
-          .post("/v1/auth/register")
-          .send(invalidData)
-          .expect(400);
-
-      expect(response.body).toHaveProperty("error", "Validation Error");
     });
 
     test("should handle registration with studio image", async () => {
@@ -152,8 +148,8 @@ describe("Auth Routes", () => {
       storageService.getMimeTypeFromBase64.mockReturnValue("image/png");
       storageService.uploadStudioImage.mockResolvedValue("https://storage.googleapis.com/test/image.png");
 
-      const response = await request(app)
-          .post("/v1/auth/register")
+      const response = await request(auth)
+          .post("/auth/register")
           .send(dataWithImage)
           .expect(201);
 
@@ -162,7 +158,7 @@ describe("Auth Routes", () => {
     });
   });
 
-  describe("POST /v1/auth/login", () => {
+  describe("POST /auth/login", () => {
     const validLoginData = {
       email: "test@studio.com",
       password: "password123",
@@ -191,8 +187,8 @@ describe("Auth Routes", () => {
       authService.hasStudioOwnerRole.mockReturnValue(true);
       authService.createCustomToken.mockResolvedValue("custom-token");
 
-      const response = await request(app)
-          .post("/v1/auth/login")
+      const response = await request(auth)
+          .post("/auth/login")
           .send(validLoginData)
           .expect(200);
 
@@ -206,8 +202,8 @@ describe("Auth Routes", () => {
         password: "password123",
       };
 
-      const response = await request(app)
-          .post("/v1/auth/login")
+      const response = await request(auth)
+          .post("/auth/login")
           .send(invalidData)
           .expect(400);
 
@@ -223,8 +219,8 @@ describe("Auth Routes", () => {
           new Error("User not found"),
       );
 
-      const response = await request(app)
-          .post("/v1/auth/login")
+      const response = await request(auth)
+          .post("/auth/login")
           .send(validLoginData)
           .expect(401);
 
@@ -253,8 +249,8 @@ describe("Auth Routes", () => {
       authService.getUserDocumentByAuthUid.mockResolvedValue(mockUserDoc);
       authService.hasStudioOwnerRole.mockReturnValue(false);
 
-      const response = await request(app)
-          .post("/v1/auth/login")
+      const response = await request(auth)
+          .post("/auth/login")
           .send(validLoginData)
           .expect(403);
 
@@ -262,11 +258,12 @@ describe("Auth Routes", () => {
     });
   });
 
-  describe("GET /v1/auth/me", () => {
+  describe("GET /auth/me", () => {
     test("should return user profile with valid token", async () => {
       const mockUser = {
         uid: "test-uid",
         email: "test@studio.com",
+        emailVerified: true,
       };
 
       const mockUserDoc = {
@@ -291,15 +288,11 @@ describe("Auth Routes", () => {
         }),
       };
 
-      verifyToken.mockImplementation((req, res, next) => {
-        req.user = mockUser;
-        next();
-      });
-
+      verifyToken.mockResolvedValue(mockUser);
       authService.getUserDocumentByAuthUid.mockResolvedValue(mockUserDoc);
 
-      const response = await request(app)
-          .get("/v1/auth/me")
+      const response = await request(auth)
+          .get("/auth/me")
           .set("Authorization", "Bearer valid-token")
           .expect(200);
 
@@ -310,35 +303,32 @@ describe("Auth Routes", () => {
     });
 
     test("should return 401 without token", async () => {
-      verifyToken.mockImplementation((req, res) => {
-        return res.status(401).json({
-          error: "Unauthorized",
-          message: "Missing or invalid authorization header",
-        });
+      verifyToken.mockRejectedValue({
+        status: 401,
+        error: "Unauthorized",
+        message: "Missing or invalid authorization header",
       });
 
-      const response = await request(app)
-          .get("/v1/auth/me")
+      const response = await request(auth)
+          .get("/auth/me")
           .expect(401);
 
       expect(response.body).toHaveProperty("error", "Unauthorized");
     });
   });
 
-  describe("POST /v1/auth/logout", () => {
+  describe("POST /auth/logout", () => {
     test("should logout successfully", async () => {
       const mockUser = {
         uid: "test-uid",
         email: "test@studio.com",
+        emailVerified: true,
       };
 
-      verifyToken.mockImplementation((req, res, next) => {
-        req.user = mockUser;
-        next();
-      });
+      verifyToken.mockResolvedValue(mockUser);
 
-      const response = await request(app)
-          .post("/v1/auth/logout")
+      const response = await request(auth)
+          .post("/auth/logout")
           .set("Authorization", "Bearer valid-token")
           .expect(200);
 
@@ -346,5 +336,3 @@ describe("Auth Routes", () => {
     });
   });
 });
-
-

@@ -1,27 +1,84 @@
+const functions = require("firebase-functions");
+const admin = require("firebase-admin");
 const express = require("express");
-const authService = require("../services/auth.service");
-const storageService = require("../services/storage.service");
-const {verifyToken} = require("../middleware/auth.middleware");
+const cors = require("cors");
+const authService = require("./services/auth.service");
+const storageService = require("./services/storage.service");
+const {verifyToken} = require("./utils/auth");
 const {
   validateRegistrationPayload,
   validateLoginPayload,
-} = require("../utils/validation");
+} = require("./utils/validation");
+const {
+  sendJsonResponse,
+  sendErrorResponse,
+  handleError,
+} = require("./utils/http");
 
-// eslint-disable-next-line new-cap
-const router = express.Router();
+// Initialize Firebase Admin
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
+
+// Initialize Express app
+const app = express();
+
+// Explicit CORS handling - must be before other middleware
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  
+  // Set CORS headers
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Max-Age", "3600");
+  
+  // Handle preflight requests
+  if (req.method === "OPTIONS") {
+    return res.status(204).send("");
+  }
+  
+  next();
+});
+
+// CORS configuration (backup)
+const corsOptions = {
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+      return callback(null, true);
+    }
+    callback(null, true);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  exposedHeaders: ["Content-Type", "Authorization"],
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+app.use(express.json());
+app.use(express.urlencoded({extended: true}));
 
 /**
- * POST /v1/auth/register
+ * POST /register
  * Register a new studio owner
  */
-router.post("/register", async (req, res, next) => {
+app.post("/register", async (req, res) => {
   try {
     // Validate input
     const validation = validateRegistrationPayload(req.body);
     if (!validation.valid) {
-      return res.status(400).json({
-        error: "Validation Error",
-        message: "Invalid registration data",
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid registration data", {
         errors: validation.errors,
       });
     }
@@ -42,7 +99,7 @@ router.post("/register", async (req, res, next) => {
       instagram,
       tiktok,
       youtube,
-      studioImageFile, // Base64 string or null
+      studioImageFile,
     } = req.body;
 
     let userRecord;
@@ -99,7 +156,7 @@ router.post("/register", async (req, res, next) => {
       // Generate custom token
       const customToken = await authService.createCustomToken(userRecord.uid);
 
-      res.status(201).json({
+      sendJsonResponse(req, res, 201, {
         customToken,
         user: {
           uid: userRecord.uid,
@@ -111,7 +168,6 @@ router.post("/register", async (req, res, next) => {
       // Cleanup: delete Firebase Auth user if Firestore creation failed
       if (userRecord) {
         await authService.deleteUser(userRecord.uid);
-        // Also delete uploaded image if it exists
         if (studioImageUrl) {
           await storageService.deleteFile(studioImageUrl);
         }
@@ -120,7 +176,8 @@ router.post("/register", async (req, res, next) => {
     }
   } catch (error) {
     console.error("Registration error:", error);
-    res.status(400).json({
+    handleError(req, res, {
+      status: 400,
       error: "Registration Failed",
       message: error.message || "Failed to register user",
     });
@@ -128,18 +185,15 @@ router.post("/register", async (req, res, next) => {
 });
 
 /**
- * POST /v1/auth/login
+ * POST /login
  * Login with email and password
- * Verifies password using Firebase Auth REST API and returns custom token
  */
-router.post("/login", async (req, res) => {
+app.post("/login", async (req, res) => {
   try {
     // Validate input
     const validation = validateLoginPayload(req.body);
     if (!validation.valid) {
-      return res.status(400).json({
-        error: "Validation Error",
-        message: "Invalid login data",
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid login data", {
         errors: validation.errors,
       });
     }
@@ -147,62 +201,42 @@ router.post("/login", async (req, res) => {
     const {email, password} = req.body;
 
     // Get Firebase Web API key from environment
-    // This should be set in Firebase Functions config or environment variables
     const apiKey = process.env.FIREBASE_WEB_API_KEY;
     if (!apiKey) {
       console.error("FIREBASE_WEB_API_KEY not configured");
-      return res.status(500).json({
-        error: "Configuration Error",
-        message: "Server configuration error",
-      });
+      return sendErrorResponse(req, res, 500, "Configuration Error", "Server configuration error");
     }
 
     // Verify password using Firebase Auth REST API
     try {
-      await authService.verifyPassword(
-          email,
-          password,
-          apiKey,
-      );
+      await authService.verifyPassword(email, password, apiKey);
     } catch (error) {
-      return res.status(401).json({
-        error: "Authentication Failed",
-        message: "Invalid email or password",
-      });
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid email or password");
     }
 
-    // Get user by UID from the verification result
+    // Get user by email
     let userRecord;
     try {
       userRecord = await authService.getUserByEmail(email);
     } catch (error) {
-      return res.status(401).json({
-        error: "Authentication Failed",
-        message: "User not found",
-      });
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "User not found");
     }
 
     // Get user document from Firestore
     const userDoc = await authService.getUserDocumentByAuthUid(userRecord.uid);
     if (!userDoc) {
-      return res.status(401).json({
-        error: "Authentication Failed",
-        message: "User profile not found",
-      });
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "User profile not found");
     }
 
     // Verify user has studio_owner role
     if (!authService.hasStudioOwnerRole(userDoc)) {
-      return res.status(403).json({
-        error: "Access Denied",
-        message: "This account does not have studio owner access",
-      });
+      return sendErrorResponse(req, res, 403, "Access Denied", "This account does not have studio owner access");
     }
 
     // Generate custom token
     const customToken = await authService.createCustomToken(userRecord.uid);
 
-    res.json({
+    sendJsonResponse(req, res, 200, {
       customToken,
       user: {
         uid: userRecord.uid,
@@ -212,35 +246,35 @@ router.post("/login", async (req, res) => {
     });
   } catch (error) {
     console.error("Login error:", error);
-    res.status(500).json({
-      error: "Login Failed",
-      message: error.message || "Failed to login",
-    });
+    handleError(req, res, error);
   }
 });
 
 /**
- * GET /v1/auth/me
+ * GET /me
  * Get current authenticated user profile
  */
-router.get("/me", verifyToken, async (req, res) => {
+app.get("/me", async (req, res) => {
   try {
-    const {uid} = req.user;
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
 
     // Get user document from Firestore
-    const userDoc = await authService.getUserDocumentByAuthUid(uid);
+    const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
     if (!userDoc) {
-      return res.status(404).json({
-        error: "Not Found",
-        message: "User profile not found",
-      });
+      return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
     }
 
     const userData = userDoc.data();
 
-    res.json({
-      uid,
-      email: req.user.email,
+    sendJsonResponse(req, res, 200, {
+      uid: user.uid,
+      email: user.email,
       studioOwnerId: userDoc.id,
       profile: {
         firstName: userData.firstName,
@@ -262,34 +296,38 @@ router.get("/me", verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Get user profile error:", error);
-    res.status(500).json({
-      error: "Internal Server Error",
-      message: "Failed to retrieve user profile",
-    });
+    handleError(req, res, error);
   }
 });
 
 /**
- * POST /v1/auth/logout
+ * POST /logout
  * Logout (token revocation can be handled here if needed)
  */
-router.post("/logout", verifyToken, async (req, res) => {
+app.post("/logout", async (req, res) => {
   try {
-    // Firebase ID tokens are stateless and can't be revoked server-side
-    // The frontend should clear the token from storage
-    // If needed, we could implement token blacklisting here
+    // Verify token (even though we don't use the result, we want to ensure valid auth)
+    try {
+      await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
 
-    res.json({
+    sendJsonResponse(req, res, 200, {
       message: "Logged out successfully",
     });
   } catch (error) {
     console.error("Logout error:", error);
-    res.status(500).json({
-      error: "Internal Server Error",
-      message: "Failed to logout",
-    });
+    handleError(req, res, error);
   }
 });
 
-module.exports = router;
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error("Error:", err);
+  handleError(req, res, err);
+});
+
+// Export Express app as Firebase Function
+exports.auth = functions.https.onRequest(app);
 

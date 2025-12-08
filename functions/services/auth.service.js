@@ -1,4 +1,5 @@
 const admin = require("firebase-admin");
+const {getFirestore} = require("../utils/firestore");
 
 /**
  * Service for handling authentication and user management operations
@@ -81,7 +82,7 @@ class AuthService {
    * @returns {Promise<string>} Document ID
    */
   async createUserDocument(authUid, userData) {
-    const db = admin.firestore();
+    const db = getFirestore();
     const userDataWithAuthUid = {
       ...userData,
       authUid,
@@ -99,7 +100,7 @@ class AuthService {
    * @returns {Promise<admin.firestore.DocumentSnapshot | null>}
    */
   async getUserDocumentByAuthUid(authUid) {
-    const db = admin.firestore();
+    const db = getFirestore();
     const usersRef = db.collection("users");
     const snapshot = await usersRef
         .where("authUid", "==", authUid)

@@ -458,43 +458,182 @@ To find your service account email, check the `client_email` field in each JSON 
 
 ## API Endpoints
 
-### Health Check
-
+The API is organized into 4 grouped Express apps, each deployed as a separate Firebase Function. The base URL format is:
 ```
-GET /health
+https://REGION-PROJECT.cloudfunctions.net/FUNCTION_NAME
 ```
 
-Returns the service status.
+For example, in development:
+- Auth: `https://us-central1-dev-danceup.cloudfunctions.net/auth`
+- Profile: `https://us-central1-dev-danceup.cloudfunctions.net/profile`
+- Classes: `https://us-central1-dev-danceup.cloudfunctions.net/classes`
+- Instructors: `https://us-central1-dev-danceup.cloudfunctions.net/instructors`
 
-**Response:**
+### Authentication Endpoints (`/auth` function)
+
+All auth endpoints are under the `/auth` prefix:
+
+#### Register
+```
+POST /auth/register
+```
+Register a new studio owner account.
+
+**Request Body:**
 ```json
 {
-  "status": "ok",
-  "timestamp": "2024-01-01T00:00:00.000Z",
-  "service": "danceup-backend"
+  "email": "studio@example.com",
+  "password": "password123",
+  "firstName": "John",
+  "lastName": "Doe",
+  "studioName": "Dance Studio",
+  "studioAddressLine1": "123 Main St",
+  "studioAddressLine2": null,
+  "city": "New York",
+  "state": "NY",
+  "zip": "10001",
+  "membership": "basic",
+  "facebook": null,
+  "instagram": null,
+  "tiktok": null,
+  "youtube": null,
+  "studioImageFile": null
 }
 ```
 
-### Future Endpoints
+#### Login
+```
+POST /auth/login
+```
+Login with email and password.
 
-API routes will be added in `functions/routes/` and registered in `functions/index.js`.
-
-Example structure:
-```javascript
-// functions/routes/users.js
-const express = require('express');
-const router = express.Router();
-
-router.get('/', async (req, res) => {
-  // Implementation
-});
-
-module.exports = router;
+**Request Body:**
+```json
+{
+  "email": "studio@example.com",
+  "password": "password123"
+}
 ```
 
-Then in `functions/index.js`:
-```javascript
-app.use('/api/v1/users', require('./routes/users'));
+#### Get Current User
+```
+GET /auth/me
+```
+Get current authenticated user profile. Requires Bearer token.
+
+**Headers:**
+```
+Authorization: Bearer <id-token>
+```
+
+#### Logout
+```
+POST /auth/logout
+```
+Logout current user. Requires Bearer token.
+
+**Headers:**
+```
+Authorization: Bearer <id-token>
+```
+
+### Profile Endpoints (`/profile` function)
+
+#### Get Profile
+```
+GET /profile
+```
+Get current studio owner's profile. Requires Bearer token.
+
+#### Update Profile
+```
+PUT /profile
+```
+Update current studio owner's profile. Requires Bearer token.
+
+### Classes Endpoints (`/classes` function)
+
+#### Get All Classes
+```
+GET /classes
+```
+Get all classes for the authenticated studio owner. Requires Bearer token.
+
+#### Get Class by ID
+```
+GET /classes/:id
+```
+Get a single class by ID. Requires Bearer token.
+
+#### Create Class
+```
+POST /classes
+```
+Create a new class. Requires Bearer token.
+
+#### Update Class
+```
+PUT /classes/:id
+```
+Update an existing class. Requires Bearer token.
+
+#### Delete Class
+```
+DELETE /classes/:id
+```
+Delete a class. Requires Bearer token.
+
+### Instructors Endpoints (`/instructors` function)
+
+#### Get All Instructors
+```
+GET /instructors
+```
+Get all instructors for the authenticated studio owner. Requires Bearer token.
+
+#### Get Instructor Options
+```
+GET /instructors/options
+```
+Get simplified instructor options for dropdowns. Requires Bearer token.
+
+#### Get Instructor by ID
+```
+GET /instructors/:id
+```
+Get a single instructor by ID. Requires Bearer token.
+
+#### Create Instructor
+```
+POST /instructors
+```
+Create a new instructor. Requires Bearer token.
+
+#### Update Instructor
+```
+PUT /instructors/:id
+```
+Update an existing instructor. Requires Bearer token.
+
+#### Delete Instructor
+```
+DELETE /instructors/:id
+```
+Delete an instructor. Requires Bearer token.
+
+### Function Deployment
+
+Each grouped function is deployed independently. To deploy all functions:
+```bash
+firebase deploy --only functions --project dev-danceup
+```
+
+To deploy a specific function:
+```bash
+firebase deploy --only functions:auth --project dev-danceup
+firebase deploy --only functions:profile --project dev-danceup
+firebase deploy --only functions:classes --project dev-danceup
+firebase deploy --only functions:instructors --project dev-danceup
 ```
 
 ## Environment Configuration
