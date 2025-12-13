@@ -346,6 +346,67 @@ class StorageService {
       throw new Error(`Failed to upload event image: ${error.message}`);
     }
   }
+
+  /**
+   * Upload student avatar to Firebase Storage
+   * @param {Buffer} fileBuffer - File buffer
+   * @param {string} fileName - Original file name
+   * @param {string} mimeType - File MIME type
+   * @param {string} authUid - Firebase Auth UID
+   * @returns {Promise<string>} Download URL
+   */
+  async uploadStudentAvatar(fileBuffer, fileName, mimeType, authUid) {
+    try {
+      // Validate file type
+      const allowedMimeTypes = [
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/webp",
+      ];
+      if (!allowedMimeTypes.includes(mimeType)) {
+        throw new Error(
+            "Invalid file type. Only JPEG, PNG, and WebP images are allowed",
+        );
+      }
+
+      // Validate file size (max 5MB)
+      const maxSize = 5 * 1024 * 1024; // 5MB
+      if (fileBuffer.length > maxSize) {
+        throw new Error("File size exceeds 5MB limit");
+      }
+
+      // Generate unique file name
+      const timestamp = Date.now();
+      const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
+      const storageFileName = `student-avatars/${authUid}/${timestamp}-${sanitizedFileName}`;
+
+      // Upload file
+      const bucket = this.getBucket();
+      const file = bucket.file(storageFileName);
+      await file.save(fileBuffer, {
+        metadata: {
+          contentType: mimeType,
+        },
+      });
+
+      // Make file publicly accessible
+      await file.makePublic();
+
+      // Get public URL
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${storageFileName}`;
+
+      return publicUrl;
+    } catch (error) {
+      console.error("Error uploading student avatar:", error);
+      if (error.message.includes("Invalid file type") ||
+          error.message.includes("File size") ||
+          error.message.includes("Storage bucket not available")) {
+        throw error;
+      }
+      throw new Error("Failed to upload student avatar");
+    }
+  }
 }
 
 module.exports = new StorageService();

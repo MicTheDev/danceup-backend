@@ -1427,6 +1427,205 @@ function validateUpdatePackagePayload(payload) {
   };
 }
 
+/**
+ * Validate create student payload
+ * @param {Object} payload - Student data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateCreateStudentPayload(payload) {
+  const errors = [];
+
+  // First name validation
+  const firstNameValidation = validateRequiredString(payload.firstName, "First name");
+  if (!firstNameValidation.valid) {
+    errors.push({field: "firstName", message: firstNameValidation.message});
+  }
+
+  // Last name validation
+  const lastNameValidation = validateRequiredString(payload.lastName, "Last name");
+  if (!lastNameValidation.valid) {
+    errors.push({field: "lastName", message: lastNameValidation.message});
+  }
+
+  // Email validation (optional)
+  if (payload.email !== undefined && payload.email !== null && payload.email.trim() !== "") {
+    if (!isValidEmail(payload.email)) {
+      errors.push({field: "email", message: "Invalid email format"});
+    }
+  }
+
+  // Phone validation (optional)
+  if (payload.phone !== undefined && payload.phone !== null && payload.phone.trim() !== "") {
+    const phoneValidation = validatePhone(payload.phone);
+    if (!phoneValidation.valid) {
+      errors.push({field: "phone", message: phoneValidation.message});
+    }
+  }
+
+  // Credits validation (optional, defaults to 0)
+  if (payload.credits !== undefined && payload.credits !== null) {
+    if (typeof payload.credits !== "number" || isNaN(payload.credits) || payload.credits < 0) {
+      errors.push({field: "credits", message: "Credits must be a non-negative number"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate update student payload
+ * @param {Object} payload - Student data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateUpdateStudentPayload(payload) {
+  const errors = [];
+
+  // First name validation (optional for update)
+  if (payload.firstName !== undefined) {
+    const firstNameValidation = validateRequiredString(payload.firstName, "First name");
+    if (!firstNameValidation.valid) {
+      errors.push({field: "firstName", message: firstNameValidation.message});
+    }
+  }
+
+  // Last name validation (optional for update)
+  if (payload.lastName !== undefined) {
+    const lastNameValidation = validateRequiredString(payload.lastName, "Last name");
+    if (!lastNameValidation.valid) {
+      errors.push({field: "lastName", message: lastNameValidation.message});
+    }
+  }
+
+  // Email validation (optional for update)
+  if (payload.email !== undefined && payload.email !== null && payload.email.trim() !== "") {
+    if (!isValidEmail(payload.email)) {
+      errors.push({field: "email", message: "Invalid email format"});
+    }
+  }
+
+  // Phone validation (optional for update)
+  if (payload.phone !== undefined && payload.phone !== null && payload.phone.trim() !== "") {
+    const phoneValidation = validatePhone(payload.phone);
+    if (!phoneValidation.valid) {
+      errors.push({field: "phone", message: phoneValidation.message});
+    }
+  }
+
+  // Credits validation (optional for update)
+  if (payload.credits !== undefined && payload.credits !== null) {
+    if (typeof payload.credits !== "number" || isNaN(payload.credits) || payload.credits < 0) {
+      errors.push({field: "credits", message: "Credits must be a non-negative number"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate dance genre
+ * @param {string} genre - Dance genre to validate
+ * @returns {{valid: boolean, message: string}}
+ */
+function validateDanceGenre(genre) {
+  if (genre === undefined || genre === null || genre === "") {
+    return {valid: true, message: ""}; // Optional field
+  }
+
+  const validGenres = ["salsa", "bachata", "zouk", "kizomba"];
+  if (!validGenres.includes(genre.toLowerCase())) {
+    return {
+      valid: false,
+      message: `Dance genre must be one of: ${validGenres.join(", ")}`,
+    };
+  }
+
+  return {valid: true, message: ""};
+}
+
+/**
+ * Validate student registration payload
+ * @param {Object} payload - Student registration data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateStudentRegistrationPayload(payload) {
+  const errors = [];
+
+  // Email validation
+  if (!isValidEmail(payload.email)) {
+    errors.push({field: "email", message: "Valid email is required"});
+  }
+
+  // Password validation
+  const passwordValidation = validatePassword(payload.password);
+  if (!passwordValidation.valid) {
+    errors.push({field: "password", message: passwordValidation.message});
+  }
+
+  // Required string fields
+  const requiredFields = [
+    "firstName",
+    "lastName",
+    "city",
+  ];
+
+  requiredFields.forEach((field) => {
+    const validation = validateRequiredString(
+        payload[field],
+        field.charAt(0).toUpperCase() + field.slice(1),
+    );
+    if (!validation.valid) {
+      errors.push({field, message: validation.message});
+    }
+  });
+
+  // State validation
+  const stateValidation = validateState(payload.state);
+  if (!stateValidation.valid) {
+    errors.push({field: "state", message: stateValidation.message});
+  }
+
+  // ZIP validation
+  const zipValidation = validateZip(payload.zip);
+  if (!zipValidation.valid) {
+    errors.push({field: "zip", message: zipValidation.message});
+  }
+
+  // Dance genre validation (optional)
+  if (payload.danceGenre !== undefined && payload.danceGenre !== null && payload.danceGenre !== "") {
+    const danceGenreValidation = validateDanceGenre(payload.danceGenre);
+    if (!danceGenreValidation.valid) {
+      errors.push({field: "danceGenre", message: danceGenreValidation.message});
+    }
+  }
+
+  // Subscribe to newsletter validation (optional, boolean)
+  if (payload.subscribeToNewsletter !== undefined && payload.subscribeToNewsletter !== null) {
+    if (typeof payload.subscribeToNewsletter !== "boolean") {
+      errors.push({field: "subscribeToNewsletter", message: "Subscribe to newsletter must be a boolean"});
+    }
+  }
+
+  // Avatar file validation (optional, base64 string)
+  if (payload.avatarFile !== undefined && payload.avatarFile !== null) {
+    if (typeof payload.avatarFile !== "string") {
+      errors.push({field: "avatarFile", message: "Avatar file must be a base64 string"});
+    } else if (!payload.avatarFile.startsWith("data:image/")) {
+      errors.push({field: "avatarFile", message: "Avatar file must be a valid base64 image data URL"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
 module.exports = {
   isValidEmail,
   validatePassword,
@@ -1454,6 +1653,9 @@ module.exports = {
   validateUpdateEventPayload,
   validateCreatePackagePayload,
   validateUpdatePackagePayload,
+  validateCreateStudentPayload,
+  validateUpdateStudentPayload,
+  validateStudentRegistrationPayload,
 };
 
 

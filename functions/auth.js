@@ -23,51 +23,58 @@ if (!admin.apps.length) {
 // Initialize Express app
 const app = express();
 
-// Explicit CORS handling - must be before other middleware
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
+// Handle OPTIONS preflight requests FIRST - before any other middleware
+app.options("*", (req, res) => {
+  const origin = req.headers.origin || "*";
   
-  // Set CORS headers
-  if (origin) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
+  res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
-  res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Max-Age", "3600");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
   
-  // Handle preflight requests
-  if (req.method === "OPTIONS") {
-    return res.status(204).send("");
-  }
+  return res.status(204).send();
+});
+
+// CORS middleware for all requests
+app.use((req, res, next) => {
+  const origin = req.headers.origin || "*";
+  
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
   
   next();
 });
 
-// CORS configuration (backup)
-const corsOptions = {
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
-      return callback(null, true);
-    }
-    callback(null, true);
-  },
+// Use cors package as backup
+app.use(cors({
+  origin: true,
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
   exposedHeaders: ["Content-Type", "Authorization"],
   preflightContinue: false,
   optionsSuccessStatus: 204,
-};
-
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
+}));
 app.use(express.json());
 app.use(express.urlencoded({extended: true}));
+
+/**
+ * OPTIONS /register
+ * Handle CORS preflight for register endpoint
+ */
+app.options("/register", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
 
 /**
  * POST /register
@@ -185,6 +192,20 @@ app.post("/register", async (req, res) => {
 });
 
 /**
+ * OPTIONS /login
+ * Handle CORS preflight for login endpoint
+ */
+app.options("/login", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
  * POST /login
  * Login with email and password
  */
@@ -251,6 +272,20 @@ app.post("/login", async (req, res) => {
 });
 
 /**
+ * OPTIONS /me
+ * Handle CORS preflight for me endpoint
+ */
+app.options("/me", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
  * GET /me
  * Get current authenticated user profile
  */
@@ -298,6 +333,20 @@ app.get("/me", async (req, res) => {
     console.error("Get user profile error:", error);
     handleError(req, res, error);
   }
+});
+
+/**
+ * OPTIONS /logout
+ * Handle CORS preflight for logout endpoint
+ */
+app.options("/logout", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
 });
 
 /**

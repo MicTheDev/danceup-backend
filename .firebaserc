@@ -2,9 +2,7 @@
   "projects": {
     "dev": "dev-danceup",
     "staging": "staging-danceup",
-    "production": "production-danceup"
+    "production": "production-danceup",
+    "default": "dev-danceup"
   }
 }
-
-
-

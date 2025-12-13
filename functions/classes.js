@@ -16,51 +16,126 @@ const {
 // Initialize Express app
 const app = express();
 
-// Explicit CORS handling - must be before other middleware
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
+// Handle OPTIONS preflight requests FIRST - before any other middleware
+app.options("*", (req, res) => {
+  const origin = req.headers.origin || "*";
   
-  // Set CORS headers
-  if (origin) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
+  res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
-  res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Max-Age", "3600");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
   
-  // Handle preflight requests
-  if (req.method === "OPTIONS") {
-    return res.status(204).send("");
-  }
+  return res.status(204).send();
+});
+
+// CORS middleware for all requests
+app.use((req, res, next) => {
+  const origin = req.headers.origin || "*";
+  
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
   
   next();
 });
 
-// CORS configuration (backup)
-const corsOptions = {
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
-      return callback(null, true);
-    }
-    callback(null, true);
-  },
+// Use cors package as backup
+app.use(cors({
+  origin: true,
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
   exposedHeaders: ["Content-Type", "Authorization"],
   preflightContinue: false,
   optionsSuccessStatus: 204,
-};
-
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
+}));
 app.use(express.json());
 app.use(express.urlencoded({extended: true}));
+
+/**
+ * OPTIONS /public
+ * Handle CORS preflight for public classes endpoint
+ */
+app.options("/public", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
+ * GET /public
+ * Get all public classes with optional filters (no authentication required)
+ */
+app.get("/public", async (req, res) => {
+  try {
+    // Extract filter parameters from query string
+    const filters = {
+      danceGenre: req.query.danceGenre || null,
+      city: req.query.city || null,
+      state: req.query.state || null,
+      studioName: req.query.studioName || null,
+      minPrice: req.query.minPrice ? parseFloat(req.query.minPrice) : null,
+      maxPrice: req.query.maxPrice ? parseFloat(req.query.maxPrice) : null,
+      level: req.query.level || null,
+    };
+
+    // Get all public classes with filters
+    const classes = await classesService.getAllPublicClasses(filters);
+
+    sendJsonResponse(req, res, 200, classes);
+  } catch (error) {
+    console.error("Error getting public classes:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * OPTIONS /public/:id
+ * Handle CORS preflight for public class detail endpoint
+ */
+app.options("/public/:id", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
+ * GET /public/:id
+ * Get a single public class by ID with studio and instructor details (no authentication required)
+ */
+app.get("/public/:id", async (req, res) => {
+  try {
+    const {id} = req.params;
+
+    // Get the class with studio and instructor details
+    const classData = await classesService.getPublicClassById(id);
+    if (!classData) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Class not found or not available");
+    }
+
+    // Get related classes
+    const relatedClasses = await classesService.getRelatedClasses(id, classData.studioOwnerId, 4);
+
+    sendJsonResponse(req, res, 200, {
+      ...classData,
+      relatedClasses,
+    });
+  } catch (error) {
+    console.error("Error getting public class:", error);
+    handleError(req, res, error);
+  }
+});
 
 /**
  * GET /

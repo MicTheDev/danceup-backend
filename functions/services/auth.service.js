@@ -76,6 +76,34 @@ class AuthService {
   }
 
   /**
+   * Exchange custom token for ID token using Firebase Auth REST API
+   * @param {string} customToken - Custom token to exchange
+   * @param {string} apiKey - Firebase Web API key
+   * @returns {Promise<Object>} Object containing idToken, refreshToken, and expiresIn
+   */
+  async exchangeCustomTokenForIdToken(customToken, apiKey) {
+    const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${apiKey}`;
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        token: customToken,
+        returnSecureToken: true,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error?.message || 'Failed to exchange custom token');
+    }
+
+    return response.json();
+  }
+
+  /**
    * Create user document in Firestore
    * @param {string} authUid - Firebase Auth UID
    * @param {Object} userData - User data to store
@@ -127,6 +155,46 @@ class AuthService {
     const userData = userDoc.data();
     const roles = userData.roles || [];
     return roles.includes("studio_owner");
+  }
+
+  /**
+   * Create student profile document in Firestore
+   * @param {string} authUid - Firebase Auth UID
+   * @param {Object} userData - Student profile data to store
+   * @returns {Promise<string>} Document ID
+   */
+  async createStudentProfileDocument(authUid, userData) {
+    const db = getFirestore();
+    const userDataWithAuthUid = {
+      ...userData,
+      authUid,
+      role: "student",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    const docRef = await db.collection("usersStudentProfiles").add(userDataWithAuthUid);
+    return docRef.id;
+  }
+
+  /**
+   * Get student profile document from Firestore by auth UID
+   * @param {string} authUid - Firebase Auth UID
+   * @returns {Promise<admin.firestore.DocumentSnapshot | null>}
+   */
+  async getStudentProfileByAuthUid(authUid) {
+    const db = getFirestore();
+    const studentsRef = db.collection("usersStudentProfiles");
+    const snapshot = await studentsRef
+        .where("authUid", "==", authUid)
+        .limit(1)
+        .get();
+
+    if (snapshot.empty) {
+      return null;
+    }
+
+    return snapshot.docs[0];
   }
 }
 

@@ -90,6 +90,7 @@ firebase use production # Switch to production
 
 ### 5. Environment Variables
 
+
 #### Required Environment Variables
 
 The backend requires the `FIREBASE_WEB_API_KEY` environment variable for authentication endpoints. This API key is used to verify passwords using the Firebase Auth REST API.

@@ -15,3 +15,6 @@ exports.events = require("./events").events;
 exports.packages = require("./packages").packages;
 exports.support = require("./support").support;
 exports.attendance = require("./attendance").attendance;
+exports.students = require("./students").students;
+exports.usersstudent = require("./usersStudent").usersstudent;
+exports.studios = require("./studios").studios;
