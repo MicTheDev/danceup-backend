@@ -197,6 +197,35 @@ app.get("/options", async (req, res) => {
 });
 
 /**
+ * OPTIONS /public/:id
+ * Handle CORS preflight for public instructor detail endpoint
+ */
+app.options("/public/:id", (req, res) => {
+  res.status(204).send("");
+});
+
+/**
+ * GET /public/:id
+ * Get a single public instructor by ID (no authentication required)
+ */
+app.get("/public/:id", async (req, res) => {
+  try {
+    const {id} = req.params;
+
+    // Get the instructor (public access, no authentication required)
+    const instructorData = await instructorsService.getPublicInstructorById(id);
+    if (!instructorData) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Instructor not found");
+    }
+
+    sendJsonResponse(req, res, 200, instructorData);
+  } catch (error) {
+    console.error("Error getting public instructor:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * GET /:id
  * Get a single instructor by ID
  */

@@ -138,6 +138,34 @@ class InstructorsService {
 
     await instructorRef.delete();
   }
+
+  /**
+   * Get a single public instructor by ID (no authentication required)
+   * @param {string} instructorId - Instructor document ID
+   * @returns {Promise<Object | null>} Instructor data or null if not found
+   */
+  async getPublicInstructorById(instructorId) {
+    const db = getFirestore();
+    const instructorRef = db.collection("instructors").doc(instructorId);
+    const doc = await instructorRef.get();
+
+    if (!doc.exists) {
+      return null;
+    }
+
+    const instructorData = doc.data();
+
+    // Return public instructor data (exclude sensitive fields if needed)
+    return {
+      id: doc.id,
+      firstName: instructorData.firstName || "",
+      lastName: instructorData.lastName || "",
+      photoURL: instructorData.photoURL || instructorData.photoUrl || null,
+      bio: instructorData.bio || null,
+      email: instructorData.email || null,
+      phone: instructorData.phone || null,
+    };
+  }
 }
 
 module.exports = new InstructorsService();

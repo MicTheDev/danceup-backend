@@ -36,7 +36,7 @@ Then:
 If you only need to fix production right now:
 
 ```bash
-cd /Users/micahjohnson/Desktop/THELDC/danceup-backend
+cd /Users/{username}/Desktop/THELDC/danceup-backend
 export PATH=/opt/homebrew/share/google-cloud-sdk/bin:"$PATH"
 gcloud auth login
 gcloud functions deploy api \
