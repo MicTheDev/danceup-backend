@@ -520,6 +520,200 @@ function validatePhone(phone) {
 }
 
 /**
+ * Validate time format (HH:mm)
+ * @param {string} time - Time string
+ * @returns {boolean}
+ */
+function isValidTimeFormat(time) {
+  if (typeof time !== "string") {
+    return false;
+  }
+  const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
+  return timeRegex.test(time);
+}
+
+/**
+ * Validate time slot
+ * @param {Object} timeSlot - Time slot object
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateTimeSlot(timeSlot) {
+  const errors = [];
+
+  if (!timeSlot || typeof timeSlot !== "object") {
+    errors.push({field: "timeSlot", message: "Time slot must be an object"});
+    return {valid: false, errors};
+  }
+
+  // Validate startTime
+  if (!timeSlot.startTime || typeof timeSlot.startTime !== "string") {
+    errors.push({field: "startTime", message: "Start time is required and must be a string"});
+  } else if (!isValidTimeFormat(timeSlot.startTime)) {
+    errors.push({field: "startTime", message: "Start time must be in HH:mm format"});
+  }
+
+  // Validate endTime
+  if (!timeSlot.endTime || typeof timeSlot.endTime !== "string") {
+    errors.push({field: "endTime", message: "End time is required and must be a string"});
+  } else if (!isValidTimeFormat(timeSlot.endTime)) {
+    errors.push({field: "endTime", message: "End time must be in HH:mm format"});
+  }
+
+  // Validate end time is after start time
+  if (timeSlot.startTime && timeSlot.endTime && isValidTimeFormat(timeSlot.startTime) && isValidTimeFormat(timeSlot.endTime)) {
+    const [startHours, startMinutes] = timeSlot.startTime.split(":").map(Number);
+    const [endHours, endMinutes] = timeSlot.endTime.split(":").map(Number);
+    const startTotal = startHours * 60 + startMinutes;
+    const endTotal = endHours * 60 + endMinutes;
+
+    if (endTotal <= startTotal) {
+      errors.push({field: "endTime", message: "End time must be after start time"});
+    }
+
+    // Validate that it's exactly 1 hour (for 1-hour block system)
+    const duration = endTotal - startTotal;
+    if (duration !== 60) {
+      errors.push({field: "duration", message: "Time slot must be exactly 1 hour"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate day availability
+ * @param {Object} dayAvail - Day availability object
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateDayAvailability(dayAvail) {
+  const errors = [];
+  const validDays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+  // Day validation
+  if (!dayAvail.day || typeof dayAvail.day !== "string") {
+    errors.push({field: "day", message: "Day is required and must be a string"});
+  } else if (!validDays.includes(dayAvail.day.toLowerCase())) {
+    errors.push({field: "day", message: `Day must be one of: ${validDays.join(", ")}`});
+  }
+
+  // Available flag validation
+  if (dayAvail.available !== undefined && typeof dayAvail.available !== "boolean") {
+    errors.push({field: "available", message: "Available must be a boolean"});
+  }
+
+  // If available is true, validate time slots or legacy times
+  if (dayAvail.available === true) {
+    // New format: validate timeSlots array
+    if (dayAvail.timeSlots !== undefined && dayAvail.timeSlots !== null) {
+      if (!Array.isArray(dayAvail.timeSlots)) {
+        errors.push({field: "timeSlots", message: "Time slots must be an array"});
+      } else {
+        // Validate each time slot
+        dayAvail.timeSlots.forEach((slot, index) => {
+          const slotValidation = validateTimeSlot(slot);
+          if (!slotValidation.valid) {
+            slotValidation.errors.forEach((err) => {
+              errors.push({field: `timeSlots[${index}].${err.field}`, message: err.message});
+            });
+          }
+        });
+
+        // Check for overlapping time slots
+        const sortedSlots = [...dayAvail.timeSlots].sort((a, b) => {
+          const [aHours, aMinutes] = a.startTime.split(":").map(Number);
+          const [bHours, bMinutes] = b.startTime.split(":").map(Number);
+          return (aHours * 60 + aMinutes) - (bHours * 60 + bMinutes);
+        });
+
+        for (let i = 0; i < sortedSlots.length - 1; i++) {
+          const currentEnd = sortedSlots[i].endTime.split(":").map(Number);
+          const nextStart = sortedSlots[i + 1].startTime.split(":").map(Number);
+          const currentEndTotal = currentEnd[0] * 60 + currentEnd[1];
+          const nextStartTotal = nextStart[0] * 60 + nextStart[1];
+
+          if (nextStartTotal < currentEndTotal) {
+            errors.push({field: "timeSlots", message: "Time slots cannot overlap"});
+            break;
+          }
+        }
+      }
+    }
+    // Legacy format: validate startTime/endTime (for backward compatibility)
+    else if (dayAvail.startTime !== undefined || dayAvail.endTime !== undefined) {
+      if (dayAvail.startTime !== undefined && dayAvail.startTime !== null) {
+        if (!isValidTimeFormat(dayAvail.startTime)) {
+          errors.push({field: "startTime", message: "Start time must be in HH:mm format"});
+        }
+      }
+
+      if (dayAvail.endTime !== undefined && dayAvail.endTime !== null) {
+        if (!isValidTimeFormat(dayAvail.endTime)) {
+          errors.push({field: "endTime", message: "End time must be in HH:mm format"});
+        }
+      }
+
+      // Validate end time is after start time
+      if (dayAvail.startTime && dayAvail.endTime && isValidTimeFormat(dayAvail.startTime) && isValidTimeFormat(dayAvail.endTime)) {
+        const [startHours, startMinutes] = dayAvail.startTime.split(":").map(Number);
+        const [endHours, endMinutes] = dayAvail.endTime.split(":").map(Number);
+        const startTotal = startHours * 60 + startMinutes;
+        const endTotal = endHours * 60 + endMinutes;
+
+        if (endTotal <= startTotal) {
+          errors.push({field: "endTime", message: "End time must be after start time"});
+        }
+      }
+    } else {
+      // If available is true but no time slots or times provided
+      errors.push({field: "timeSlots", message: "Time slots or start/end time required when available is true"});
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate instructor availability
+ * @param {Object} availability - Availability object
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateInstructorAvailability(availability) {
+  const errors = [];
+
+  // availableForPrivates validation
+  if (availability.availableForPrivates !== undefined && typeof availability.availableForPrivates !== "boolean") {
+    errors.push({field: "availableForPrivates", message: "availableForPrivates must be a boolean"});
+  }
+
+  // availability array validation (optional)
+  if (availability.availability !== undefined && availability.availability !== null) {
+    if (!Array.isArray(availability.availability)) {
+      errors.push({field: "availability", message: "Availability must be an array"});
+    } else {
+      availability.availability.forEach((dayAvail, index) => {
+        const dayValidation = validateDayAvailability(dayAvail);
+        if (!dayValidation.valid) {
+          dayValidation.errors.forEach((err) => {
+            errors.push({field: `availability[${index}].${err.field}`, message: err.message});
+          });
+        }
+      });
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
  * Validate create instructor payload
  * @param {Object} payload - Instructor data
  * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
@@ -565,6 +759,17 @@ function validateCreateInstructorPayload(payload) {
   if (payload.photoUrl !== undefined && payload.photoUrl !== null) {
     if (typeof payload.photoUrl !== "string") {
       errors.push({field: "photoUrl", message: "Photo URL must be a string"});
+    }
+  }
+
+  // Availability validation (optional)
+  if (payload.availability !== undefined && payload.availability !== null) {
+    const availabilityValidation = validateInstructorAvailability(payload.availability);
+    if (!availabilityValidation.valid) {
+      errors.push(...availabilityValidation.errors.map((err) => ({
+        field: `availability.${err.field}`,
+        message: err.message,
+      })));
     }
   }
 
@@ -624,6 +829,17 @@ function validateUpdateInstructorPayload(payload) {
   if (payload.photoUrl !== undefined && payload.photoUrl !== null) {
     if (typeof payload.photoUrl !== "string") {
       errors.push({field: "photoUrl", message: "Photo URL must be a string"});
+    }
+  }
+
+  // Availability validation (optional for update)
+  if (payload.availability !== undefined && payload.availability !== null) {
+    const availabilityValidation = validateInstructorAvailability(payload.availability);
+    if (!availabilityValidation.valid) {
+      errors.push(...availabilityValidation.errors.map((err) => ({
+        field: `availability.${err.field}`,
+        message: err.message,
+      })));
     }
   }
 
@@ -1656,6 +1872,137 @@ module.exports = {
   validateCreateStudentPayload,
   validateUpdateStudentPayload,
   validateStudentRegistrationPayload,
+  validateCreateBookingPayload,
 };
+
+/**
+ * Validate date format (YYYY-MM-DD)
+ * @param {string} date - Date string to validate
+ * @returns {boolean}
+ */
+function isValidDateFormat(date) {
+  if (!date || typeof date !== "string") {
+    return false;
+  }
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(date)) {
+    return false;
+  }
+  const parsedDate = new Date(date + "T00:00:00");
+  return !isNaN(parsedDate.getTime()) && parsedDate.toISOString().startsWith(date);
+}
+
+/**
+ * Check if a date is in the past
+ * @param {string} date - Date string (YYYY-MM-DD)
+ * @returns {boolean}
+ */
+function isDateInPast(date) {
+  if (!isValidDateFormat(date)) {
+    return false;
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const checkDate = new Date(date + "T00:00:00");
+  return checkDate < today;
+}
+
+/**
+ * Validate create booking payload
+ * @param {Object} payload - Booking data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateCreateBookingPayload(payload) {
+  const errors = [];
+
+  // Required fields validation
+  if (!payload.instructorId || typeof payload.instructorId !== "string") {
+    errors.push({field: "instructorId", message: "Instructor ID is required"});
+  }
+
+  if (!payload.studioId || typeof payload.studioId !== "string") {
+    errors.push({field: "studioId", message: "Studio ID is required"});
+  }
+
+  // Date validation
+  if (!payload.date || typeof payload.date !== "string") {
+    errors.push({field: "date", message: "Date is required"});
+  } else {
+    if (!isValidDateFormat(payload.date)) {
+      errors.push({field: "date", message: "Date must be in YYYY-MM-DD format"});
+    } else if (isDateInPast(payload.date)) {
+      errors.push({field: "date", message: "Cannot book dates in the past"});
+    }
+  }
+
+  // Time slot validation
+  if (!payload.timeSlot || typeof payload.timeSlot !== "object") {
+    errors.push({field: "timeSlot", message: "Time slot is required"});
+  } else {
+    if (!payload.timeSlot.startTime || typeof payload.timeSlot.startTime !== "string") {
+      errors.push({field: "timeSlot.startTime", message: "Start time is required"});
+    } else if (!isValidTimeFormat(payload.timeSlot.startTime)) {
+      errors.push({field: "timeSlot.startTime", message: "Start time must be in HH:mm format"});
+    }
+
+    if (!payload.timeSlot.endTime || typeof payload.timeSlot.endTime !== "string") {
+      errors.push({field: "timeSlot.endTime", message: "End time is required"});
+    } else if (!isValidTimeFormat(payload.timeSlot.endTime)) {
+      errors.push({field: "timeSlot.endTime", message: "End time must be in HH:mm format"});
+    }
+
+    // Validate end time is after start time
+    if (
+      payload.timeSlot.startTime &&
+      payload.timeSlot.endTime &&
+      isValidTimeFormat(payload.timeSlot.startTime) &&
+      isValidTimeFormat(payload.timeSlot.endTime)
+    ) {
+      const [startHours, startMinutes] = payload.timeSlot.startTime.split(":").map(Number);
+      const [endHours, endMinutes] = payload.timeSlot.endTime.split(":").map(Number);
+      const startTotal = startHours * 60 + startMinutes;
+      const endTotal = endHours * 60 + endMinutes;
+
+      if (endTotal <= startTotal) {
+        errors.push({field: "timeSlot.endTime", message: "End time must be after start time"});
+      }
+    }
+  }
+
+  // Optional fields validation
+  if (payload.notes !== undefined && payload.notes !== null) {
+    if (typeof payload.notes !== "string") {
+      errors.push({field: "notes", message: "Notes must be a string"});
+    } else if (payload.notes.length > 1000) {
+      errors.push({field: "notes", message: "Notes must be 1000 characters or less"});
+    }
+  }
+
+  if (payload.contactInfo !== undefined && payload.contactInfo !== null) {
+    if (typeof payload.contactInfo !== "object") {
+      errors.push({field: "contactInfo", message: "Contact info must be an object"});
+    } else {
+      if (payload.contactInfo.email !== undefined && payload.contactInfo.email !== null) {
+        if (typeof payload.contactInfo.email !== "string") {
+          errors.push({field: "contactInfo.email", message: "Email must be a string"});
+        } else if (!isValidEmail(payload.contactInfo.email)) {
+          errors.push({field: "contactInfo.email", message: "Invalid email format"});
+        }
+      }
+
+      if (payload.contactInfo.phone !== undefined && payload.contactInfo.phone !== null) {
+        const phoneValidation = validatePhone(payload.contactInfo.phone);
+        if (!phoneValidation.valid) {
+          errors.push({field: "contactInfo.phone", message: phoneValidation.message});
+        }
+      }
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
 
 

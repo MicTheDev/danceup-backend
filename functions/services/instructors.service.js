@@ -156,7 +156,7 @@ class InstructorsService {
     const instructorData = doc.data();
 
     // Return public instructor data (exclude sensitive fields if needed)
-    return {
+    const publicData = {
       id: doc.id,
       firstName: instructorData.firstName || "",
       lastName: instructorData.lastName || "",
@@ -165,6 +165,16 @@ class InstructorsService {
       email: instructorData.email || null,
       phone: instructorData.phone || null,
     };
+
+    // Include availability data if it exists
+    if (instructorData.availability) {
+      publicData.availability = {
+        availableForPrivates: instructorData.availability.availableForPrivates || false,
+        availability: instructorData.availability.availability || null,
+      };
+    }
+
+    return publicData;
   }
 }
 

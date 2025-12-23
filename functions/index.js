@@ -18,3 +18,5 @@ exports.attendance = require("./attendance").attendance;
 exports.students = require("./students").students;
 exports.usersstudent = require("./usersStudent").usersstudent;
 exports.studios = require("./studios").studios;
+exports.bookings = require("./bookings").bookings;
+exports.notifications = require("./notifications").notifications;
