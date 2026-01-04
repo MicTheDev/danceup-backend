@@ -1,6 +1,19 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Attendance collection rules
+    match /attendance/{attendanceId} {
+      // Allow read if user is authenticated and the attendance record's studioOwnerId
+      // points to a user document where that user's authUid equals the current user's UID
+      allow read: if request.auth != null && 
+                     resource.data.studioOwnerId != null &&
+                     exists(/databases/$(database)/documents/users/$(resource.data.studioOwnerId)) &&
+                     get(/databases/$(database)/documents/users/$(resource.data.studioOwnerId)).data.authUid == request.auth.uid;
+      
+      // Allow write only through backend (deny direct client writes for now)
+      allow write: if false;
+    }
+    
     // Default rule: deny all access
     match /{document=**} {
       allow read, write: if false;

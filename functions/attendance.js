@@ -64,30 +64,46 @@ function parseDate(dateString) {
  */
 app.get("/classes", async (req, res) => {
   try {
+    console.log("[Attendance API] GET /classes - Starting request");
+    
     // Verify token and get user info
     let user;
     try {
       user = await verifyToken(req);
+      console.log("[Attendance API] User authenticated:", user.uid);
     } catch (authError) {
+      console.error("[Attendance API] Authentication error:", authError);
       return handleError(req, res, authError);
     }
 
     // Get studio owner ID from authenticated user
+    console.log("[Attendance API] Getting studio owner ID...");
     const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
+      console.error("[Attendance API] Studio owner not found for user:", user.uid);
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
+    console.log("[Attendance API] Studio owner ID:", studioOwnerId);
 
     // Parse optional date range from query params
     const startDate = parseDate(req.query.startDate);
     const endDate = parseDate(req.query.endDate);
+    console.log("[Attendance API] Date range:", { startDate, endDate });
 
     // Get class attendance stats
+    console.log("[Attendance API] Fetching class attendance stats...");
     const stats = await attendanceService.getClassAttendanceStats(studioOwnerId, startDate, endDate);
+    console.log("[Attendance API] Stats retrieved:", {
+      total: stats.total,
+      weeklyCount: stats.weekly.length,
+      monthlyCount: stats.monthly.length,
+      byClassCount: stats.byClass.length,
+    });
 
     sendJsonResponse(req, res, 200, stats);
   } catch (error) {
-    console.error("Error getting class attendance stats:", error);
+    console.error("[Attendance API] Error getting class attendance stats:", error);
+    console.error("[Attendance API] Error stack:", error.stack);
     handleError(req, res, error);
   }
 });
@@ -198,6 +214,172 @@ app.get("/", async (req, res) => {
     });
   } catch (error) {
     console.error("Error getting attendance stats:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /students/:studentId
+ * Get all attendance records for a specific student
+ */
+app.get("/students/:studentId", async (req, res) => {
+  try {
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    // Get studio owner ID from authenticated user
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const {studentId} = req.params;
+
+    // Get attendance records for the student
+    const records = await attendanceService.getAttendanceRecordsByStudent(studentId, studioOwnerId);
+
+    sendJsonResponse(req, res, 200, records);
+  } catch (error) {
+    console.error("Error getting attendance records for student:", error);
+    
+    // Handle specific error cases
+    if (error.message?.includes("not found")) {
+      return sendErrorResponse(req, res, 404, "Not Found", error.message);
+    }
+    if (error.message?.includes("does not belong") || error.message?.includes("Access denied")) {
+      return sendErrorResponse(req, res, 403, "Access Denied", error.message);
+    }
+
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /classes/:classId
+ * Get attendance statistics for a specific class
+ */
+app.get("/classes/:classId", async (req, res) => {
+  try {
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    // Get studio owner ID from authenticated user
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const { classId } = req.params;
+
+    // Parse optional date range from query params
+    const startDate = parseDate(req.query.startDate);
+    const endDate = parseDate(req.query.endDate);
+
+    // Get class-specific attendance stats
+    const stats = await attendanceService.getClassSpecificAttendanceStats(studioOwnerId, classId, startDate, endDate);
+
+    sendJsonResponse(req, res, 200, stats);
+  } catch (error) {
+    console.error("Error getting class-specific attendance stats:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * POST /
+ * Create a new attendance record
+ */
+app.post("/", async (req, res) => {
+  try {
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    // Get studio owner ID from authenticated user
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const body = req.body;
+
+    // Validate required fields
+    if (!body.studentId && !body.studentAuthUid) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Either studentId or studentAuthUid is required");
+    }
+
+    // Resolve studentId from authUid if needed
+    let studentId = body.studentId;
+    if (!studentId && body.studentAuthUid) {
+      studentId = await attendanceService.getStudentIdByAuthUid(body.studentAuthUid);
+      if (!studentId) {
+        return sendErrorResponse(req, res, 404, "Not Found", "Student not found for the provided authUid");
+      }
+    }
+
+    // Validate that exactly one of classId, workshopId, or eventId is provided
+    const idCount = [body.classId, body.workshopId, body.eventId].filter(Boolean).length;
+    if (idCount !== 1) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Exactly one of classId, workshopId, or eventId must be provided");
+    }
+
+    // Validate classInstanceDate
+    if (!body.classInstanceDate) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "classInstanceDate is required");
+    }
+
+    // Validate checkedInBy
+    if (!body.checkedInBy || !["studio", "student"].includes(body.checkedInBy)) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "checkedInBy must be 'studio' or 'student'");
+    }
+
+    // Prepare attendance data
+    const attendanceData = {
+      studentId: studentId,
+      classId: body.classId,
+      workshopId: body.workshopId,
+      eventId: body.eventId,
+      classInstanceDate: body.classInstanceDate,
+      checkedInBy: body.checkedInBy,
+      checkedInById: body.checkedInById,
+      checkedInAt: body.checkedInAt,
+    };
+
+    // Create attendance record
+    const attendanceId = await attendanceService.createAttendanceRecord(attendanceData, studioOwnerId);
+
+    sendJsonResponse(req, res, 201, {
+      id: attendanceId,
+      message: "Attendance record created successfully",
+    });
+  } catch (error) {
+    console.error("Error creating attendance record:", error);
+    
+    // Handle specific error cases
+    if (error.message?.includes("not found")) {
+      return sendErrorResponse(req, res, 404, "Not Found", error.message);
+    }
+    if (error.message?.includes("does not belong")) {
+      return sendErrorResponse(req, res, 403, "Access Denied", error.message);
+    }
+    if (error.message?.includes("required") || error.message?.includes("must be")) {
+      return sendErrorResponse(req, res, 400, "Validation Error", error.message);
+    }
+
     handleError(req, res, error);
   }
 });

@@ -22,19 +22,19 @@ class NotificationsService {
   /**
    * Create a notification
    * @param {string} studioId - Studio owner document ID
-   * @param {string} bookingId - Booking document ID
+   * @param {string} bookingId - Booking document ID (optional, for booking-related notifications)
    * @param {string} type - Notification type
    * @param {string} title - Notification title
    * @param {string} message - Notification message
+   * @param {string} studentId - Student document ID (optional, for student-related notifications)
    * @returns {Promise<string>} Created notification document ID
    */
-  async createNotification(studioId, bookingId, type, title, message) {
+  async createNotification(studioId, bookingId, type, title, message, studentId = null) {
     const db = getFirestore();
     const notificationsRef = db.collection("notifications");
 
     const notificationData = {
       studioId,
-      bookingId,
       type,
       title,
       message,
@@ -42,6 +42,14 @@ class NotificationsService {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
+
+    // Add bookingId or studentId based on notification type
+    if (bookingId) {
+      notificationData.bookingId = bookingId;
+    }
+    if (studentId) {
+      notificationData.studentId = studentId;
+    }
 
     const docRef = await notificationsRef.add(notificationData);
     return docRef.id;

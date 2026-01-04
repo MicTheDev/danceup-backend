@@ -49,6 +49,83 @@ app.use(express.json());
 app.use(express.urlencoded({extended: true}));
 
 /**
+ * OPTIONS /public
+ * Handle CORS preflight for public workshops endpoint
+ */
+app.options("/public", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
+ * GET /public
+ * Get all public workshops with optional filters (no authentication required)
+ */
+app.get("/public", async (req, res) => {
+  try {
+    // Extract filter parameters from query string
+    const filters = {
+      level: req.query.level || null,
+      city: req.query.city || null,
+      state: req.query.state || null,
+      studioName: req.query.studioName || null,
+      minPrice: req.query.minPrice ? parseFloat(req.query.minPrice) : null,
+      maxPrice: req.query.maxPrice ? parseFloat(req.query.maxPrice) : null,
+      startDate: req.query.startDate || null,
+      endDate: req.query.endDate || null,
+    };
+
+    // Get all public workshops with filters
+    const workshops = await workshopsService.getAllPublicWorkshops(filters);
+
+    sendJsonResponse(req, res, 200, workshops);
+  } catch (error) {
+    console.error("Error getting public workshops:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * OPTIONS /public/:id
+ * Handle CORS preflight for public workshop detail endpoint
+ */
+app.options("/public/:id", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
+ * GET /public/:id
+ * Get a single public workshop by ID (no authentication required)
+ */
+app.get("/public/:id", async (req, res) => {
+  try {
+    const {id} = req.params;
+
+    // Get the workshop
+    const workshopData = await workshopsService.getPublicWorkshopById(id);
+    if (!workshopData) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Workshop not found or not available");
+    }
+
+    sendJsonResponse(req, res, 200, workshopData);
+  } catch (error) {
+    console.error("Error getting public workshop:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * GET /
  * Get all workshops for the authenticated studio owner
  */

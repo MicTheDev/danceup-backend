@@ -299,6 +299,7 @@ app.get("/me", async (req, res) => {
         subscribeToNewsletter: studentData.subscribeToNewsletter || false,
         photoURL: studentData.photoURL || null,
         role: studentData.role || "student",
+        studioIds: studentData.studioIds || [],
       },
     });
   } catch (error) {
@@ -468,6 +469,346 @@ app.delete("/me/avatar", async (req, res) => {
   }
 });
 
+
+/**
+ * GET /my-classes
+ * Get classes from studios the student is enrolled in
+ */
+app.get("/my-classes", async (req, res) => {
+  try {
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studentsService = require("./services/students.service");
+    const classesService = require("./services/classes.service");
+    const studiosService = require("./services/studios.service");
+    const db = getFirestore();
+
+    // Get enrolled studio IDs
+    const studioIds = await studentsService.getEnrolledStudios(user.uid);
+    if (studioIds.length === 0) {
+      return sendJsonResponse(req, res, 200, {
+        upcoming: [],
+        past: [],
+      });
+    }
+
+    // Fetch all classes from enrolled studios
+    const allClasses = [];
+    for (const studioId of studioIds) {
+      try {
+        const classes = await classesService.getClasses(studioId);
+        // Filter for active classes only
+        const activeClasses = classes.filter((cls) => cls.isActive);
+        allClasses.push(...activeClasses.map((cls) => ({ ...cls, studioOwnerId: studioId })));
+      } catch (error) {
+        console.error(`Error fetching classes for studio ${studioId}:`, error);
+        // Continue with other studios
+      }
+    }
+
+    const now = new Date();
+    const upcoming = [];
+    const past = [];
+
+    // Process each class to calculate instances
+    for (const classData of allClasses) {
+      try {
+        // Get studio info
+        const studio = await studiosService.getPublicStudioById(classData.studioOwnerId);
+        if (!studio) continue;
+
+        // Calculate next occurrence
+        const nextInstance = studentsService.calculateNextClassInstance(
+          classData.dayOfWeek,
+          classData.startTime,
+          now
+        );
+
+        if (nextInstance > now) {
+          upcoming.push({
+            id: classData.id,
+            name: classData.name,
+            level: classData.level,
+            cost: classData.cost,
+            dayOfWeek: classData.dayOfWeek,
+            startTime: classData.startTime,
+            endTime: classData.endTime,
+            description: classData.description,
+            room: classData.room,
+            danceGenre: classData.danceGenre,
+            instanceDate: nextInstance.toISOString(),
+            studio: {
+              id: studio.id,
+              name: studio.studioName,
+              city: studio.city,
+              state: studio.state,
+            },
+          });
+        }
+
+        // Calculate past instances (last 30 days)
+        const pastInstances = studentsService.calculatePastClassInstances(
+          classData.dayOfWeek,
+          classData.startTime,
+          now,
+          30
+        );
+
+        for (const instanceDate of pastInstances) {
+          past.push({
+            id: classData.id,
+            name: classData.name,
+            level: classData.level,
+            cost: classData.cost,
+            dayOfWeek: classData.dayOfWeek,
+            startTime: classData.startTime,
+            endTime: classData.endTime,
+            description: classData.description,
+            room: classData.room,
+            danceGenre: classData.danceGenre,
+            instanceDate: instanceDate.toISOString(),
+            studio: {
+              id: studio.id,
+              name: studio.studioName,
+              city: studio.city,
+              state: studio.state,
+            },
+          });
+        }
+      } catch (error) {
+        console.error(`Error processing class ${classData.id}:`, error);
+        // Continue with next class
+      }
+    }
+
+    // Sort upcoming by instance date (ascending)
+    upcoming.sort((a, b) => new Date(a.instanceDate) - new Date(b.instanceDate));
+    // Sort past by instance date (descending - most recent first)
+    past.sort((a, b) => new Date(b.instanceDate) - new Date(a.instanceDate));
+
+    sendJsonResponse(req, res, 200, {
+      upcoming,
+      past,
+    });
+  } catch (error) {
+    console.error("Error getting my classes:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /my-workshops
+ * Get workshops from studios the student is enrolled in
+ */
+app.get("/my-workshops", async (req, res) => {
+  try {
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studentsService = require("./services/students.service");
+    const workshopsService = require("./services/workshops.service");
+    const studiosService = require("./services/studios.service");
+    const db = getFirestore();
+
+    // Get enrolled studio IDs
+    const studioIds = await studentsService.getEnrolledStudios(user.uid);
+    if (studioIds.length === 0) {
+      return sendJsonResponse(req, res, 200, {
+        upcoming: [],
+        past: [],
+      });
+    }
+
+    // Fetch all workshops from enrolled studios
+    const allWorkshops = [];
+    for (const studioId of studioIds) {
+      try {
+        const workshops = await workshopsService.getWorkshops(studioId);
+        allWorkshops.push(...workshops.map((w) => ({ ...w, studioOwnerId: studioId })));
+      } catch (error) {
+        console.error(`Error fetching workshops for studio ${studioId}:`, error);
+        // Continue with other studios
+      }
+    }
+
+    const now = new Date();
+    const upcoming = [];
+    const past = [];
+
+    // Process each workshop
+    for (const workshop of allWorkshops) {
+      try {
+        // Get studio info
+        const studio = await studiosService.getPublicStudioById(workshop.studioOwnerId);
+        if (!studio) continue;
+
+        const startTime = workshop.startTime?.toDate ? workshop.startTime.toDate() : new Date(workshop.startTime);
+        const endTime = workshop.endTime?.toDate ? workshop.endTime.toDate() : new Date(workshop.endTime);
+
+        const workshopData = {
+          id: workshop.id,
+          name: workshop.name,
+          levels: workshop.levels,
+          description: workshop.description,
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          imageUrl: workshop.imageUrl,
+          priceTiers: workshop.priceTiers,
+          addressLine1: workshop.addressLine1,
+          addressLine2: workshop.addressLine2,
+          city: workshop.city,
+          state: workshop.state,
+          zip: workshop.zip,
+          locationName: workshop.locationName,
+          studio: {
+            id: studio.id,
+            name: studio.studioName,
+            city: studio.city,
+            state: studio.state,
+          },
+        };
+
+        if (endTime > now) {
+          upcoming.push(workshopData);
+        } else {
+          past.push(workshopData);
+        }
+      } catch (error) {
+        console.error(`Error processing workshop ${workshop.id}:`, error);
+        // Continue with next workshop
+      }
+    }
+
+    // Sort upcoming by start time (ascending)
+    upcoming.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+    // Sort past by start time (descending - most recent first)
+    past.sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
+
+    sendJsonResponse(req, res, 200, {
+      upcoming,
+      past,
+    });
+  } catch (error) {
+    console.error("Error getting my workshops:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /my-events
+ * Get events from studios the student is enrolled in
+ */
+app.get("/my-events", async (req, res) => {
+  try {
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studentsService = require("./services/students.service");
+    const eventsService = require("./services/events.service");
+    const studiosService = require("./services/studios.service");
+    const db = getFirestore();
+
+    // Get enrolled studio IDs
+    const studioIds = await studentsService.getEnrolledStudios(user.uid);
+    if (studioIds.length === 0) {
+      return sendJsonResponse(req, res, 200, {
+        upcoming: [],
+        past: [],
+      });
+    }
+
+    // Fetch all events from enrolled studios
+    const allEvents = [];
+    for (const studioId of studioIds) {
+      try {
+        const events = await eventsService.getEvents(studioId);
+        allEvents.push(...events.map((e) => ({ ...e, studioOwnerId: studioId })));
+      } catch (error) {
+        console.error(`Error fetching events for studio ${studioId}:`, error);
+        // Continue with other studios
+      }
+    }
+
+    const now = new Date();
+    const upcoming = [];
+    const past = [];
+
+    // Process each event
+    for (const event of allEvents) {
+      try {
+        // Get studio info
+        const studio = await studiosService.getPublicStudioById(event.studioOwnerId);
+        if (!studio) continue;
+
+        const startTime = event.startTime?.toDate ? event.startTime.toDate() : new Date(event.startTime);
+        const endTime = event.endTime?.toDate ? event.endTime.toDate() : (event.endTime ? new Date(event.endTime) : null);
+
+        const eventData = {
+          id: event.id,
+          name: event.name,
+          type: event.type,
+          description: event.description,
+          startTime: startTime.toISOString(),
+          endTime: endTime ? endTime.toISOString() : null,
+          imageUrl: event.imageUrl,
+          priceTiers: event.priceTiers,
+          addressLine1: event.addressLine1,
+          addressLine2: event.addressLine2,
+          city: event.city,
+          state: event.state,
+          zip: event.zip,
+          locationName: event.locationName,
+          studio: {
+            id: studio.id,
+            name: studio.studioName,
+            city: studio.city,
+            state: studio.state,
+          },
+        };
+
+        // Use endTime if available, otherwise use startTime
+        const compareTime = endTime || startTime;
+        if (compareTime > now) {
+          upcoming.push(eventData);
+        } else {
+          past.push(eventData);
+        }
+      } catch (error) {
+        console.error(`Error processing event ${event.id}:`, error);
+        // Continue with next event
+      }
+    }
+
+    // Sort upcoming by start time (ascending)
+    upcoming.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+    // Sort past by start time (descending - most recent first)
+    past.sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
+
+    sendJsonResponse(req, res, 200, {
+      upcoming,
+      past,
+    });
+  } catch (error) {
+    console.error("Error getting my events:", error);
+    handleError(req, res, error);
+  }
+});
 
 /**
  * POST /logout

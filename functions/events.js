@@ -49,6 +49,83 @@ app.use(express.json());
 app.use(express.urlencoded({extended: true}));
 
 /**
+ * OPTIONS /public
+ * Handle CORS preflight for public events endpoint
+ */
+app.options("/public", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
+ * GET /public
+ * Get all public events with optional filters (no authentication required)
+ */
+app.get("/public", async (req, res) => {
+  try {
+    // Extract filter parameters from query string
+    const filters = {
+      type: req.query.type || null,
+      city: req.query.city || null,
+      state: req.query.state || null,
+      studioName: req.query.studioName || null,
+      minPrice: req.query.minPrice ? parseFloat(req.query.minPrice) : null,
+      maxPrice: req.query.maxPrice ? parseFloat(req.query.maxPrice) : null,
+      startDate: req.query.startDate || null,
+      endDate: req.query.endDate || null,
+    };
+
+    // Get all public events with filters
+    const events = await eventsService.getAllPublicEvents(filters);
+
+    sendJsonResponse(req, res, 200, events);
+  } catch (error) {
+    console.error("Error getting public events:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * OPTIONS /public/:id
+ * Handle CORS preflight for public event detail endpoint
+ */
+app.options("/public/:id", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
+ * GET /public/:id
+ * Get a single public event by ID (no authentication required)
+ */
+app.get("/public/:id", async (req, res) => {
+  try {
+    const {id} = req.params;
+
+    // Get the event
+    const eventData = await eventsService.getPublicEventById(id);
+    if (!eventData) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Event not found or not available");
+    }
+
+    sendJsonResponse(req, res, 200, eventData);
+  } catch (error) {
+    console.error("Error getting public event:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * GET /
  * Get all events for the authenticated studio owner
  */

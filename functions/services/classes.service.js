@@ -69,6 +69,14 @@ class ClassesService {
   }
 
   /**
+   * Get studio placeholder image URL
+   * @returns {string} Placeholder image data URI
+   */
+  getStudioPlaceholderImage() {
+    return "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjMwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImEiIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMTAwJSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiM2MzY2ZjEiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNlYzQ4OTkiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ1cmwoI2EpIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIyNCIgZmlsbD0id2hpdGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5TdHVkaW88L3RleHQ+PC9zdmc+";
+  }
+
+  /**
    * Create a new class
    * @param {Object} classData - Class data
    * @param {string} studioOwnerId - Studio owner document ID
@@ -76,9 +84,23 @@ class ClassesService {
    */
   async createClass(classData, studioOwnerId) {
     const db = getFirestore();
+    
+    // Get studio owner document to retrieve studioImageUrl
+    const studioOwnerRef = db.collection("users").doc(studioOwnerId);
+    const studioOwnerDoc = await studioOwnerRef.get();
+    
+    let imageUrl = this.getStudioPlaceholderImage(); // Default to placeholder
+    
+    if (studioOwnerDoc.exists) {
+      const studioOwnerData = studioOwnerDoc.data();
+      // Use studio's image if available, otherwise use placeholder
+      imageUrl = studioOwnerData.studioImageUrl || this.getStudioPlaceholderImage();
+    }
+    
     const classDataWithMetadata = {
       ...classData,
       studioOwnerId,
+      imageUrl, // Add the studio's image or placeholder
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };

@@ -20,3 +20,4 @@ exports.usersstudent = require("./usersStudent").usersstudent;
 exports.studios = require("./studios").studios;
 exports.bookings = require("./bookings").bookings;
 exports.notifications = require("./notifications").notifications;
+exports.updateClassImages = require("./updateClassImages").updateClassImages;

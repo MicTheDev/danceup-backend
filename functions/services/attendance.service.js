@@ -20,6 +20,67 @@ class AttendanceService {
   }
 
   /**
+   * Get student document ID from Firebase Auth UID
+   * Checks students collection for matching authUid
+   * @param {string} authUid - Firebase Auth UID
+   * @returns {Promise<string | null>} Student document ID or null if not found
+   */
+  async getStudentIdByAuthUid(authUid) {
+    const db = getFirestore();
+    const studentsRef = db.collection("students");
+    const snapshot = await studentsRef
+        .where("authUid", "==", authUid)
+        .limit(1)
+        .get();
+
+    if (snapshot.empty) {
+      return null;
+    }
+
+    return snapshot.docs[0].id;
+  }
+
+  /**
+   * Get all attendance records for a specific student
+   * @param {string} studentId - Student document ID
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @returns {Promise<Array>} Array of attendance records
+   */
+  async getAttendanceRecordsByStudent(studentId, studioOwnerId) {
+    const db = getFirestore();
+    
+    // Verify student belongs to this studio owner
+    const studentRef = db.collection("students").doc(studentId);
+    const studentDoc = await studentRef.get();
+    if (!studentDoc.exists) {
+      throw new Error("Student not found");
+    }
+    const studentData = studentDoc.data();
+    if (studentData.studioOwnerId !== studioOwnerId) {
+      throw new Error("Access denied: Student does not belong to this studio owner");
+    }
+    
+    // Get attendance records for this student
+    const attendanceRef = db.collection("attendance");
+    const query = attendanceRef
+        .where("studentId", "==", studentId)
+        .where("studioOwnerId", "==", studioOwnerId)
+        .orderBy("classInstanceDate", "desc");
+    
+    const snapshot = await query.get();
+    
+    const records = [];
+    snapshot.forEach((doc) => {
+      records.push({
+        id: doc.id,
+        ...doc.data(),
+      });
+    });
+
+    return records;
+  }
+
+  /**
    * Get all attendance records for a studio owner, optionally filtered by date range
    * @param {string} studioOwnerId - Studio owner document ID
    * @param {Date} startDate - Optional start date filter
@@ -30,30 +91,99 @@ class AttendanceService {
     const db = getFirestore();
     const attendanceRef = db.collection("attendance");
     
-    let query = attendanceRef.where("studioOwnerId", "==", studioOwnerId);
+    console.log(`[AttendanceService] getAttendanceRecords - studioOwnerId: ${studioOwnerId}, startDate: ${startDate}, endDate: ${endDate}`);
     
-    const snapshot = await query.get();
-    
-    const records = [];
-    snapshot.forEach((doc) => {
-      const data = doc.data();
-      const instanceDate = data.classInstanceDate?.toDate();
+    try {
+      let query = attendanceRef.where("studioOwnerId", "==", studioOwnerId);
       
-      // Filter by date range if provided
-      if (startDate && instanceDate && instanceDate < startDate) {
-        return;
-      }
-      if (endDate && instanceDate && instanceDate > endDate) {
-        return;
-      }
+      console.log("[AttendanceService] Executing Firestore query...");
+      const snapshot = await query.get();
+      console.log(`[AttendanceService] Query completed. Found ${snapshot.size} documents`);
       
-      records.push({
-        id: doc.id,
-        ...data,
+      const records = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        const instanceDate = data.classInstanceDate?.toDate();
+        
+        // Filter by date range if provided
+        if (startDate && instanceDate && instanceDate < startDate) {
+          return;
+        }
+        if (endDate && instanceDate && instanceDate > endDate) {
+          return;
+        }
+        
+        records.push({
+          id: doc.id,
+          ...data,
+        });
       });
-    });
 
-    return records;
+      console.log(`[AttendanceService] Returning ${records.length} filtered records`);
+      return records;
+    } catch (error) {
+      console.error("[AttendanceService] Error in getAttendanceRecords:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get attendance statistics for a specific class
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @param {string} classId - Class ID to filter by
+   * @param {Date} startDate - Optional start date filter
+   * @param {Date} endDate - Optional end date filter
+   * @returns {Promise<Object>} Class attendance stats with weekly and monthly data for the specific class
+   */
+  async getClassSpecificAttendanceStats(studioOwnerId, classId, startDate = null, endDate = null) {
+    try {
+      const records = await this.getAttendanceRecords(studioOwnerId, startDate, endDate);
+      
+      // Filter for the specific class
+      const classRecords = records.filter((r) => r.classId === classId);
+      
+      if (classRecords.length === 0) {
+        return {
+          weekly: [],
+          monthly: [],
+          total: 0,
+        };
+      }
+
+      const weeklyMap = new Map();
+      const monthlyMap = new Map();
+
+      classRecords.forEach((record) => {
+        const instanceDate = record.classInstanceDate?.toDate();
+        if (!instanceDate) return;
+
+        // Weekly aggregation
+        const weekKey = this.getWeekKey(instanceDate);
+        weeklyMap.set(weekKey, (weeklyMap.get(weekKey) || 0) + 1);
+
+        // Monthly aggregation
+        const monthKey = this.getMonthKey(instanceDate);
+        monthlyMap.set(monthKey, (monthlyMap.get(monthKey) || 0) + 1);
+      });
+
+      // Convert maps to sorted arrays
+      const weekly = Array.from(weeklyMap.entries())
+          .map(([period, count]) => ({period, count}))
+          .sort((a, b) => a.period.localeCompare(b.period));
+
+      const monthly = Array.from(monthlyMap.entries())
+          .map(([period, count]) => ({period, count}))
+          .sort((a, b) => a.period.localeCompare(b.period));
+
+      return {
+        weekly,
+        monthly,
+        total: classRecords.length,
+      };
+    } catch (error) {
+      console.error("Error getting class-specific attendance stats:", error);
+      throw error;
+    }
   }
 
   /**
@@ -302,6 +432,98 @@ class AttendanceService {
     const year = date.getFullYear();
     const month = (date.getMonth() + 1).toString().padStart(2, "0");
     return `${year}-${month}`;
+  }
+
+  /**
+   * Create an attendance record
+   * @param {Object} attendanceData - Attendance data
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @returns {Promise<string>} Created attendance document ID
+   */
+  async createAttendanceRecord(attendanceData, studioOwnerId) {
+    const db = getFirestore();
+
+    // Validate required fields
+    if (!attendanceData.studentId) {
+      throw new Error("studentId is required");
+    }
+
+    // Validate that exactly one of classId, workshopId, or eventId is provided
+    const idCount = [attendanceData.classId, attendanceData.workshopId, attendanceData.eventId]
+        .filter(Boolean).length;
+    if (idCount !== 1) {
+      throw new Error("Exactly one of classId, workshopId, or eventId must be provided");
+    }
+
+    // Validate classInstanceDate
+    if (!attendanceData.classInstanceDate) {
+      throw new Error("classInstanceDate is required");
+    }
+
+    // Convert classInstanceDate to Firestore Timestamp if it's a string or Date
+    let classInstanceTimestamp;
+    if (attendanceData.classInstanceDate instanceof admin.firestore.Timestamp) {
+      classInstanceTimestamp = attendanceData.classInstanceDate;
+    } else if (attendanceData.classInstanceDate instanceof Date) {
+      classInstanceTimestamp = admin.firestore.Timestamp.fromDate(attendanceData.classInstanceDate);
+    } else if (typeof attendanceData.classInstanceDate === "string") {
+      const date = new Date(attendanceData.classInstanceDate);
+      if (isNaN(date.getTime())) {
+        throw new Error("Invalid classInstanceDate format");
+      }
+      classInstanceTimestamp = admin.firestore.Timestamp.fromDate(date);
+    } else {
+      throw new Error("classInstanceDate must be a Date, Timestamp, or ISO date string");
+    }
+
+    // Validate checkedInBy
+    if (!attendanceData.checkedInBy || !["studio", "student"].includes(attendanceData.checkedInBy)) {
+      throw new Error("checkedInBy must be 'studio' or 'student'");
+    }
+
+    // Verify student belongs to studio owner
+    const studentRef = db.collection("students").doc(attendanceData.studentId);
+    const studentDoc = await studentRef.get();
+    if (!studentDoc.exists) {
+      throw new Error("Student not found");
+    }
+    const studentData = studentDoc.data();
+    if (studentData.studioOwnerId !== studioOwnerId) {
+      throw new Error("Student does not belong to this studio owner");
+    }
+
+    // Set checkedInById - default to studioOwnerId if checkedInBy is 'studio' and not provided
+    const checkedInById = attendanceData.checkedInById || 
+        (attendanceData.checkedInBy === "studio" ? studioOwnerId : attendanceData.studentId);
+
+    // Set checkedInAt - use provided timestamp or current time
+    const checkedInAt = attendanceData.checkedInAt || admin.firestore.FieldValue.serverTimestamp();
+
+    // Build attendance document
+    const attendanceDoc = {
+      studentId: attendanceData.studentId,
+      classInstanceDate: classInstanceTimestamp,
+      checkedInBy: attendanceData.checkedInBy,
+      checkedInById: checkedInById,
+      checkedInAt: checkedInAt,
+      studioOwnerId: studioOwnerId,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    // Add the appropriate ID field (classId, workshopId, or eventId)
+    if (attendanceData.classId) {
+      attendanceDoc.classId = attendanceData.classId;
+    } else if (attendanceData.workshopId) {
+      attendanceDoc.workshopId = attendanceData.workshopId;
+    } else if (attendanceData.eventId) {
+      attendanceDoc.eventId = attendanceData.eventId;
+    }
+
+    // Create the document
+    const attendanceRef = db.collection("attendance");
+    const docRef = await attendanceRef.add(attendanceDoc);
+
+    return docRef.id;
   }
 }
 
