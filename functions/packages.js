@@ -2,6 +2,7 @@ const functions = require("firebase-functions");
 const express = require("express");
 const cors = require("cors");
 const packagesService = require("./services/packages.service");
+const packagePurchaseService = require("./services/package-purchase.service");
 const {verifyToken} = require("./utils/auth");
 const {
   validateCreatePackagePayload,
@@ -245,6 +246,141 @@ app.delete("/:id", async (req, res) => {
     // Handle specific error cases
     if (error.message?.includes("not found")) {
       return sendErrorResponse(req, res, 404, "Not Found", error.message);
+    }
+
+    if (error.message?.includes("Access denied")) {
+      return sendErrorResponse(req, res, 403, "Access Denied", error.message);
+    }
+
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /public/:studioOwnerId
+ * Get all active packages for a studio (public endpoint, no auth required)
+ */
+app.get("/public/:studioOwnerId", async (req, res) => {
+  try {
+    const {studioOwnerId} = req.params;
+
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "Studio owner ID is required");
+    }
+
+    // Get all packages for this studio owner
+    const allPackages = await packagesService.getPackages(studioOwnerId);
+    
+    // Filter to only active packages
+    const activePackages = allPackages.filter(pkg => pkg.isActive === true);
+
+    sendJsonResponse(req, res, 200, activePackages);
+  } catch (error) {
+    console.error("Error getting public packages:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * POST /:id/purchase
+ * Purchase a package for the authenticated user
+ */
+app.post("/:id/purchase", async (req, res) => {
+  try {
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const {id} = req.params;
+    const {studioOwnerId} = req.body;
+
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "Studio owner ID is required");
+    }
+
+    // Purchase the package
+    const result = await packagePurchaseService.purchasePackageForUser(
+      id,
+      user.uid,
+      studioOwnerId
+    );
+
+    sendJsonResponse(req, res, 200, {
+      message: "Package purchased successfully",
+      ...result,
+    });
+  } catch (error) {
+    console.error("Error purchasing package:", error);
+    
+    // Handle specific error cases
+    if (error.message?.includes("not found") || error.message?.includes("not enrolled")) {
+      return sendErrorResponse(req, res, 404, "Not Found", error.message);
+    }
+
+    if (error.message?.includes("not active")) {
+      return sendErrorResponse(req, res, 400, "Bad Request", error.message);
+    }
+
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * POST /:id/purchase-for-student
+ * Purchase a package for a student (studio owner action)
+ */
+app.post("/:id/purchase-for-student", async (req, res) => {
+  try {
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const {id} = req.params;
+    const {studentId, studioOwnerId} = req.body;
+
+    if (!studentId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "Student ID is required");
+    }
+
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "Studio owner ID is required");
+    }
+
+    // Verify the authenticated user is the studio owner
+    const authenticatedStudioOwnerId = await packagesService.getStudioOwnerId(user.uid);
+    if (!authenticatedStudioOwnerId || authenticatedStudioOwnerId !== studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "You can only purchase packages for students in your own studio");
+    }
+
+    // Purchase the package for the student
+    const result = await packagePurchaseService.purchasePackageForStudent(
+      id,
+      studentId,
+      studioOwnerId
+    );
+
+    sendJsonResponse(req, res, 200, {
+      message: "Package purchased successfully for student",
+      ...result,
+    });
+  } catch (error) {
+    console.error("Error purchasing package for student:", error);
+    
+    // Handle specific error cases
+    if (error.message?.includes("not found")) {
+      return sendErrorResponse(req, res, 404, "Not Found", error.message);
+    }
+
+    if (error.message?.includes("not active")) {
+      return sendErrorResponse(req, res, 400, "Bad Request", error.message);
     }
 
     if (error.message?.includes("Access denied")) {

@@ -4,6 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const authService = require("./services/auth.service");
 const storageService = require("./services/storage.service");
+const studioEnrollmentService = require("./services/studio-enrollment.service");
 const {verifyToken} = require("./utils/auth");
 const {getFirestore} = require("./utils/firestore");
 const {
@@ -285,6 +286,9 @@ app.get("/me", async (req, res) => {
 
     const studentData = studentDoc.data();
 
+    // Ensure studios object structure (backward compatibility)
+    const studios = studioEnrollmentService.ensureStudiosStructure(studentData);
+
     sendJsonResponse(req, res, 200, {
       uid: user.uid,
       email: user.email,
@@ -299,7 +303,9 @@ app.get("/me", async (req, res) => {
         subscribeToNewsletter: studentData.subscribeToNewsletter || false,
         photoURL: studentData.photoURL || null,
         role: studentData.role || "student",
-        studioIds: studentData.studioIds || [],
+        studios: studios,
+        // Keep studioIds for backward compatibility (deprecated)
+        studioIds: Object.keys(studios),
       },
     });
   } catch (error) {

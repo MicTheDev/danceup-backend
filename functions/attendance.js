@@ -309,17 +309,16 @@ app.post("/", async (req, res) => {
       return handleError(req, res, authError);
     }
 
-    // Get studio owner ID from authenticated user
-    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
-    if (!studioOwnerId) {
-      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
-    }
-
     const body = req.body;
 
     // Validate required fields
     if (!body.studentId && !body.studentAuthUid) {
       return sendErrorResponse(req, res, 400, "Validation Error", "Either studentId or studentAuthUid is required");
+    }
+
+    // Validate checkedInBy
+    if (!body.checkedInBy || !["studio", "student"].includes(body.checkedInBy)) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "checkedInBy must be 'studio' or 'student'");
     }
 
     // Resolve studentId from authUid if needed
@@ -328,6 +327,38 @@ app.post("/", async (req, res) => {
       studentId = await attendanceService.getStudentIdByAuthUid(body.studentAuthUid);
       if (!studentId) {
         return sendErrorResponse(req, res, 404, "Not Found", "Student not found for the provided authUid");
+      }
+    }
+
+    // Get studio owner ID based on who is checking in
+    let studioOwnerId;
+    if (body.checkedInBy === "student") {
+      // For student check-ins, get studio owner ID from the student record
+      const {getFirestore} = require("./utils/firestore");
+      const db = getFirestore();
+      const studentRef = db.collection("students").doc(studentId);
+      const studentDoc = await studentRef.get();
+      
+      if (!studentDoc.exists) {
+        return sendErrorResponse(req, res, 404, "Not Found", "Student not found");
+      }
+      
+      const studentData = studentDoc.data();
+      studioOwnerId = studentData.studioOwnerId;
+      
+      if (!studioOwnerId) {
+        return sendErrorResponse(req, res, 400, "Validation Error", "Student record does not have a studio owner ID");
+      }
+
+      // Verify that the authenticated user matches the student
+      if (studentData.authUid !== user.uid) {
+        return sendErrorResponse(req, res, 403, "Access Denied", "You can only check in as yourself");
+      }
+    } else {
+      // For studio check-ins, get studio owner ID from authenticated user
+      studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+      if (!studioOwnerId) {
+        return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
       }
     }
 
@@ -340,11 +371,6 @@ app.post("/", async (req, res) => {
     // Validate classInstanceDate
     if (!body.classInstanceDate) {
       return sendErrorResponse(req, res, 400, "Validation Error", "classInstanceDate is required");
-    }
-
-    // Validate checkedInBy
-    if (!body.checkedInBy || !["studio", "student"].includes(body.checkedInBy)) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "checkedInBy must be 'studio' or 'student'");
     }
 
     // Prepare attendance data
@@ -373,11 +399,64 @@ app.post("/", async (req, res) => {
     if (error.message?.includes("not found")) {
       return sendErrorResponse(req, res, 404, "Not Found", error.message);
     }
-    if (error.message?.includes("does not belong")) {
+    if (error.message?.includes("does not belong") || error.message?.includes("Access denied")) {
       return sendErrorResponse(req, res, 403, "Access Denied", error.message);
     }
     if (error.message?.includes("required") || error.message?.includes("must be")) {
       return sendErrorResponse(req, res, 400, "Validation Error", error.message);
+    }
+    if (error.message?.includes("already checked in")) {
+      return sendErrorResponse(req, res, 409, "Conflict", error.message);
+    }
+    if (error.message?.includes("Insufficient credits") || error.message?.includes("No available credits")) {
+      return sendErrorResponse(req, res, 402, "Payment Required", error.message);
+    }
+
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * DELETE /:id
+ * Remove an attendance record (studio owner only)
+ */
+app.delete("/:id", async (req, res) => {
+  try {
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    // Get studio owner ID from authenticated user
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const {id} = req.params;
+
+    // Remove attendance record
+    await attendanceService.removeAttendanceRecord(id, studioOwnerId);
+
+    sendJsonResponse(req, res, 200, {
+      message: "Attendance record removed successfully",
+      creditRestored: true,
+    });
+  } catch (error) {
+    console.error("Error removing attendance record:", error);
+    
+    // Handle specific error cases
+    if (error.message?.includes("not found")) {
+      return sendErrorResponse(req, res, 404, "Not Found", error.message);
+    }
+    if (error.message?.includes("does not belong") || error.message?.includes("Access denied")) {
+      return sendErrorResponse(req, res, 403, "Access Denied", error.message);
+    }
+    if (error.message?.includes("already removed")) {
+      return sendErrorResponse(req, res, 409, "Conflict", error.message);
     }
 
     handleError(req, res, error);

@@ -8,6 +8,38 @@ const {getFirestore} = require("../utils/firestore");
  */
 class StudioEnrollmentService {
   /**
+   * Convert studioIds array to studios object structure
+   * @param {Array<string>} studioIds - Array of studio owner IDs
+   * @returns {Object} Studios object with credits initialized to 0
+   */
+  convertStudioIdsToStudios(studioIds) {
+    if (!Array.isArray(studioIds)) {
+      return {};
+    }
+    const studios = {};
+    studioIds.forEach((studioId) => {
+      studios[studioId] = { credits: 0 };
+    });
+    return studios;
+  }
+
+  /**
+   * Ensure user profile has studios object structure (backward compatibility)
+   * @param {Object} userProfileData - User profile data
+   * @returns {Object} Studios object
+   */
+  ensureStudiosStructure(userProfileData) {
+    if (userProfileData.studios && typeof userProfileData.studios === 'object') {
+      return userProfileData.studios;
+    }
+    // Backward compatibility: convert studioIds array to studios object
+    if (Array.isArray(userProfileData.studioIds)) {
+      return this.convertStudioIdsToStudios(userProfileData.studioIds);
+    }
+    return {};
+  }
+
+  /**
    * Enroll a user as a student for a studio
    * @param {string} studioOwnerId - Studio owner document ID
    * @param {string} authUid - Firebase Auth UID
@@ -42,17 +74,29 @@ class StudioEnrollmentService {
 
     const studentId = await studentsService.createStudent(studentData, studioOwnerId);
 
-    // Add studioOwnerId to user's studioIds array
+    // Update user profile with studios object structure
     const userProfileRef = db.collection("usersStudentProfiles").doc(studentProfileDoc.id);
     const userProfileDoc = await userProfileRef.get();
     const currentData = userProfileDoc.data();
-    const studioIds = currentData.studioIds || [];
-
-    if (!studioIds.includes(studioOwnerId)) {
-      await userProfileRef.update({
-        studioIds: admin.firestore.FieldValue.arrayUnion(studioOwnerId),
+    
+    // Ensure studios object exists and convert from studioIds if needed
+    const studios = this.ensureStudiosStructure(currentData);
+    
+    // Add new studio with 0 credits if not already present
+    if (!studios[studioOwnerId]) {
+      studios[studioOwnerId] = { credits: 0 };
+      
+      const updateData = {
+        studios: studios,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      };
+      
+      // If studioIds array exists, remove it (migration)
+      if (Array.isArray(currentData.studioIds)) {
+        updateData.studioIds = admin.firestore.FieldValue.delete();
+      }
+      
+      await userProfileRef.update(updateData);
     }
 
     return studentId;
@@ -85,14 +129,30 @@ class StudioEnrollmentService {
     // Delete student document
     await studentsRef.doc(studentId).delete();
 
-    // Remove studioOwnerId from user's studioIds array
+    // Remove studio from user's studios object
     const studentProfileDoc = await authService.getStudentProfileByAuthUid(authUid);
     if (studentProfileDoc) {
       const userProfileRef = db.collection("usersStudentProfiles").doc(studentProfileDoc.id);
-      await userProfileRef.update({
-        studioIds: admin.firestore.FieldValue.arrayRemove(studioOwnerId),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      const currentData = (await userProfileRef.get()).data();
+      
+      const studios = this.ensureStudiosStructure(currentData);
+      
+      // Remove studio from studios object
+      if (studios[studioOwnerId]) {
+        delete studios[studioOwnerId];
+        
+        const updateData = {
+          studios: studios,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        
+        // Also remove from studioIds array if it exists (backward compatibility)
+        if (Array.isArray(currentData.studioIds) && currentData.studioIds.includes(studioOwnerId)) {
+          updateData.studioIds = admin.firestore.FieldValue.arrayRemove(studioOwnerId);
+        }
+        
+        await userProfileRef.update(updateData);
+      }
     }
   }
 
