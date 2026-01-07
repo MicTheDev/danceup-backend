@@ -5,9 +5,13 @@ const cors = require("cors");
 const authService = require("./services/auth.service");
 const storageService = require("./services/storage.service");
 const {verifyToken} = require("./utils/auth");
+const {getFirestore} = require("./utils/firestore");
 const {
   validateRegistrationPayload,
   validateLoginPayload,
+  validateForgotPasswordPayload,
+  validateResetPasswordPayload,
+  validateChangeEmailPayload,
 } = require("./utils/validation");
 const {
   sendJsonResponse,
@@ -367,6 +371,189 @@ app.post("/logout", async (req, res) => {
     });
   } catch (error) {
     console.error("Logout error:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * OPTIONS /forgot-password
+ * Handle CORS preflight for forgot password endpoint
+ */
+app.options("/forgot-password", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
+ * POST /forgot-password
+ * Send password reset email
+ */
+app.post("/forgot-password", async (req, res) => {
+  try {
+    // Validate input
+    const validation = validateForgotPasswordPayload(req.body);
+    if (!validation.valid) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid request data", {
+        errors: validation.errors,
+      });
+    }
+
+    const {email} = req.body;
+
+    // Get action code settings from environment or use defaults
+    const actionCodeSettings = {
+      url: process.env.PASSWORD_RESET_URL || `${req.headers.origin || 'https://your-app.com'}/reset-password`,
+      handleCodeInApp: false,
+    };
+
+    // Send password reset email
+    await authService.sendPasswordResetEmail(email, actionCodeSettings);
+
+    sendJsonResponse(req, res, 200, {
+      message: "Password reset email sent successfully",
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    const message = error.message || "Failed to send password reset email";
+    if (message.includes("user-not-found") || message.includes("No user found")) {
+      return sendErrorResponse(req, res, 404, "Not Found", "No account found with this email address");
+    }
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * OPTIONS /reset-password
+ * Handle CORS preflight for reset password endpoint
+ */
+app.options("/reset-password", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
+ * POST /reset-password
+ * Reset password with code from email
+ */
+app.post("/reset-password", async (req, res) => {
+  try {
+    // Validate input
+    const validation = validateResetPasswordPayload(req.body);
+    if (!validation.valid) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid request data", {
+        errors: validation.errors,
+      });
+    }
+
+    const {oobCode, newPassword} = req.body;
+
+    // Verify code and reset password
+    await authService.verifyPasswordResetCode(oobCode, newPassword);
+
+    sendJsonResponse(req, res, 200, {
+      message: "Password reset successfully",
+    });
+  } catch (error) {
+    console.error("Reset password error:", error);
+    const message = error.message || "Failed to reset password";
+    if (message.includes("expired") || message.includes("invalid")) {
+      return sendErrorResponse(req, res, 400, "Invalid Code", "This password reset link has expired or is invalid");
+    }
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * OPTIONS /change-email
+ * Handle CORS preflight for change email endpoint
+ */
+app.options("/change-email", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
+ * POST /change-email
+ * Change user email address (requires re-authentication)
+ */
+app.post("/change-email", async (req, res) => {
+  try {
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    // Validate input
+    const validation = validateChangeEmailPayload(req.body);
+    if (!validation.valid) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid request data", {
+        errors: validation.errors,
+      });
+    }
+
+    const {currentPassword, newEmail} = req.body;
+
+    // Get Firebase Web API key from environment
+    const apiKey = process.env.FIREBASE_WEB_API_KEY;
+    if (!apiKey) {
+      console.error("FIREBASE_WEB_API_KEY not configured");
+      return sendErrorResponse(req, res, 500, "Configuration Error", "Server configuration error");
+    }
+
+    // Re-authenticate user by verifying current password
+    try {
+      await authService.verifyPasswordForReauth(user.email, currentPassword, apiKey);
+    } catch (error) {
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Incorrect password");
+    }
+
+    // Get user document from Firestore
+    const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
+    if (!userDoc) {
+      return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
+    }
+
+    // Update email address in Firebase Auth
+    await authService.updateUserEmail(user.uid, newEmail);
+
+    // Update email in Firestore user document
+    const db = getFirestore();
+    await db.collection("users").doc(userDoc.id).update({
+      email: newEmail.trim().toLowerCase(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, {
+      message: "Email address updated successfully",
+      email: newEmail,
+    });
+  } catch (error) {
+    console.error("Change email error:", error);
+    const message = error.message || "Failed to update email address";
+    if (message.includes("email-already-exists") || message.includes("already in use")) {
+      return sendErrorResponse(req, res, 409, "Conflict", "This email address is already in use");
+    }
+    if (message.includes("invalid-email")) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid email address");
+    }
     handleError(req, res, error);
   }
 });

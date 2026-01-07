@@ -1842,6 +1842,74 @@ function validateStudentRegistrationPayload(payload) {
   };
 }
 
+/**
+ * Validate forgot password payload
+ * @param {Object} payload - Forgot password data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateForgotPasswordPayload(payload) {
+  const errors = [];
+
+  // Email validation
+  if (!isValidEmail(payload.email)) {
+    errors.push({field: "email", message: "Valid email is required"});
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate reset password payload
+ * @param {Object} payload - Reset password data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateResetPasswordPayload(payload) {
+  const errors = [];
+
+  // OOB code validation
+  if (!payload.oobCode || typeof payload.oobCode !== "string" || payload.oobCode.trim().length === 0) {
+    errors.push({field: "oobCode", message: "Reset code is required"});
+  }
+
+  // Password validation
+  const passwordValidation = validatePassword(payload.newPassword);
+  if (!passwordValidation.valid) {
+    errors.push({field: "newPassword", message: passwordValidation.message});
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate change email payload
+ * @param {Object} payload - Change email data
+ * @returns {{valid: boolean, errors: Array<{field: string, message: string}>}}
+ */
+function validateChangeEmailPayload(payload) {
+  const errors = [];
+
+  // Current password validation
+  if (!payload.currentPassword || typeof payload.currentPassword !== "string" || payload.currentPassword.trim().length === 0) {
+    errors.push({field: "currentPassword", message: "Current password is required"});
+  }
+
+  // New email validation
+  if (!isValidEmail(payload.newEmail)) {
+    errors.push({field: "newEmail", message: "Valid email is required"});
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
 module.exports = {
   isValidEmail,
   validatePassword,
@@ -1873,6 +1941,9 @@ module.exports = {
   validateUpdateStudentPayload,
   validateStudentRegistrationPayload,
   validateCreateBookingPayload,
+  validateForgotPasswordPayload,
+  validateResetPasswordPayload,
+  validateChangeEmailPayload,
 };
 
 /**
