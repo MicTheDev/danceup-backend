@@ -12,6 +12,7 @@ const {
   validateForgotPasswordPayload,
   validateResetPasswordPayload,
   validateChangeEmailPayload,
+  validateMembership,
 } = require("./utils/validation");
 const {
   sendJsonResponse,
@@ -149,7 +150,6 @@ app.post("/register", async (req, res) => {
         city: city.trim(),
         state: state.trim().toUpperCase(),
         zip: zip.trim(),
-        membership,
         roles: ["student", "studio_owner"],
         studioImageUrl,
         facebook: facebook ? facebook.trim() : null,
@@ -157,6 +157,11 @@ app.post("/register", async (req, res) => {
         tiktok: tiktok ? tiktok.trim() : null,
         youtube: youtube ? youtube.trim() : null,
       };
+
+      // Only include membership if it's provided
+      if (membership !== undefined && membership !== null) {
+        userData.membership = membership;
+      }
 
       // Create user document in Firestore
       const studioOwnerId = await authService.createUserDocument(
@@ -554,6 +559,75 @@ app.post("/change-email", async (req, res) => {
     if (message.includes("invalid-email")) {
       return sendErrorResponse(req, res, 400, "Validation Error", "Invalid email address");
     }
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * OPTIONS /update-membership
+ * Handle CORS preflight for update-membership endpoint
+ */
+app.options("/update-membership", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "PATCH, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
+ * PATCH /update-membership
+ * Update user's membership tier
+ */
+app.patch("/update-membership", async (req, res) => {
+  try {
+    // Verify token and get user info
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (error) {
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid or expired token");
+    }
+
+    const {membership} = req.body;
+
+    // Validate membership
+    if (!membership) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Membership is required");
+    }
+
+    const membershipValidation = validateMembership(membership);
+    if (!membershipValidation.valid) {
+      return sendErrorResponse(req, res, 400, "Validation Error", membershipValidation.message);
+    }
+
+    // Get user document
+    const db = getFirestore();
+    const userQuery = await db.collection("users")
+        .where("authUid", "==", user.uid)
+        .limit(1)
+        .get();
+
+    if (userQuery.empty) {
+      return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
+    }
+
+    const userDoc = userQuery.docs[0];
+
+    // Update membership
+    await userDoc.ref.update({
+      membership,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, {
+      message: "Membership updated successfully",
+      membership,
+    });
+  } catch (error) {
+    console.error("Update membership error:", error);
     handleError(req, res, error);
   }
 });

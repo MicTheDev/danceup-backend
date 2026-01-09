@@ -23,3 +23,4 @@ exports.bookings = require("./bookings").bookings;
 exports.notifications = require("./notifications").notifications;
 exports.updateClassImages = require("./updateClassImages").updateClassImages;
 exports.expireCredits = require("./credit-expiration").expireCredits;
+exports.stripe = require("./stripe").stripe;

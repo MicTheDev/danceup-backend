@@ -113,11 +113,16 @@ function validateUrl(url) {
 
 /**
  * Validate membership tier
- * @param {string} membership - Membership tier to validate
+ * @param {string} membership - Membership tier to validate (optional)
  * @returns {{valid: boolean, message: string}}
  */
 function validateMembership(membership) {
-  const validMemberships = ["basic", "pro", "ultimate"];
+  // Membership is optional
+  if (!membership || membership === null || membership === undefined) {
+    return {valid: true, message: ""};
+  }
+
+  const validMemberships = ["individual_instructor", "studio_owner", "event_organizer", "ultimate"];
   if (!validMemberships.includes(membership)) {
     return {
       valid: false,
@@ -177,13 +182,15 @@ function validateRegistrationPayload(payload) {
     errors.push({field: "zip", message: zipValidation.message});
   }
 
-  // Membership validation
-  const membershipValidation = validateMembership(payload.membership);
-  if (!membershipValidation.valid) {
-    errors.push({
-      field: "membership",
-      message: membershipValidation.message,
-    });
+  // Membership validation (optional)
+  if (payload.membership !== undefined && payload.membership !== null) {
+    const membershipValidation = validateMembership(payload.membership);
+    if (!membershipValidation.valid) {
+      errors.push({
+        field: "membership",
+        message: membershipValidation.message,
+      });
+    }
   }
 
   // Optional URL fields
