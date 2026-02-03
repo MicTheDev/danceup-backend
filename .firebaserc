@@ -1,0 +1,8 @@
+{
+  "projects": {
+    "default": "dev-danceup",
+    "dev": "dev-danceup",
+    "staging": "staging-danceup",
+    "production": "production-danceup"
+  }
+}

@@ -1,0 +1,13 @@
+rules_version = '2';
+
+// For local development, allow all access
+// In production, you should implement proper security rules
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if true;
+    }
+  }
+}
+
+

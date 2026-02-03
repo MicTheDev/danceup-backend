@@ -1,0 +1,38 @@
+# This file specifies files that are *not* uploaded to Google Cloud
+# using gcloud. It follows the same syntax as .gitignore, with the addition of
+# "#!include" directives (which insert the contents of other .gitignore-style
+# files).
+#
+# For more information, run:
+#   $ gcloud topic gcloudignore
+#
+.gcloudignore
+.git
+.gitignore
+
+# Node.js dependencies:
+node_modules/
+
+# Local development files:
+*.local
+.env
+.env.local
+
+# IDE files:
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files:
+.DS_Store
+Thumbs.db
+
+# Logs:
+*.log
+logs/
+
+# Test files:
+coverage/
+.nyc_output/
