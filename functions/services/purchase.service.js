@@ -10,6 +10,23 @@ const notificationsService = require("./notifications.service");
 const {getFirestore} = require("../utils/firestore");
 
 /**
+ * Recursively remove undefined values from an object (Firestore does not allow undefined).
+ * @param {Object} obj - Object to sanitize
+ * @returns {Object} New object without undefined values
+ */
+function stripUndefined(obj) {
+  if (obj === null || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map((v) => (typeof v === "object" && v !== null ? stripUndefined(v) : v));
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined) continue;
+    out[k] = typeof v === "object" && v !== null && !Array.isArray(v)
+      ? stripUndefined(v) : v;
+  }
+  return out;
+}
+
+/**
  * Unified Purchase Service for handling all purchase types (classes, events, workshops, packages)
  */
 class PurchaseService {
@@ -137,11 +154,11 @@ class PurchaseService {
           credits: itemData.credits,
           expirationDays: itemData.expirationDays || 365,
           isRecurring: itemData.isRecurring || false,
-          billingFrequency: itemData.billingFrequency,
-          billingInterval: itemData.billingInterval,
-          subscriptionDuration: itemData.subscriptionDuration,
           allowCancellation: itemData.allowCancellation !== undefined ? itemData.allowCancellation : true,
         };
+        if (itemData.billingFrequency !== undefined) metadata.billingFrequency = itemData.billingFrequency;
+        if (itemData.billingInterval !== undefined) metadata.billingInterval = itemData.billingInterval;
+        if (itemData.subscriptionDuration !== undefined) metadata.subscriptionDuration = itemData.subscriptionDuration;
         // Use the package's studio owner ID
         studioOwnerId = packageStudioOwnerId;
         break;
@@ -270,7 +287,7 @@ class PurchaseService {
       creditsGranted: purchaseData.creditsGranted || 0,
       creditIds: purchaseData.creditIds || [],
       classId: purchaseData.classId || null, // Only for class purchases
-      metadata: purchaseData.metadata || {},
+      metadata: stripUndefined(purchaseData.metadata || {}),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };

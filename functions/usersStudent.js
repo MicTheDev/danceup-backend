@@ -825,6 +825,20 @@ app.get("/my-events", async (req, res) => {
 });
 
 /**
+ * GET /event-passes
+ * Returns checked-in event/workshop passes (with event code) for the current user.
+ * Stub: returns empty array until full implementation (e.g. from purchases + check-in codes).
+ */
+app.get("/event-passes", async (req, res) => {
+  try {
+    await verifyToken(req);
+  } catch (authError) {
+    return handleError(req, res, authError);
+  }
+  sendJsonResponse(req, res, 200, []);
+});
+
+/**
  * OPTIONS /forgot-password
  * Handle CORS preflight for forgot password endpoint
  */

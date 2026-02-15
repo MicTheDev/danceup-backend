@@ -232,6 +232,76 @@ app.post("/", async (req, res) => {
 });
 
 /**
+ * GET /:id/attendees
+ * Get attendees (purchases) for a workshop. Stub: returns [] until full implementation.
+ */
+app.get("/:id/attendees", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+    const {id} = req.params;
+    const studioOwnerId = await workshopsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+    const workshopData = await workshopsService.getWorkshopById(id, studioOwnerId);
+    if (!workshopData) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Workshop not found");
+    }
+    sendJsonResponse(req, res, 200, []);
+  } catch (error) {
+    console.error("Error getting workshop attendees:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /:id/report
+ * Get workshop report (ticket sales by tier, revenue). Stub: returns empty report until full implementation.
+ */
+app.get("/:id/report", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+    const {id} = req.params;
+    const studioOwnerId = await workshopsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+    const workshopData = await workshopsService.getWorkshopById(id, studioOwnerId);
+    if (!workshopData) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Workshop not found");
+    }
+    const priceTiers = workshopData.priceTiers || [];
+    const ticketSalesByTier = priceTiers.map((t) => ({
+      tierName: t.name || "Tier",
+      quantity: 0,
+      revenue: 0,
+    }));
+    const report = {
+      workshopId: id,
+      name: workshopData.name || "Workshop",
+      attendeesCount: 0,
+      ticketSalesByTier,
+      totalTickets: 0,
+      totalRevenue: 0,
+    };
+    sendJsonResponse(req, res, 200, report);
+  } catch (error) {
+    console.error("Error getting workshop report:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * GET /:id
  * Get a single workshop by ID
  */

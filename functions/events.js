@@ -232,6 +232,76 @@ app.post("/", async (req, res) => {
 });
 
 /**
+ * GET /:id/attendees
+ * Get attendees (purchases) for an event. Stub: returns [] until full implementation.
+ */
+app.get("/:id/attendees", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+    const {id} = req.params;
+    const studioOwnerId = await eventsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+    const eventData = await eventsService.getEventById(id, studioOwnerId);
+    if (!eventData) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Event not found");
+    }
+    sendJsonResponse(req, res, 200, []);
+  } catch (error) {
+    console.error("Error getting event attendees:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /:id/report
+ * Get event report (ticket sales by tier, revenue). Stub: returns empty report until full implementation.
+ */
+app.get("/:id/report", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+    const {id} = req.params;
+    const studioOwnerId = await eventsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+    const eventData = await eventsService.getEventById(id, studioOwnerId);
+    if (!eventData) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Event not found");
+    }
+    const priceTiers = eventData.priceTiers || [];
+    const ticketSalesByTier = priceTiers.map((t) => ({
+      tierName: t.name || "Tier",
+      quantity: 0,
+      revenue: 0,
+    }));
+    const report = {
+      eventId: id,
+      name: eventData.name || "Event",
+      attendeesCount: 0,
+      ticketSalesByTier,
+      totalTickets: 0,
+      totalRevenue: 0,
+    };
+    sendJsonResponse(req, res, 200, report);
+  } catch (error) {
+    console.error("Error getting event report:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * GET /:id
  * Get a single event by ID
  */
