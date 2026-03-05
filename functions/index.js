@@ -27,3 +27,4 @@ exports.expireCredits = require("./credit-expiration").expireCredits;
 exports.stripe = require("./stripe").stripe;
 exports.purchases = require("./purchases").purchases;
 exports.reviews = require("./reviews").reviews;
+exports.marketing = require("./marketing").marketing;
