@@ -59,7 +59,7 @@ function getUnsubscribeBaseUrl(req) {
   return host ? `${protocol}://${host}` : "";
 }
 
-const DEFAULT_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || "danceupappcompany@gmail.com";
+const DEFAULT_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || "info@danceup.app";
 const DEFAULT_FROM_NAME = process.env.SENDGRID_FROM_NAME || "DanceUp";
 
 /**
@@ -86,8 +86,32 @@ app.get("/recipients", async (req, res) => {
 });
 
 /**
+ * GET /templates - List available SendGrid dynamic templates (requires auth)
+ */
+app.get("/templates", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+    const templates = await sendgridService.getTemplates();
+    sendJsonResponse(req, res, 200, templates);
+  } catch (error) {
+    console.error("Error fetching templates:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * POST /send - Send campaign (requires auth)
- * Body: { subject, bodyHtml?, bodyText?, recipientIds?: string[], sendToAll?: boolean }
+ * Body (template): { subject, templateId, bodyContent?, recipientIds?: string[], sendToAll?: boolean }
+ * Body (custom):   { subject, bodyHtml?, bodyText?, recipientIds?: string[], sendToAll?: boolean }
  */
 app.post("/send", async (req, res) => {
   try {
@@ -102,14 +126,15 @@ app.post("/send", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
-    const {subject, bodyHtml, bodyText, recipientIds, sendToAll} = req.body || {};
+    const {subject, bodyHtml, bodyText, templateId, bodyContent, recipientIds, sendToAll} = req.body || {};
     if (!subject || (typeof subject !== "string") || !subject.trim()) {
       return sendErrorResponse(req, res, 400, "Validation Error", "subject is required");
     }
+    const hasTemplate = typeof templateId === "string" && !!templateId.trim();
     const hasHtml = bodyHtml != null && typeof bodyHtml === "string";
     const hasText = bodyText != null && typeof bodyText === "string";
-    if (!hasHtml && !hasText) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "bodyHtml or bodyText is required");
+    if (!hasTemplate && !hasHtml && !hasText) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "templateId or bodyHtml/bodyText is required");
     }
 
     const allRecipients = await marketingService.getSubscribedRecipients(studioOwnerId);
@@ -127,27 +152,45 @@ app.post("/send", async (req, res) => {
         studioOwnerId,
         subject.trim(),
         toSend.length,
+        hasTemplate ? undefined : (hasText ? bodyText : undefined),
+        hasTemplate ? undefined : (hasHtml ? bodyHtml : undefined),
     );
 
-    const from = DEFAULT_FROM_EMAIL;
+    const from = {email: DEFAULT_FROM_EMAIL, name: DEFAULT_FROM_NAME};
 
     for (const recipient of toSend) {
       const token = await marketingService.createUnsubscribeToken(recipient.authUid);
       const unsubscribeUrl = `${baseUrl}/unsubscribe?token=${encodeURIComponent(token)}`;
-      const footerHtml = `<p style="margin-top:24px;font-size:12px;color:#666;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}">unsubscribe here</a>.</p>`;
-      const footerText = `\n\nIf you no longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
 
-      const html = hasHtml ? (bodyHtml + footerHtml) : null;
-      const text = hasText ? (bodyText + footerText) : (hasHtml ? null : bodyText + footerText);
-
-      const msg = {
-        to: recipient.email,
-        from,
-        subject: subject.trim(),
-        categories: [categoryId],
-      };
-      if (html) msg.html = html;
-      if (text) msg.text = text;
+      let msg;
+      if (hasTemplate) {
+        const firstName = recipient.firstName || recipient.name?.split(" ")[0] || "";
+        msg = {
+          to: recipient.email,
+          from,
+          templateId: templateId.trim(),
+          dynamicTemplateData: {
+            firstName,
+            subject: subject.trim(),
+            bodyContent: bodyContent || "",
+            unsubscribeUrl,
+          },
+          categories: [categoryId],
+        };
+      } else {
+        const footerHtml = `<p style="margin-top:24px;font-size:12px;color:#666;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}">unsubscribe here</a>.</p>`;
+        const footerText = `\n\nIf you no longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
+        const html = hasHtml ? (bodyHtml + footerHtml) : null;
+        const text = hasText ? (bodyText + footerText) : null;
+        msg = {
+          to: recipient.email,
+          from,
+          subject: subject.trim(),
+          categories: [categoryId],
+        };
+        if (html) msg.html = html;
+        if (text) msg.text = text;
+      }
 
       try {
         await sendgridService.sendEmail(msg);
@@ -183,6 +226,32 @@ app.get("/campaigns", async (req, res) => {
     sendJsonResponse(req, res, 200, campaigns);
   } catch (error) {
     console.error("Error listing campaigns:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /campaigns/:id - Get a single campaign by ID (requires auth)
+ */
+app.get("/campaigns/:id", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+    const campaign = await marketingService.getCampaignById(req.params.id, studioOwnerId);
+    if (!campaign) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Campaign not found");
+    }
+    sendJsonResponse(req, res, 200, campaign);
+  } catch (error) {
+    console.error("Error getting campaign:", error);
     handleError(req, res, error);
   }
 });

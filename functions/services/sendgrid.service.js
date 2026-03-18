@@ -118,8 +118,36 @@ async function getCategoryStats(category, startDate, endDate) {
   return {metrics: allMetrics};
 }
 
+/**
+ * Fetch all dynamic templates from SendGrid.
+ * @returns {Promise<Array<{id: string, name: string, subject: string, updatedAt: string}>>}
+ */
+async function getTemplates() {
+  const key = await getApiKey();
+  const url = "https://api.sendgrid.com/v3/templates?generations=dynamic&page_size=18";
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`SendGrid templates API failed: ${res.status} ${text}`);
+  }
+  const data = await res.json();
+  return (data.result || []).map((t) => ({
+    id: t.id,
+    name: t.name,
+    subject: t.versions?.find((v) => v.active === 1)?.subject || "",
+    updatedAt: t.updated_at || "",
+  }));
+}
+
 module.exports = {
   sendEmail,
   getApiKey,
   getCategoryStats,
+  getTemplates,
 };

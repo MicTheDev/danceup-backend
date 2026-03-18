@@ -106,18 +106,21 @@ async function getSubscribedRecipients(studioOwnerId) {
  * @param {number} recipientCount
  * @returns {Promise<{campaignId: string, category: string}>} Campaign document ID and SendGrid category
  */
-async function createCampaign(studioOwnerId, subject, recipientCount) {
+async function createCampaign(studioOwnerId, subject, recipientCount, bodyText, bodyHtml) {
   const db = getFirestore();
   const ref = db.collection(CAMPAIGNS_COLLECTION).doc();
   const campaignId = ref.id;
   const category = `marketing-${campaignId}`;
-  await ref.set({
+  const doc = {
     studioOwnerId,
     subject,
     recipientCount,
     sentAt: admin.firestore.FieldValue.serverTimestamp(),
     category,
-  });
+  };
+  if (bodyText) doc.bodyText = bodyText;
+  if (bodyHtml) doc.bodyHtml = bodyHtml;
+  await ref.set(doc);
   return {campaignId, category};
 }
 
