@@ -125,11 +125,8 @@ app.post("/create-payment-link", async (req, res) => {
     }
     
     const studioOwnerData = studioOwnerDoc.data();
-    const connectedAccountId = studioOwnerData.stripeAccountId;
-    
-    if (!connectedAccountId) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "Studio owner has not set up Stripe payments. Please contact the studio.");
-    }
+    // May be null if studio owner hasn't completed Stripe Connect setup — charges will go to the platform account in that case
+    const connectedAccountId = studioOwnerData.stripeAccountId || null;
 
     // Get or create Stripe customer
     let customerId = null;
@@ -294,6 +291,220 @@ app.post("/create-payment-link", async (req, res) => {
     });
   } catch (error) {
     console.error("Create Payment Link error:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * POST /charge-saved
+ * Charge a user's saved Stripe payment method directly — no Checkout redirect needed.
+ * Body: { purchaseType, itemId, paymentMethodId }
+ * Returns: { success, purchaseId, creditsGranted, isRecurring, subscriptionId }
+ *       or { requiresAction, clientSecret } when 3DS authentication is needed.
+ */
+app.post("/charge-saved", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid or expired token");
+    }
+
+    const {purchaseType, itemId, paymentMethodId} = req.body;
+    if (!purchaseType || !itemId || !paymentMethodId) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType, itemId, and paymentMethodId are required");
+    }
+
+    const db = getFirestore();
+
+    // Get student from the `students` collection — this is the ID used by credit tracking
+    const studentQuery = await db.collection("students")
+        .where("authUid", "==", user.uid)
+        .limit(1)
+        .get();
+
+    if (studentQuery.empty) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found. Please enroll in a studio first.");
+    }
+
+    const studentDoc = studentQuery.docs[0];
+    const studentData = studentDoc.data();
+
+    // Resolve Stripe customer ID — mirrors the lookup in /create-payment-link
+    let stripeCustomerId = null;
+    const userQuery = await db.collection("users")
+        .where("authUid", "==", user.uid)
+        .limit(1)
+        .get();
+
+    if (!userQuery.empty) {
+      stripeCustomerId = userQuery.docs[0].data().stripeCustomerId || null;
+    }
+
+    if (!stripeCustomerId) {
+      // Fall back to usersStudentProfiles (users registered via the users-app)
+      const authService = require("./services/auth.service");
+      const profileDoc = await authService.getStudentProfileByAuthUid(user.uid);
+      stripeCustomerId = profileDoc ? (profileDoc.data().stripeCustomerId || null) : null;
+    }
+
+    if (!stripeCustomerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No Stripe customer linked to this account. Please add a payment method first.");
+    }
+
+    // Verify the payment method belongs to this customer
+    const savedMethods = await stripeService.listPaymentMethods(stripeCustomerId);
+    if (!savedMethods.some((pm) => pm.id === paymentMethodId)) {
+      return sendErrorResponse(req, res, 403, "Forbidden", "Payment method does not belong to this account");
+    }
+
+    // Get item details
+    const itemDetails = await purchaseService.getItemDetails(purchaseType, itemId);
+    const studioOwnerId = itemDetails.studioOwnerId;
+
+    // Optional Stripe Connect destination
+    const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
+    const connectedAccountId = studioOwnerDoc.exists ? (studioOwnerDoc.data().stripeAccountId || null) : null;
+
+    const isRecurring = purchaseType === "package" && itemDetails.isRecurring === true;
+    const metadata = {
+      purchaseType,
+      itemId,
+      studioOwnerId,
+      studentId: studentDoc.id,
+      authUid: user.uid,
+    };
+
+    let paymentIntentId;
+    let subscriptionId = null;
+    let subscriptionStatus = null;
+
+    if (isRecurring) {
+      // Build price params (mirrors the logic in /create-payment-link)
+      let interval = "month";
+      let intervalCount = itemDetails.billingInterval || 1;
+      if (itemDetails.billingFrequency === "weekly") {
+        interval = "week";
+      } else if (itemDetails.billingFrequency === "daily") {
+        interval = "day";
+      } else if (typeof itemDetails.billingFrequency === "number") {
+        interval = "day";
+        intervalCount = itemDetails.billingFrequency;
+      }
+
+      const priceParams = {
+        unit_amount: Math.round(itemDetails.price * 100),
+        currency: "usd",
+        recurring: {interval, interval_count: intervalCount},
+        product_data: {
+          name: itemDetails.itemName,
+          metadata: {purchaseType, itemId, studioOwnerId, studentId: studentDoc.id},
+        },
+      };
+
+      const subscription = await stripeService.createSubscriptionWithSavedCard(
+          stripeCustomerId,
+          priceParams,
+          paymentMethodId,
+          {...metadata, price: itemDetails.price, billingFrequency: itemDetails.billingFrequency, billingInterval: itemDetails.billingInterval},
+          connectedAccountId,
+      );
+
+      const latestInvoicePI = subscription.latest_invoice?.payment_intent;
+
+      if (latestInvoicePI?.status === "requires_action") {
+        return sendJsonResponse(req, res, 200, {
+          requiresAction: true,
+          clientSecret: latestInvoicePI.client_secret,
+          subscriptionId: subscription.id,
+        });
+      }
+
+      if (latestInvoicePI?.status !== "succeeded" && subscription.status !== "active") {
+        return sendErrorResponse(req, res, 402, "Payment Failed", "Subscription payment failed. Please try a different card.");
+      }
+
+      subscriptionId = subscription.id;
+      subscriptionStatus = subscription.status;
+      paymentIntentId = latestInvoicePI?.id;
+    } else {
+      // One-time payment
+      const paymentIntent = await stripeService.chargePaymentMethodDirectly(
+          stripeCustomerId,
+          paymentMethodId,
+          Math.round(itemDetails.price * 100),
+          metadata,
+          connectedAccountId,
+      );
+
+      if (paymentIntent.status === "requires_action") {
+        return sendJsonResponse(req, res, 200, {
+          requiresAction: true,
+          clientSecret: paymentIntent.client_secret,
+        });
+      }
+
+      if (paymentIntent.status !== "succeeded") {
+        return sendErrorResponse(req, res, 402, "Payment Failed", "Payment could not be completed. Please try a different card.");
+      }
+
+      paymentIntentId = paymentIntent.id;
+    }
+
+    // Grant credits
+    const creditResult = await purchaseService.grantCreditsForPurchase(
+        purchaseType,
+        studentDoc.id,
+        studioOwnerId,
+        itemDetails,
+    );
+
+    // Create purchase record
+    const purchaseId = await purchaseService.createPurchaseRecord({
+      studentId: studentDoc.id,
+      authUid: user.uid,
+      purchaseType,
+      itemId,
+      studioOwnerId,
+      itemName: itemDetails.itemName,
+      studioName: itemDetails.studioName,
+      price: itemDetails.price,
+      stripePaymentIntentId: paymentIntentId || null,
+      stripeCustomerId,
+      stripeSubscriptionId: subscriptionId,
+      isRecurring,
+      subscriptionStatus,
+      status: "completed",
+      creditGranted: creditResult.creditsGranted > 0,
+      creditsGranted: creditResult.creditsGranted,
+      creditIds: creditResult.creditIds,
+      classId: purchaseType === "class" ? itemId : null,
+      metadata: itemDetails.metadata,
+    });
+
+    // Notify studio owner (non-fatal)
+    try {
+      await purchaseService.createPurchaseNotification({
+        studioOwnerId,
+        studentId: studentDoc.id,
+        studentName: `${studentData.firstName || ""} ${studentData.lastName || ""}`.trim() || studentData.email,
+        purchaseType,
+        itemName: itemDetails.itemName,
+      });
+    } catch (notifyErr) {
+      console.error("Error creating purchase notification:", notifyErr);
+    }
+
+    sendJsonResponse(req, res, 200, {
+      success: true,
+      purchaseId,
+      creditsGranted: creditResult.creditsGranted,
+      isRecurring,
+      subscriptionId,
+    });
+  } catch (error) {
+    console.error("charge-saved error:", error);
     handleError(req, res, error);
   }
 });

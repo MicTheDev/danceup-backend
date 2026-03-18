@@ -5,6 +5,7 @@ const cors = require("cors");
 const authService = require("./services/auth.service");
 const storageService = require("./services/storage.service");
 const studioEnrollmentService = require("./services/studio-enrollment.service");
+const {createCustomer, createSetupIntent, listPaymentMethods, detachPaymentMethod, updatePaymentMethod, getStripePublishableKey} = require("./services/stripe.service");
 const {verifyToken} = require("./utils/auth");
 const {getFirestore} = require("./utils/firestore");
 const {getFirebaseApiKey} = require("./utils/firebase-api-key");
@@ -148,6 +149,23 @@ app.post("/register", async (req, res) => {
           userRecord.uid,
           userData,
       );
+
+      // Create Stripe customer and persist the ID — non-fatal if Stripe is unavailable
+      try {
+        const stripeCustomer = await createCustomer(email, {
+          uid: userRecord.uid,
+          studentProfileId,
+          name: `${firstName.trim()} ${lastName.trim()}`,
+        });
+        const db = getFirestore();
+        await db.collection("usersStudentProfiles").doc(studentProfileId).update({
+          stripeCustomerId: stripeCustomer.id,
+          stripeEmail: stripeCustomer.email,
+        });
+      } catch (stripeError) {
+        console.error("Error creating Stripe customer during registration:", stripeError);
+        // Registration still succeeds — customer can be created later
+      }
 
       // Generate custom token
       const customToken = await authService.createCustomToken(userRecord.uid);
@@ -1041,6 +1059,183 @@ app.post("/logout", async (req, res) => {
     });
   } catch (error) {
     console.error("Logout error:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /config/stripe
+ * Public endpoint — returns the Stripe publishable key from Secret Manager.
+ * No auth required; publishable keys are safe to expose to the browser.
+ */
+app.get("/config/stripe", async (req, res) => {
+  try {
+    const publishableKey = await getStripePublishableKey();
+    sendJsonResponse(req, res, 200, {publishableKey});
+  } catch (error) {
+    console.error("Error fetching Stripe publishable key:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * POST /me/payment-methods/setup
+ * Create a Stripe SetupIntent so the client can securely save a card
+ */
+app.post("/me/payment-methods/setup", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid);
+    if (!studentDoc) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+    }
+
+    const {stripeCustomerId} = studentDoc.data();
+    if (!stripeCustomerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No Stripe customer linked to this account");
+    }
+
+    const setupIntent = await createSetupIntent(stripeCustomerId);
+    sendJsonResponse(req, res, 200, {clientSecret: setupIntent.client_secret});
+  } catch (error) {
+    console.error("Error creating setup intent:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /me/payment-methods
+ * Return the saved payment methods for the authenticated user (brand + last4 only)
+ */
+app.get("/me/payment-methods", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid);
+    if (!studentDoc) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+    }
+
+    const {stripeCustomerId} = studentDoc.data();
+    if (!stripeCustomerId) {
+      return sendJsonResponse(req, res, 200, []);
+    }
+
+    const paymentMethods = await listPaymentMethods(stripeCustomerId);
+    const simplified = paymentMethods.map((pm) => ({
+      id: pm.id,
+      brand: pm.card.brand,
+      last4: pm.card.last4,
+      expMonth: pm.card.exp_month,
+      expYear: pm.card.exp_year,
+    }));
+
+    sendJsonResponse(req, res, 200, simplified);
+  } catch (error) {
+    console.error("Error fetching payment methods:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * DELETE /me/payment-methods/:paymentMethodId
+ * Detach (delete) a saved payment method from the authenticated user's Stripe customer
+ */
+app.delete("/me/payment-methods/:paymentMethodId", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid);
+    if (!studentDoc) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+    }
+
+    const {stripeCustomerId} = studentDoc.data();
+    if (!stripeCustomerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No Stripe customer linked to this account");
+    }
+
+    const {paymentMethodId} = req.params;
+
+    // Verify the payment method belongs to this customer before detaching
+    const paymentMethods = await listPaymentMethods(stripeCustomerId);
+    const owned = paymentMethods.some((pm) => pm.id === paymentMethodId);
+    if (!owned) {
+      return sendErrorResponse(req, res, 403, "Forbidden", "Payment method does not belong to this account");
+    }
+
+    await detachPaymentMethod(paymentMethodId);
+    sendJsonResponse(req, res, 200, {success: true});
+  } catch (error) {
+    console.error("Error deleting payment method:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * PATCH /me/payment-methods/:paymentMethodId
+ * Update the expiration date of a saved card
+ * Body: { expMonth: number, expYear: number }
+ */
+app.patch("/me/payment-methods/:paymentMethodId", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid);
+    if (!studentDoc) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+    }
+
+    const {stripeCustomerId} = studentDoc.data();
+    if (!stripeCustomerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No Stripe customer linked to this account");
+    }
+
+    const {paymentMethodId} = req.params;
+    const {expMonth, expYear} = req.body;
+
+    if (!expMonth || !expYear) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "expMonth and expYear are required");
+    }
+
+    // Verify the payment method belongs to this customer
+    const paymentMethods = await listPaymentMethods(stripeCustomerId);
+    const owned = paymentMethods.some((pm) => pm.id === paymentMethodId);
+    if (!owned) {
+      return sendErrorResponse(req, res, 403, "Forbidden", "Payment method does not belong to this account");
+    }
+
+    const updated = await updatePaymentMethod(paymentMethodId, Number(expMonth), Number(expYear));
+    sendJsonResponse(req, res, 200, {
+      id: updated.id,
+      brand: updated.card.brand,
+      last4: updated.card.last4,
+      expMonth: updated.card.exp_month,
+      expYear: updated.card.exp_year,
+    });
+  } catch (error) {
+    console.error("Error updating payment method:", error);
     handleError(req, res, error);
   }
 });

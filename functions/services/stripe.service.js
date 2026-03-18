@@ -564,18 +564,20 @@ async function createConnectCheckoutSession(
       metadata: metadata,
       payment_intent_data: {
         metadata: metadata,
-        transfer_data: {
-          destination: connectedAccountId,
-        },
       },
       payment_method_types: ["card"],
       success_url: successUrl,
       cancel_url: cancelUrl,
     };
 
-    // Add application fee if specified (platform fee)
-    if (applicationFeeAmount && applicationFeeAmount > 0) {
-      sessionParams.payment_intent_data.application_fee_amount = applicationFeeAmount;
+    // Only route to connected account if one is provided
+    if (connectedAccountId) {
+      sessionParams.payment_intent_data.transfer_data = {destination: connectedAccountId};
+
+      // Add application fee if specified (platform fee)
+      if (applicationFeeAmount && applicationFeeAmount > 0) {
+        sessionParams.payment_intent_data.application_fee_amount = applicationFeeAmount;
+      }
     }
 
     const session = await stripe.checkout.sessions.create(sessionParams);
@@ -628,22 +630,22 @@ async function createConnectSubscriptionSession(
       metadata: metadata,
       subscription_data: {
         metadata: metadata,
-        transfer_data: {
-          destination: connectedAccountId,
-        },
       },
       payment_method_types: ["card"],
       success_url: successUrl,
       cancel_url: cancelUrl,
     };
 
-    // Add application fee if specified (platform fee)
-    // Note: For subscriptions, we use application_fee_percent instead of application_fee_amount
-    // This is calculated as a percentage of the subscription amount
-    if (applicationFeeAmount && applicationFeeAmount > 0 && metadata.price) {
-      const priceInCents = Math.round(metadata.price * 100);
-      const feePercent = (applicationFeeAmount / priceInCents) * 100;
-      sessionParams.subscription_data.application_fee_percent = feePercent;
+    // Only route to connected account if one is provided
+    if (connectedAccountId) {
+      sessionParams.subscription_data.transfer_data = {destination: connectedAccountId};
+
+      // Add application fee if specified
+      if (applicationFeeAmount && applicationFeeAmount > 0 && metadata.price) {
+        const priceInCents = Math.round(metadata.price * 100);
+        const feePercent = (applicationFeeAmount / priceInCents) * 100;
+        sessionParams.subscription_data.application_fee_percent = feePercent;
+      }
     }
 
     // Note: cancel_after cannot be set in checkout session subscription_data
@@ -664,6 +666,259 @@ async function createConnectSubscriptionSession(
   }
 }
 
+/**
+ * Charge a saved payment method directly (off-session) without a Checkout redirect.
+ * Returns the PaymentIntent. If status is 'requires_action', the client must complete 3DS.
+ * @param {string} customerId - Stripe customer ID
+ * @param {string} paymentMethodId - Stripe PaymentMethod ID to charge
+ * @param {number} amountCents - Amount in cents
+ * @param {Object} metadata - Metadata to attach
+ * @param {string|null} connectedAccountId - Optional Stripe Connect destination account
+ * @returns {Promise<Stripe.PaymentIntent>}
+ */
+async function chargePaymentMethodDirectly(customerId, paymentMethodId, amountCents, metadata, connectedAccountId) {
+  const stripe = await getStripeClient();
+
+  const params = {
+    amount: amountCents,
+    currency: "usd",
+    customer: customerId,
+    payment_method: paymentMethodId,
+    confirm: true,
+    off_session: true,
+    metadata,
+  };
+
+  if (connectedAccountId) {
+    params.transfer_data = {destination: connectedAccountId};
+  }
+
+  try {
+    return await stripe.paymentIntents.create(params);
+  } catch (error) {
+    // Stripe throws when authentication is required — surface the payment_intent so the
+    // client can call stripe.handleCardAction(clientSecret) to complete 3DS.
+    if (error.code === "authentication_required" && error.payment_intent) {
+      return error.payment_intent;
+    }
+    console.error("Error charging payment method directly:", error);
+    throw new Error(`Failed to charge payment method: ${error.message}`);
+  }
+}
+
+/**
+ * Create a subscription using a saved payment method without a Checkout redirect.
+ * Expands latest_invoice.payment_intent so the caller can check whether 3DS is needed.
+ * @param {string} customerId - Stripe customer ID
+ * @param {Object} priceParams - Parameters for stripe.prices.create()
+ * @param {string} paymentMethodId - Default payment method for the subscription
+ * @param {Object} metadata - Metadata to attach to the subscription
+ * @param {string|null} connectedAccountId - Optional Stripe Connect destination account
+ * @returns {Promise<Stripe.Subscription>}
+ */
+async function createSubscriptionWithSavedCard(customerId, priceParams, paymentMethodId, metadata, connectedAccountId) {
+  const stripe = await getStripeClient();
+
+  // Create a one-off price for this subscription
+  const price = await stripe.prices.create(priceParams);
+
+  const subParams = {
+    customer: customerId,
+    items: [{price: price.id}],
+    default_payment_method: paymentMethodId,
+    metadata,
+    expand: ["latest_invoice.payment_intent"],
+  };
+
+  if (connectedAccountId) {
+    subParams.transfer_data = {destination: connectedAccountId};
+  }
+
+  try {
+    return await stripe.subscriptions.create(subParams);
+  } catch (error) {
+    console.error("Error creating subscription with saved card:", error);
+    throw new Error(`Failed to create subscription: ${error.message}`);
+  }
+}
+
+/**
+ * Detach a payment method from a customer (effectively deletes it)
+ * @param {string} paymentMethodId - Stripe PaymentMethod ID
+ * @returns {Promise<Stripe.PaymentMethod>} Detached payment method
+ */
+async function detachPaymentMethod(paymentMethodId) {
+  const stripe = await getStripeClient();
+  try {
+    return await stripe.paymentMethods.detach(paymentMethodId);
+  } catch (error) {
+    console.error("Error detaching payment method:", error);
+    throw new Error(`Failed to delete payment method: ${error.message}`);
+  }
+}
+
+/**
+ * Update a saved card's expiration date
+ * @param {string} paymentMethodId - Stripe PaymentMethod ID
+ * @param {number} expMonth - New expiration month (1–12)
+ * @param {number} expYear - New expiration year (4-digit)
+ * @returns {Promise<Stripe.PaymentMethod>} Updated payment method
+ */
+async function updatePaymentMethod(paymentMethodId, expMonth, expYear) {
+  const stripe = await getStripeClient();
+  try {
+    return await stripe.paymentMethods.update(paymentMethodId, {
+      card: {exp_month: expMonth, exp_year: expYear},
+    });
+  } catch (error) {
+    console.error("Error updating payment method:", error);
+    throw new Error(`Failed to update payment method: ${error.message}`);
+  }
+}
+
+/**
+ * Get the Stripe publishable key from Secret Manager
+ * @returns {Promise<string>} Stripe publishable key
+ */
+async function getStripePublishableKey() {
+  const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || "";
+  const isProduction = projectId.includes("production");
+  const secretName = isProduction
+    ? "stripe-publishable-key-prod"
+    : "stripe-publishable-key-test";
+
+  const key = await getSecret(secretName);
+  if (!key) {
+    throw new Error("Stripe publishable key not found in Secret Manager");
+  }
+  return key.trim();
+}
+
+/**
+ * Create a Stripe SetupIntent to save a payment method for a customer
+ * @param {string} customerId - Stripe customer ID
+ * @returns {Promise<Stripe.SetupIntent>} SetupIntent object
+ */
+async function createSetupIntent(customerId) {
+  const stripe = await getStripeClient();
+
+  try {
+    const setupIntent = await stripe.setupIntents.create({
+      customer: customerId,
+      usage: "off_session",
+      payment_method_types: ["card"],
+    });
+    return setupIntent;
+  } catch (error) {
+    console.error("Error creating SetupIntent:", error);
+    throw new Error(`Failed to create setup intent: ${error.message}`);
+  }
+}
+
+/**
+ * List all saved payment methods for a Stripe customer
+ * @param {string} customerId - Stripe customer ID
+ * @returns {Promise<Stripe.PaymentMethod[]>} Array of payment methods
+ */
+async function listPaymentMethods(customerId) {
+  const stripe = await getStripeClient();
+
+  try {
+    const paymentMethods = await stripe.paymentMethods.list({
+      customer: customerId,
+      type: "card",
+    });
+    return paymentMethods.data;
+  } catch (error) {
+    console.error("Error listing payment methods:", error);
+    throw new Error(`Failed to list payment methods: ${error.message}`);
+  }
+}
+
+/**
+ * Create a Stripe Product for a dance studio package
+ * @param {Object} packageData - Package data from the create request
+ * @param {string} studioOwnerId - Studio owner's Firestore document ID
+ * @param {string} studioName - Studio name for metadata
+ * @returns {Promise<Stripe.Product>} Created Stripe product
+ */
+async function createStripeProduct(packageData, studioOwnerId, studioName) {
+  const stripe = await getStripeClient();
+
+  // Map billing frequency string to Stripe interval
+  const intervalMap = {monthly: "month", weekly: "week", daily: "day"};
+
+  // Build the core product params (direct Stripe fields)
+  const productParams = {
+    name: packageData.name,
+    active: packageData.isActive !== undefined ? packageData.isActive : true,
+  };
+
+  // Optional direct Stripe product fields
+  if (packageData.description) productParams.description = packageData.description;
+  if (Array.isArray(packageData.images) && packageData.images.length > 0) {
+    productParams.images = packageData.images;
+  }
+  if (packageData.url) productParams.url = packageData.url;
+  if (packageData.statement_descriptor) {
+    productParams.statement_descriptor = packageData.statement_descriptor;
+  }
+  if (packageData.tax_code) productParams.tax_code = packageData.tax_code;
+  if (packageData.unit_label) productParams.unit_label = packageData.unit_label;
+  if (packageData.shippable !== undefined) productParams.shippable = packageData.shippable;
+  if (packageData.package_dimensions) {
+    productParams.package_dimensions = packageData.package_dimensions;
+  }
+
+  // Build default_price_data from the package price
+  if (packageData.price !== undefined) {
+    const priceData = {
+      currency: packageData.currency || "usd",
+      unit_amount: Math.round(packageData.price * 100), // dollars → cents
+    };
+
+    if (packageData.isRecurring && packageData.billingFrequency !== undefined) {
+      const freq = packageData.billingFrequency;
+      const interval = typeof freq === "string"
+        ? (intervalMap[freq] || "month")
+        : "day";
+      const intervalCount = typeof freq === "number"
+        ? freq
+        : (packageData.billingInterval || 1);
+
+      priceData.recurring = {interval, interval_count: intervalCount};
+    }
+
+    if (packageData.tax_behavior) priceData.tax_behavior = packageData.tax_behavior;
+
+    productParams.default_price_data = priceData;
+  }
+
+  // Metadata: non-Stripe fields + studio identifiers
+  // All Stripe metadata values must be strings
+  productParams.metadata = {
+    studioId: studioOwnerId,
+    studioName: studioName || "",
+    credits: String(packageData.credits),
+    expirationDays: String(packageData.expirationDays),
+    classIds: JSON.stringify(packageData.classIds || []),
+    isRecurring: String(packageData.isRecurring || false),
+  };
+
+  if (packageData.subscriptionDuration !== undefined && packageData.subscriptionDuration !== null) {
+    productParams.metadata.subscriptionDuration = String(packageData.subscriptionDuration);
+  }
+
+  try {
+    const product = await stripe.products.create(productParams);
+    console.log(`[createStripeProduct] Created Stripe product ${product.id} for package "${packageData.name}"`);
+    return product;
+  } catch (error) {
+    console.error("[createStripeProduct] Error creating Stripe product:", error);
+    throw new Error(`Failed to create Stripe product: ${error.message}`);
+  }
+}
+
 module.exports = {
   getStripeClient,
   createConnectedAccount,
@@ -679,5 +934,13 @@ module.exports = {
   getCheckoutSession,
   verifyWebhookSignature,
   createPaymentLink,
+  createStripeProduct,
+  createSetupIntent,
+  listPaymentMethods,
+  detachPaymentMethod,
+  updatePaymentMethod,
+  getStripePublishableKey,
+  chargePaymentMethodDirectly,
+  createSubscriptionWithSavedCard,
 };
 

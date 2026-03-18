@@ -1578,6 +1578,83 @@ function validateCreatePackagePayload(payload) {
     }
   }
 
+  // --- Optional Stripe product fields ---
+
+  // images: array of URL strings
+  if (payload.images !== undefined && payload.images !== null) {
+    if (!Array.isArray(payload.images)) {
+      errors.push({field: "images", message: "Images must be an array of URL strings"});
+    } else if (!payload.images.every((img) => typeof img === "string" && img.trim().length > 0)) {
+      errors.push({field: "images", message: "Each image must be a non-empty string URL"});
+    }
+  }
+
+  // url: string
+  if (payload.url !== undefined && payload.url !== null) {
+    if (typeof payload.url !== "string" || payload.url.trim().length === 0) {
+      errors.push({field: "url", message: "URL must be a non-empty string"});
+    }
+  }
+
+  // statement_descriptor: string, max 22 chars
+  if (payload.statement_descriptor !== undefined && payload.statement_descriptor !== null) {
+    if (typeof payload.statement_descriptor !== "string") {
+      errors.push({field: "statement_descriptor", message: "Statement descriptor must be a string"});
+    } else if (payload.statement_descriptor.length > 22) {
+      errors.push({field: "statement_descriptor", message: "Statement descriptor must be 22 characters or fewer"});
+    }
+  }
+
+  // tax_code: string
+  if (payload.tax_code !== undefined && payload.tax_code !== null) {
+    if (typeof payload.tax_code !== "string" || payload.tax_code.trim().length === 0) {
+      errors.push({field: "tax_code", message: "Tax code must be a non-empty string"});
+    }
+  }
+
+  // unit_label: string
+  if (payload.unit_label !== undefined && payload.unit_label !== null) {
+    if (typeof payload.unit_label !== "string" || payload.unit_label.trim().length === 0) {
+      errors.push({field: "unit_label", message: "Unit label must be a non-empty string"});
+    }
+  }
+
+  // shippable: boolean
+  if (payload.shippable !== undefined && payload.shippable !== null) {
+    if (typeof payload.shippable !== "boolean") {
+      errors.push({field: "shippable", message: "Shippable must be a boolean"});
+    }
+  }
+
+  // package_dimensions: object with height, length, weight, width (all positive numbers)
+  if (payload.package_dimensions !== undefined && payload.package_dimensions !== null) {
+    const dims = payload.package_dimensions;
+    if (typeof dims !== "object" || Array.isArray(dims)) {
+      errors.push({field: "package_dimensions", message: "Package dimensions must be an object"});
+    } else {
+      ["height", "length", "weight", "width"].forEach((key) => {
+        if (dims[key] === undefined || typeof dims[key] !== "number" || dims[key] <= 0) {
+          errors.push({field: `package_dimensions.${key}`, message: `Package dimensions ${key} must be a positive number`});
+        }
+      });
+    }
+  }
+
+  // currency: ISO 4217 string (e.g. 'usd'), defaults to 'usd' if omitted
+  if (payload.currency !== undefined && payload.currency !== null) {
+    if (typeof payload.currency !== "string" || payload.currency.trim().length !== 3) {
+      errors.push({field: "currency", message: "Currency must be a 3-letter ISO 4217 code (e.g. 'usd')"});
+    }
+  }
+
+  // tax_behavior: enum for Stripe price
+  if (payload.tax_behavior !== undefined && payload.tax_behavior !== null) {
+    const validTaxBehaviors = ["exclusive", "inclusive", "unspecified"];
+    if (!validTaxBehaviors.includes(payload.tax_behavior)) {
+      errors.push({field: "tax_behavior", message: "Tax behavior must be 'exclusive', 'inclusive', or 'unspecified'"});
+    }
+  }
+
   // Recurring payment validation (optional)
   if (payload.isRecurring !== undefined && payload.isRecurring !== null) {
     if (typeof payload.isRecurring !== "boolean") {

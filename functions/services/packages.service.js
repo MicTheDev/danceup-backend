@@ -1,6 +1,7 @@
 const admin = require("firebase-admin");
 const authService = require("./auth.service");
 const {getFirestore} = require("../utils/firestore");
+const {createStripeProduct} = require("./stripe.service");
 
 /**
  * Service for handling package management operations
@@ -74,16 +75,32 @@ class PackagesService {
   }
 
   /**
-   * Create a new package
+   * Create a new package and a corresponding Stripe product
    * @param {Object} packageData - Package data
    * @param {string} studioOwnerId - Studio owner document ID
    * @returns {Promise<string>} Created package document ID
    */
   async createPackage(packageData, studioOwnerId) {
     const db = getFirestore();
+
+    // Look up studio name for Stripe product metadata
+    const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
+    const studioName = studioOwnerDoc.exists ? (studioOwnerDoc.data().studioName || "") : "";
+
+    // Create the Stripe product
+    let stripeProductId = null;
+    try {
+      const stripeProduct = await createStripeProduct(packageData, studioOwnerId, studioName);
+      stripeProductId = stripeProduct.id;
+    } catch (error) {
+      console.error("Failed to create Stripe product for package:", error);
+      throw error;
+    }
+
     const packageDataWithMetadata = {
       ...packageData,
       studioOwnerId,
+      stripeProductId,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
