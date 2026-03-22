@@ -89,12 +89,15 @@ class ClassesService {
     const studioOwnerRef = db.collection("users").doc(studioOwnerId);
     const studioOwnerDoc = await studioOwnerRef.get();
     
-    let imageUrl = this.getStudioPlaceholderImage(); // Default to placeholder
-    
-    if (studioOwnerDoc.exists) {
-      const studioOwnerData = studioOwnerDoc.data();
-      // Use studio's image if available, otherwise use placeholder
-      imageUrl = studioOwnerData.studioImageUrl || this.getStudioPlaceholderImage();
+    // If a custom imageUrl was already set (e.g. uploaded by the endpoint), keep it.
+    // Otherwise fall back to the studio's own image, then to the placeholder.
+    let imageUrl = classData.imageUrl;
+    if (!imageUrl) {
+      imageUrl = this.getStudioPlaceholderImage();
+      if (studioOwnerDoc.exists) {
+        const studioOwnerData = studioOwnerDoc.data();
+        imageUrl = studioOwnerData.studioImageUrl || this.getStudioPlaceholderImage();
+      }
     }
     
     const classDataWithMetadata = {

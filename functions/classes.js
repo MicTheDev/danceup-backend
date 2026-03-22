@@ -2,6 +2,7 @@ const functions = require("firebase-functions");
 const express = require("express");
 const cors = require("cors");
 const classesService = require("./services/classes.service");
+const storageService = require("./services/storage.service");
 const {verifyToken} = require("./utils/auth");
 const {
   validateCreateClassPayload,
@@ -195,8 +196,22 @@ app.post("/", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
+    // Handle optional class image upload
+    const classBody = {...req.body};
+    if (classBody.imageFile && typeof classBody.imageFile === "string") {
+      try {
+        const fileBuffer = storageService.base64ToBuffer(classBody.imageFile);
+        const mimeType = storageService.getMimeTypeFromBase64(classBody.imageFile);
+        const fileName = `class-image.${mimeType.split("/")[1]}`;
+        classBody.imageUrl = await storageService.uploadClassImage(fileBuffer, fileName, mimeType, studioOwnerId, "new");
+      } catch (imageError) {
+        return sendErrorResponse(req, res, 400, "Image Upload Failed", imageError.message || "Failed to upload class image");
+      }
+    }
+    delete classBody.imageFile;
+
     // Create the class
-    const classId = await classesService.createClass(req.body, studioOwnerId);
+    const classId = await classesService.createClass(classBody, studioOwnerId);
 
     sendJsonResponse(req, res, 201, {
       id: classId,
@@ -279,8 +294,22 @@ app.put("/:id", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
+    // Handle optional class image upload
+    const updateBody = {...req.body};
+    if (updateBody.imageFile && typeof updateBody.imageFile === "string") {
+      try {
+        const fileBuffer = storageService.base64ToBuffer(updateBody.imageFile);
+        const mimeType = storageService.getMimeTypeFromBase64(updateBody.imageFile);
+        const fileName = `class-image.${mimeType.split("/")[1]}`;
+        updateBody.imageUrl = await storageService.uploadClassImage(fileBuffer, fileName, mimeType, studioOwnerId, id);
+      } catch (imageError) {
+        return sendErrorResponse(req, res, 400, "Image Upload Failed", imageError.message || "Failed to upload class image");
+      }
+    }
+    delete updateBody.imageFile;
+
     // Update the class
-    await classesService.updateClass(id, req.body, studioOwnerId);
+    await classesService.updateClass(id, updateBody, studioOwnerId);
 
     sendJsonResponse(req, res, 200, {
       message: "Class updated successfully",

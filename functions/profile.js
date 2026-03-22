@@ -95,6 +95,7 @@ app.get("/", async (req, res) => {
     }
 
     sendJsonResponse(req, res, 200, {
+      id: userDoc.id,
       firstName: userData.firstName,
       lastName: userData.lastName,
       studioName: userData.studioName,

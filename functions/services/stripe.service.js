@@ -919,6 +919,40 @@ async function createStripeProduct(packageData, studioOwnerId, studioName) {
   }
 }
 
+/**
+ * Create a Stripe Connect Account Session for embedded components
+ * @param {string} accountId - Connected Stripe account ID
+ * @returns {Promise<Object>} Stripe AccountSession object
+ */
+async function createAccountSession(accountId) {
+  const stripe = await getStripeClient();
+  return await stripe.accountSessions.create({
+    account: accountId,
+    components: {
+      payments: {
+        enabled: true,
+        features: {
+          refund_management: true,
+          dispute_management: true,
+          capture_payments: true,
+        },
+      },
+      payouts: {
+        enabled: true,
+        features: {
+          instant_payouts: true,
+        },
+      },
+      balances: {
+        enabled: true,
+        features: {
+          instant_payouts: true,
+        },
+      },
+    },
+  });
+}
+
 module.exports = {
   getStripeClient,
   createConnectedAccount,
@@ -942,5 +976,6 @@ module.exports = {
   getStripePublishableKey,
   chargePaymentMethodDirectly,
   createSubscriptionWithSavedCard,
+  createAccountSession,
 };
 

@@ -171,11 +171,11 @@ app.get("/id/:id", async (req, res) => {
 });
 
 /**
- * GET /reviews/studio/:studioOwnerId
+ * GET /reviews/owner/:studioOwnerId
  * Get all reviews for a studio (studio owner only)
- * Must come before /:entityType/:entityId to avoid route conflicts
+ * Uses a distinct prefix so it doesn't clash with the public /:entityType/:entityId route
  */
-app.get("/studio/:studioOwnerId", async (req, res) => {
+app.get("/owner/:studioOwnerId", async (req, res) => {
   try {
     // Verify token and get user info
     let user;

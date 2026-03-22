@@ -79,15 +79,7 @@ app.options("/create-payment-link", (req, res) => {
  */
 app.post("/create-payment-link", async (req, res) => {
   try {
-    // Verify token and get user info
-    let user;
-    try {
-      user = await verifyToken(req);
-    } catch (error) {
-      return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid or expired token");
-    }
-
-    const {purchaseType, itemId} = req.body;
+    const {purchaseType, itemId, selectedTiers, guestInfo} = req.body;
 
     if (!purchaseType || !itemId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType and itemId are required");
@@ -97,21 +89,30 @@ app.post("/create-payment-link", async (req, res) => {
       return sendErrorResponse(req, res, 400, "Validation Error", "Invalid purchaseType. Must be 'class', 'event', 'workshop', or 'package'");
     }
 
-    // Get student info
-    const db = getFirestore();
-    const studentQuery = await db.collection("students")
-        .where("authUid", "==", user.uid)
-        .limit(1)
-        .get();
-
-    if (studentQuery.empty) {
-      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found. Please enroll in a studio first.");
+    // Auth is required for packages; optional for classes, events, and workshops (guest checkout allowed)
+    let user = null;
+    try {
+      user = await verifyToken(req);
+    } catch (error) {
+      if (purchaseType === "package") {
+        return sendErrorResponse(req, res, 401, "Authentication Failed", "Login required to purchase packages.");
+      }
+      // classes / events / workshops continue as guest
     }
 
-    const studentDoc = studentQuery.docs[0];
-    const studentData = studentDoc.data();
-    // Note: Students can purchase from any studio, not just their enrolled studio
-    // The studioOwnerId will be determined from the item itself
+    const db = getFirestore();
+
+    // Student profile — only looked up for authenticated users
+    let studentDoc = null;
+    if (user) {
+      const studentQuery = await db.collection("students")
+          .where("authUid", "==", user.uid)
+          .limit(1)
+          .get();
+      if (!studentQuery.empty) {
+        studentDoc = studentQuery.docs[0];
+      }
+    }
 
     // Get item details and price (studioOwnerId will be determined from the item)
     const itemDetails = await purchaseService.getItemDetails(purchaseType, itemId);
@@ -119,54 +120,48 @@ app.post("/create-payment-link", async (req, res) => {
     // Get studio owner's Stripe connected account ID
     const studioOwnerRef = db.collection("users").doc(itemDetails.studioOwnerId);
     const studioOwnerDoc = await studioOwnerRef.get();
-    
+
     if (!studioOwnerDoc.exists) {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
     }
-    
+
     const studioOwnerData = studioOwnerDoc.data();
     // May be null if studio owner hasn't completed Stripe Connect setup — charges will go to the platform account in that case
     const connectedAccountId = studioOwnerData.stripeAccountId || null;
 
-    // Get or create Stripe customer
+    // Get or create Stripe customer — only for authenticated users
     let customerId = null;
-    const userQuery = await db.collection("users")
-        .where("authUid", "==", user.uid)
-        .limit(1)
-        .get();
+    if (user) {
+      const userQuery = await db.collection("users")
+          .where("authUid", "==", user.uid)
+          .limit(1)
+          .get();
 
-    if (!userQuery.empty) {
-      const userDoc = userQuery.docs[0];
-      const userData = userDoc.data();
-      if (userData.stripeCustomerId) {
-        customerId = userData.stripeCustomerId;
+      if (!userQuery.empty) {
+        const userDoc = userQuery.docs[0];
+        const userData = userDoc.data();
+        if (userData.stripeCustomerId) {
+          customerId = userData.stripeCustomerId;
+        } else {
+          const customer = await stripeService.createCustomer(userData.email, {
+            userId: userDoc.id,
+            authUid: user.uid,
+          });
+          customerId = customer.id;
+          await userDoc.ref.update({
+            stripeCustomerId: customer.id,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
       } else {
-        // Create Stripe customer
-        const customer = await stripeService.createCustomer(userData.email, {
-          userId: userDoc.id,
-          authUid: user.uid,
-        });
-        customerId = customer.id;
-        await userDoc.ref.update({
-          stripeCustomerId: customer.id,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
+        const studentProfileDoc = await require("./services/auth.service").getStudentProfileByAuthUid(user.uid);
+        if (studentProfileDoc) {
+          const profileData = studentProfileDoc.data();
+          const email = profileData.email || `${user.uid}@temp.com`;
+          const customer = await stripeService.createCustomer(email, {authUid: user.uid});
+          customerId = customer.id;
+        }
       }
-    } else {
-      // Get email from student profile
-      const studentProfileDoc = await require("./services/auth.service").getStudentProfileByAuthUid(user.uid);
-      if (studentProfileDoc) {
-        const profileData = studentProfileDoc.data();
-        const email = profileData.email || `${user.uid}@temp.com`;
-        const customer = await stripeService.createCustomer(email, {
-          authUid: user.uid,
-        });
-        customerId = customer.id;
-      }
-    }
-
-    if (!customerId) {
-      return sendErrorResponse(req, res, 500, "Server Error", "Failed to create or retrieve Stripe customer");
     }
 
     // Check if this is a recurring package purchase
@@ -182,8 +177,8 @@ app.post("/create-payment-link", async (req, res) => {
       purchaseType,
       itemId,
       studioOwnerId: itemDetails.studioOwnerId,
-      studentId: studentDoc.id,
-      authUid: user.uid,
+      studentId: studentDoc ? studentDoc.id : "guest",
+      authUid: user ? user.uid : "guest",
     };
 
     // Calculate application fee (optional - platform can take a percentage)
@@ -231,7 +226,7 @@ app.post("/create-payment-link", async (req, res) => {
             purchaseType,
             itemId,
             studioOwnerId: itemDetails.studioOwnerId,
-            studentId: studentDoc.id,
+            studentId: studentDoc ? studentDoc.id : "guest",
           },
         },
       });
@@ -268,7 +263,7 @@ app.post("/create-payment-link", async (req, res) => {
             purchaseType,
             itemId,
             studioOwnerId: itemDetails.studioOwnerId,
-            studentId: studentDoc.id,
+            studentId: studentDoc ? studentDoc.id : "guest",
           },
         },
       });

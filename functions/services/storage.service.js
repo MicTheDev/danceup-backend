@@ -275,6 +275,42 @@ class StorageService {
   }
 
   /**
+   * Upload class image to Firebase Storage
+   * @param {Buffer} fileBuffer - File buffer
+   * @param {string} fileName - Original file name
+   * @param {string} mimeType - File MIME type
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @param {string} classId - Class document ID (or 'new' for creates)
+   * @returns {Promise<string>} Download URL
+   */
+  async uploadClassImage(fileBuffer, fileName, mimeType, studioOwnerId, classId) {
+    try {
+      const allowedMimeTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+      if (!allowedMimeTypes.includes(mimeType)) {
+        throw new Error("Invalid file type. Only JPEG, PNG, and WebP images are allowed");
+      }
+      const maxSize = 5 * 1024 * 1024; // 5MB
+      if (fileBuffer.length > maxSize) {
+        throw new Error("File size exceeds 5MB limit");
+      }
+      const timestamp = Date.now();
+      const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
+      const storageFileName = `classes/${studioOwnerId}/${classId}/${timestamp}-${sanitizedFileName}`;
+      const bucket = this.getBucket();
+      const file = bucket.file(storageFileName);
+      await file.save(fileBuffer, { metadata: { contentType: mimeType } });
+      await file.makePublic();
+      return `https://storage.googleapis.com/${bucket.name}/${storageFileName}`;
+    } catch (error) {
+      console.error("Error uploading class image:", error);
+      if (error.message.includes("Invalid file type") || error.message.includes("File size")) {
+        throw error;
+      }
+      throw new Error(`Failed to upload class image: ${error.message}`);
+    }
+  }
+
+  /**
    * Upload event image to Firebase Storage
    * @param {Buffer} fileBuffer - File buffer
    * @param {string} fileName - Original file name

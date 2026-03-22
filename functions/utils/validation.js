@@ -404,6 +404,15 @@ function validateCreateClassPayload(payload) {
     }
   }
 
+  // Optional image file validation
+  if (payload.imageFile !== undefined && payload.imageFile !== null) {
+    if (typeof payload.imageFile !== "string") {
+      errors.push({field: "imageFile", message: "Image file must be a base64 string"});
+    } else if (!payload.imageFile.startsWith("data:image/")) {
+      errors.push({field: "imageFile", message: "Image file must be a valid base64 image data URL"});
+    }
+  }
+
   return {
     valid: errors.length === 0,
     errors,
@@ -492,6 +501,15 @@ function validateUpdateClassPayload(payload) {
   if (payload.room !== undefined && payload.room !== null) {
     if (typeof payload.room !== "string") {
       errors.push({field: "room", message: "Room must be a string"});
+    }
+  }
+
+  // Optional image file validation
+  if (payload.imageFile !== undefined && payload.imageFile !== null) {
+    if (typeof payload.imageFile !== "string") {
+      errors.push({field: "imageFile", message: "Image file must be a base64 string"});
+    } else if (!payload.imageFile.startsWith("data:image/")) {
+      errors.push({field: "imageFile", message: "Image file must be a valid base64 image data URL"});
     }
   }
 

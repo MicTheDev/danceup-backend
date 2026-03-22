@@ -442,6 +442,60 @@ app.post("/login-link", async (req, res) => {
 });
 
 /**
+ * OPTIONS /account-session
+ * Handle CORS preflight
+ */
+app.options("/account-session", (req, res) => {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return res.status(204).send();
+});
+
+/**
+ * POST /account-session
+ * Create a Stripe Connect Account Session for embedded components
+ */
+app.post("/account-session", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (error) {
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid or expired token");
+    }
+
+    const db = getFirestore();
+    const userQuery = await db.collection("users")
+        .where("authUid", "==", user.uid)
+        .limit(1)
+        .get();
+
+    if (userQuery.empty) {
+      return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
+    }
+
+    const userData = userQuery.docs[0].data();
+
+    if (!userData.stripeAccountId) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Stripe account not set up. Please complete your Stripe setup first.");
+    }
+
+    const accountSession = await stripeService.createAccountSession(userData.stripeAccountId);
+
+    sendJsonResponse(req, res, 200, {
+      clientSecret: accountSession.client_secret,
+    });
+  } catch (error) {
+    console.error("Create account session error:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * OPTIONS /create-checkout-session
  * Handle CORS preflight
  */
