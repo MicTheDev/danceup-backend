@@ -731,6 +731,175 @@ class AttendanceService {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
   }
+
+  /**
+   * Get all dashboard stats for a studio owner in one call.
+   * Returns: activeStudents, avgAttendance, newSignups, monthlyRevenue, attendancePulse
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @returns {Promise<Object>} Dashboard stats object
+   */
+  async getDashboardStats(studioOwnerId) {
+    const db = getFirestore();
+    const now = new Date();
+
+    // --- Date boundaries ---
+    const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const endOfPrevMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+
+    const dayOfWeek = now.getDay(); // 0=Sun
+    const startOfCurrentWeek = new Date(now);
+    startOfCurrentWeek.setDate(now.getDate() - dayOfWeek);
+    startOfCurrentWeek.setHours(0, 0, 0, 0);
+    const startOfPrevWeek = new Date(startOfCurrentWeek);
+    startOfPrevWeek.setDate(startOfPrevWeek.getDate() - 7);
+    const endOfPrevWeek = new Date(startOfCurrentWeek);
+    endOfPrevWeek.setMilliseconds(-1);
+
+    // 7-day window for attendance pulse (today D-6 through today)
+    const sevenDaysAgo = new Date(now);
+    sevenDaysAgo.setDate(now.getDate() - 6);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    // --- Fetch attendance records for the past ~2 months (covers all needed ranges) ---
+    const attendanceRecords = await this.getAttendanceRecords(studioOwnerId, startOfPrevMonth, now);
+    const activeRecords = attendanceRecords.filter((r) => !r.isRemoved);
+
+    // --- Active Students ---
+    const currentMonthStudents = new Set();
+    const prevMonthStudents = new Set();
+    activeRecords.forEach((r) => {
+      const d = r.classInstanceDate?.toDate ? r.classInstanceDate.toDate() : new Date(r.classInstanceDate);
+      if (!d) return;
+      if (d >= startOfCurrentMonth) currentMonthStudents.add(r.studentId);
+      else if (d >= startOfPrevMonth && d <= endOfPrevMonth) prevMonthStudents.add(r.studentId);
+    });
+    const activeStudentsCurrent = currentMonthStudents.size;
+    const activeStudentsPrev = prevMonthStudents.size;
+    const activeStudentsChange = activeStudentsPrev > 0
+      ? Math.round(((activeStudentsCurrent - activeStudentsPrev) / activeStudentsPrev) * 100)
+      : activeStudentsCurrent > 0 ? 100 : 0;
+
+    // --- Average Attendance (weekly check-in count) ---
+    let currentWeekCheckIns = 0;
+    let prevWeekCheckIns = 0;
+    activeRecords.forEach((r) => {
+      const d = r.classInstanceDate?.toDate ? r.classInstanceDate.toDate() : new Date(r.classInstanceDate);
+      if (!d) return;
+      if (d >= startOfCurrentWeek) currentWeekCheckIns++;
+      else if (d >= startOfPrevWeek && d < startOfCurrentWeek) prevWeekCheckIns++;
+    });
+    const avgAttendanceChange = prevWeekCheckIns > 0
+      ? Math.round(((currentWeekCheckIns - prevWeekCheckIns) / prevWeekCheckIns) * 100)
+      : currentWeekCheckIns > 0 ? 100 : 0;
+
+    // --- New Sign-ups (students created this week vs previous week) ---
+    const studentsSnapshot = await db.collection("students")
+      .where("studioOwnerId", "==", studioOwnerId)
+      .get();
+    let newSignupsCurrent = 0;
+    let newSignupsPrev = 0;
+    studentsSnapshot.forEach((doc) => {
+      const data = doc.data();
+      const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : null;
+      if (!createdAt) return;
+      if (createdAt >= startOfCurrentWeek) newSignupsCurrent++;
+      else if (createdAt >= startOfPrevWeek && createdAt < startOfCurrentWeek) newSignupsPrev++;
+    });
+    const newSignupsChange = newSignupsPrev > 0
+      ? Math.round(((newSignupsCurrent - newSignupsPrev) / newSignupsPrev) * 100)
+      : newSignupsCurrent > 0 ? 100 : 0;
+
+    // --- Monthly Revenue ---
+    const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const startOfPrevMonthForRevenue = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const purchasesSnapshot = await db.collection("purchases")
+      .where("studioOwnerId", "==", studioOwnerId)
+      .get();
+    let currentMonthRevenue = 0;
+    let prevMonthRevenue = 0;
+    purchasesSnapshot.forEach((doc) => {
+      const data = doc.data();
+      const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : null;
+      if (!createdAt) return;
+      const amount = data.price ?? data.amount ?? 0;
+      if (createdAt >= startOfCurrentMonth) currentMonthRevenue += amount;
+      else if (createdAt >= startOfPrevMonthForRevenue && createdAt < startOfCurrentMonth) prevMonthRevenue += amount;
+    });
+    const revenueChange = prevMonthRevenue > 0
+      ? Math.round(((currentMonthRevenue - prevMonthRevenue) / prevMonthRevenue) * 100)
+      : currentMonthRevenue > 0 ? 100 : 0;
+
+    // --- Attendance Pulse (last 7 days: fill rate %) ---
+    // Get active classes to know maxCapacity per day-of-week
+    const classesSnapshot = await db.collection("classes")
+      .where("studioOwnerId", "==", studioOwnerId)
+      .where("isActive", "==", true)
+      .get();
+
+    // Map dayOfWeek name -> total max capacity
+    const capacityByDay = {};
+    DAY_NAMES.forEach((d) => { capacityByDay[d] = 0; });
+    classesSnapshot.forEach((doc) => {
+      const c = doc.data();
+      const day = c.dayOfWeek;
+      if (day && DAY_NAMES.includes(day)) {
+        capacityByDay[day] += (c.maxCapacity || 20);
+      }
+    });
+
+    // Count check-ins per calendar date over last 7 days
+    const checkInsByDate = {};
+    activeRecords.forEach((r) => {
+      const d = r.classInstanceDate?.toDate ? r.classInstanceDate.toDate() : new Date(r.classInstanceDate);
+      if (!d || d < sevenDaysAgo) return;
+      const key = d.toISOString().split("T")[0];
+      checkInsByDate[key] = (checkInsByDate[key] || 0) + 1;
+    });
+
+    const attendancePulse = [];
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date(now);
+      date.setDate(now.getDate() - i);
+      date.setHours(0, 0, 0, 0);
+      const dateKey = date.toISOString().split("T")[0];
+      const dayName = DAY_NAMES[date.getDay()];
+      const checkIns = checkInsByDate[dateKey] || 0;
+      const maxCap = capacityByDay[dayName] || 0;
+      const fillRate = maxCap > 0 ? Math.min(Math.round((checkIns / maxCap) * 100), 100) : 0;
+      attendancePulse.push({
+        day: dayName.substring(0, 3), // "Mon", "Tue", etc.
+        date: dateKey,
+        checkIns,
+        maxCapacity: maxCap,
+        fillRate,
+      });
+    }
+
+    return {
+      activeStudents: {
+        current: activeStudentsCurrent,
+        previous: activeStudentsPrev,
+        change: activeStudentsChange,
+      },
+      avgAttendance: {
+        current: currentWeekCheckIns,
+        previous: prevWeekCheckIns,
+        change: avgAttendanceChange,
+      },
+      newSignups: {
+        current: newSignupsCurrent,
+        previous: newSignupsPrev,
+        change: newSignupsChange,
+      },
+      monthlyRevenue: {
+        current: currentMonthRevenue,
+        previous: prevMonthRevenue,
+        change: revenueChange,
+      },
+      attendancePulse,
+    };
+  }
 }
 
 module.exports = new AttendanceService();

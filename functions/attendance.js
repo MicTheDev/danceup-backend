@@ -59,6 +59,32 @@ function parseDate(dateString) {
 }
 
 /**
+ * GET /dashboard-stats
+ * Get all dashboard metrics in one call for the authenticated studio owner
+ */
+app.get("/dashboard-stats", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const stats = await attendanceService.getDashboardStats(studioOwnerId);
+    sendJsonResponse(req, res, 200, stats);
+  } catch (error) {
+    console.error("Error getting dashboard stats:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * GET /classes
  * Get class attendance statistics (weekly, monthly, and per-class)
  */

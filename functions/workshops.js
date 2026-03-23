@@ -473,6 +473,56 @@ app.delete("/:id", async (req, res) => {
   }
 });
 
+/**
+ * GET /upcoming
+ * Get upcoming workshops for the authenticated studio owner (startDate >= today)
+ */
+app.get("/upcoming", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studioOwnerId = await workshopsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const {getFirestore} = require("./utils/firestore");
+    const db = getFirestore();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const snapshot = await db.collection("workshops")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .get();
+
+    const workshops = [];
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      const startRaw = data.startTime;
+      const startDate = startRaw?.toDate ? startRaw.toDate() : (startRaw ? new Date(startRaw) : null);
+      if (startDate && startDate >= today) {
+        workshops.push({
+          id: doc.id,
+          ...data,
+          startTime: startDate.toISOString(),
+          endTime: data.endTime?.toDate ? data.endTime.toDate().toISOString() : (data.endTime || null),
+        });
+      }
+    });
+
+    workshops.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+    sendJsonResponse(req, res, 200, workshops);
+  } catch (error) {
+    console.error("Error getting upcoming workshops:", error);
+    handleError(req, res, error);
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error("Error:", err);

@@ -33,9 +33,11 @@ class ClassesService {
 
     const classes = [];
     snapshot.forEach((doc) => {
+      const data = doc.data();
       classes.push({
         id: doc.id,
-        ...doc.data(),
+        ...data,
+        maxCapacity: data.maxCapacity ?? 20,
       });
     });
 
@@ -65,6 +67,7 @@ class ClassesService {
     return {
       id: doc.id,
       ...classData,
+      maxCapacity: classData.maxCapacity ?? 20,
     };
   }
 

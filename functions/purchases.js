@@ -1195,6 +1195,59 @@ app.post("/subscriptions/:subscriptionId/cancel", async (req, res) => {
   }
 });
 
+/**
+ * POST /cash
+ * Record a manual cash payment made outside of Stripe
+ */
+app.post("/cash", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const db = getFirestore();
+
+    // Resolve studioOwnerId from the authenticated user
+    const userQuery = await db.collection("users")
+        .where("authUid", "==", user.uid)
+        .limit(1)
+        .get();
+    if (userQuery.empty) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found");
+    }
+    const studioOwnerId = userQuery.docs[0].id;
+
+    const {studentId, amount, description, itemType, itemId} = req.body;
+
+    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "amount must be a positive number");
+    }
+
+    const docData = {
+      studioOwnerId,
+      amount: parseFloat(amount),
+      paymentMethod: "cash",
+      status: "completed",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (studentId) docData.studentId = studentId;
+    if (description) docData.description = description;
+    if (itemType) docData.purchaseType = itemType;
+    if (itemId) docData.itemId = itemId;
+
+    const docRef = await db.collection("purchases").add(docData);
+
+    sendJsonResponse(req, res, 201, {id: docRef.id, message: "Cash payment recorded successfully"});
+  } catch (error) {
+    console.error("Error recording cash payment:", error);
+    handleError(req, res, error);
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error("Error:", err);
