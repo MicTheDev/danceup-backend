@@ -869,34 +869,86 @@ app.post("/webhook", express.raw({type: "application/json"}), async (req, res) =
     switch (event.type) {
       case "checkout.session.completed": {
         const session = event.data.object;
-        let userId = session.metadata?.userId;
+        const purchaseType = session.metadata?.purchaseType;
+        const sendgridService = require("./services/sendgrid.service");
 
-        // If userId is empty string or missing, try to find user by email (for Payment Links)
-        if (!userId || userId === "") {
-          const email = session.metadata?.email || session.customer_email;
-          if (email) {
-            const userQuery = await db.collection("users")
-                .where("email", "==", email.toLowerCase())
-                .limit(1)
-                .get();
-            
-            if (!userQuery.empty) {
-              userId = userQuery.docs[0].id;
+        // --- Platform membership upgrade (no purchaseType set) ---
+        if (!purchaseType) {
+          let userId = session.metadata?.userId;
+          if (!userId || userId === "") {
+            const email = session.metadata?.email || session.customer_email;
+            if (email) {
+              const userQuery = await db.collection("users")
+                  .where("email", "==", email.toLowerCase())
+                  .limit(1)
+                  .get();
+              if (!userQuery.empty) userId = userQuery.docs[0].id;
             }
           }
+          if (userId) {
+            const userDoc = await db.collection("users").doc(userId).get();
+            if (userDoc.exists) {
+              await userDoc.ref.update({
+                stripeCustomerId: session.customer,
+                stripeSubscriptionId: session.subscription,
+                stripeSubscriptionStatus: "active",
+                membership: session.metadata?.membership || userDoc.data().membership,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+            }
+          }
+          break;
         }
 
-        if (userId) {
-          const userDoc = await db.collection("users").doc(userId).get();
-          if (userDoc.exists) {
-            await userDoc.ref.update({
-              stripeCustomerId: session.customer,
-              stripeSubscriptionId: session.subscription,
-              stripeSubscriptionStatus: "active",
-              membership: session.metadata?.membership || userDoc.data().membership,
-              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        // --- App purchase: private_lesson ---
+        if (purchaseType === "private_lesson") {
+          try {
+            const bookingsService = require("./services/bookings.service");
+            await bookingsService.createConfirmedBookingFromSession(session);
+
+            const recipientEmail = session.customer_details?.email || session.metadata?.contactEmail;
+            if (recipientEmail) {
+              const meta = session.metadata;
+              await sendgridService.sendConfirmationEmail(recipientEmail, "private_lesson", {
+                instructorName: meta.instructorName,
+                studioName: meta.studioName,
+                date: meta.date,
+                timeSlot: `${meta.timeSlotStart} – ${meta.timeSlotEnd}`,
+                amountPaid: meta.amountPaid,
+              });
+            }
+
+            // Notify studio owner
+            const notificationsService = require("./services/notifications.service");
+            await notificationsService.createNotification(
+                session.metadata.studioId,
+                null,
+                "private_lesson_booking",
+                "New Private Lesson Booked & Paid",
+                `A private lesson with ${session.metadata.instructorName} on ${session.metadata.date} was paid and confirmed.`,
+            );
+          } catch (err) {
+            console.error("[webhook] Error handling private_lesson checkout:", err);
+          }
+          break;
+        }
+
+        // --- App purchase: class / event / workshop / package (send confirmation email) ---
+        try {
+          const recipientEmail = session.customer_details?.email;
+          if (recipientEmail) {
+            const meta = session.metadata;
+            const amountCents = session.amount_total || 0;
+            const amountPaid = (amountCents / 100).toFixed(2);
+
+            await sendgridService.sendConfirmationEmail(recipientEmail, purchaseType, {
+              itemName: meta.itemName || purchaseType,
+              studioName: meta.studioName || "the studio",
+              amountPaid,
             });
           }
+        } catch (err) {
+          console.error("[webhook] Error sending purchase confirmation email:", err);
         }
         break;
       }

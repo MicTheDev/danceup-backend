@@ -136,6 +136,216 @@ app.post("/", async (req, res) => {
 });
 
 /**
+ * POST /create-checkout
+ * Create a Stripe Checkout Session for a private lesson.
+ * Returns a checkout URL — the booking is created after payment via the Stripe webhook.
+ */
+app.post("/create-checkout", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Login required to book a private lesson.");
+    }
+
+    const {instructorId, studioId, date, timeSlot, notes, contactInfo} = req.body;
+
+    if (!instructorId || !studioId || !date || !timeSlot?.startTime || !timeSlot?.endTime) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "instructorId, studioId, date, and timeSlot are required");
+    }
+
+    const studentId = await bookingsService.getStudentId(user.uid);
+
+    // Build redirect URLs pointing back to the users-app
+    const appOrigin = req.headers.origin || "https://danceup.com";
+    const successUrl = `${appOrigin}/bookings/confirmation`;
+    const cancelUrl = `${appOrigin}/studios/${studioId}/instructor/${instructorId}/book`;
+
+    const result = await bookingsService.createPrivateLessonCheckout(
+        {instructorId, studioId, date, timeSlot, notes, contactInfo},
+        {uid: user.uid, email: user.email},
+        studentId,
+        successUrl,
+        cancelUrl,
+    );
+
+    sendJsonResponse(req, res, 200, result);
+  } catch (error) {
+    console.error("Error creating private lesson checkout:", error);
+    if (error.message === "This time slot is no longer available") {
+      return sendErrorResponse(req, res, 409, "Conflict", error.message);
+    }
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * POST /charge-saved
+ * Charge a user's saved Stripe payment method directly for a private lesson.
+ * Creates the confirmed booking immediately (no webhook needed).
+ * Body: { instructorId, studioId, date, timeSlot, paymentMethodId, notes? }
+ */
+app.post("/charge-saved", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Login required to book a private lesson.");
+    }
+
+    const {instructorId, studioId, date, timeSlot, paymentMethodId, notes} = req.body;
+    if (!instructorId || !studioId || !date || !timeSlot?.startTime || !timeSlot?.endTime || !paymentMethodId) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "instructorId, studioId, date, timeSlot, and paymentMethodId are required");
+    }
+
+    const db = require("./utils/firestore").getFirestore();
+    const stripeService = require("./services/stripe.service");
+    const instructorsService = require("./services/instructors.service");
+    const authService = require("./services/auth.service");
+    const sendgridService = require("./services/sendgrid.service");
+    const notificationsService = require("./services/notifications.service");
+    const admin = require("firebase-admin");
+
+    // Confirm slot is still free
+    const isAvailable = await bookingsService.isTimeSlotAvailable(instructorId, date, timeSlot);
+    if (!isAvailable) {
+      return sendErrorResponse(req, res, 409, "Conflict", "This time slot is no longer available");
+    }
+
+    // Get instructor rate
+    const instructor = await instructorsService.getPublicInstructorById(instructorId);
+    if (!instructor) return sendErrorResponse(req, res, 404, "Not Found", "Instructor not found");
+    if (!instructor.privateRate || instructor.privateRate <= 0) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "This instructor does not have a private lesson rate set");
+    }
+
+    const instructorName = [instructor.firstName, instructor.lastName].filter(Boolean).join(" ");
+
+    // Resolve Stripe customer ID from usersStudentProfiles
+    const profileDoc = await authService.getStudentProfileByAuthUid(user.uid);
+    let stripeCustomerId = profileDoc ? (profileDoc.data().stripeCustomerId || null) : null;
+
+    if (!stripeCustomerId) {
+      const userQuery = await db.collection("users").where("authUid", "==", user.uid).limit(1).get();
+      if (!userQuery.empty) stripeCustomerId = userQuery.docs[0].data().stripeCustomerId || null;
+    }
+
+    if (!stripeCustomerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No saved payment method on file. Please add a card first.");
+    }
+
+    // Verify payment method belongs to this customer
+    const savedMethods = await stripeService.listPaymentMethods(stripeCustomerId);
+    if (!savedMethods.some((pm) => pm.id === paymentMethodId)) {
+      return sendErrorResponse(req, res, 403, "Forbidden", "Payment method does not belong to this account");
+    }
+
+    // Look up studio owner's Stripe Connect account
+    const studioOwnerDoc = await db.collection("users").doc(studioId).get();
+    const studioOwnerData = studioOwnerDoc.exists ? studioOwnerDoc.data() : {};
+    const connectedAccountId = studioOwnerData.stripeAccountId || null;
+    const studioName = studioOwnerData.studioName || "Studio";
+
+    const amountCents = Math.round(instructor.privateRate * 100);
+    const studentId = await bookingsService.getStudentId(user.uid);
+
+    const metadata = {
+      purchaseType: "private_lesson",
+      instructorId,
+      instructorName,
+      studioId,
+      studioName,
+      date,
+      timeSlotStart: timeSlot.startTime,
+      timeSlotEnd: timeSlot.endTime,
+      notes: notes || "",
+      studentId,
+      authUid: user.uid,
+      amountPaid: String(instructor.privateRate),
+    };
+
+    // Charge saved card
+    const paymentIntent = await stripeService.chargePaymentMethodDirectly(
+        stripeCustomerId,
+        paymentMethodId,
+        amountCents,
+        metadata,
+        connectedAccountId,
+    );
+
+    if (paymentIntent.status === "requires_action") {
+      return sendJsonResponse(req, res, 200, {requiresAction: true, clientSecret: paymentIntent.client_secret});
+    }
+
+    if (paymentIntent.status !== "succeeded") {
+      return sendErrorResponse(req, res, 402, "Payment Failed", "Payment could not be completed. Please try a different card.");
+    }
+
+    // Create confirmed booking
+    const bookingDoc = {
+      studentId,
+      authUid: user.uid,
+      instructorId,
+      studioId,
+      date,
+      timeSlot: {startTime: timeSlot.startTime, endTime: timeSlot.endTime},
+      status: "confirmed",
+      paymentStatus: "paid",
+      stripePaymentIntentId: paymentIntent.id,
+      notes: notes || null,
+      amountPaid: instructor.privateRate,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    const bookingRef = await db.collection("privateLessonBookings").add(bookingDoc);
+
+    // Send confirmation email (non-fatal)
+    try {
+      const recipientEmail = profileDoc ? profileDoc.data().email : user.email;
+      if (recipientEmail) {
+        await sendgridService.sendConfirmationEmail(recipientEmail, "private_lesson", {
+          instructorName,
+          studioName,
+          date,
+          timeSlot: `${timeSlot.startTime} – ${timeSlot.endTime}`,
+          amountPaid: instructor.privateRate,
+        });
+      }
+    } catch (emailErr) {
+      console.error("[charge-saved booking] Email error:", emailErr);
+    }
+
+    // Notify studio owner (non-fatal)
+    try {
+      await notificationsService.createNotification(
+          studioId,
+          bookingRef.id,
+          "private_lesson_booking",
+          "New Private Lesson Booked & Paid",
+          `A private lesson with ${instructorName} on ${date} was paid and confirmed.`,
+      );
+    } catch (notifyErr) {
+      console.error("[charge-saved booking] Notification error:", notifyErr);
+    }
+
+    sendJsonResponse(req, res, 200, {
+      success: true,
+      bookingId: bookingRef.id,
+      instructorName,
+      studioName,
+      date,
+      timeSlot,
+      amountPaid: instructor.privateRate,
+    });
+  } catch (error) {
+    console.error("charge-saved booking error:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * OPTIONS /instructor/:instructorId
  * Handle CORS preflight for instructor bookings endpoint
  */

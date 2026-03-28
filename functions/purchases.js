@@ -176,17 +176,15 @@ app.post("/create-payment-link", async (req, res) => {
     const metadata = {
       purchaseType,
       itemId,
+      itemName: itemDetails.itemName || "",
       studioOwnerId: itemDetails.studioOwnerId,
+      studioName: itemDetails.studioName || "",
       studentId: studentDoc ? studentDoc.id : "guest",
       authUid: user ? user.uid : "guest",
     };
 
-    // Calculate application fee (optional - platform can take a percentage)
-    // For now, we'll set it to 0 (no platform fee), but you can change this
-    const platformFeePercentage = 0; // 0% platform fee (change to desired percentage)
-    const applicationFeeAmount = platformFeePercentage > 0 
-      ? Math.round(itemDetails.price * 100 * platformFeePercentage / 100)
-      : null;
+    // Flat $0.50 platform fee on every credit card charge
+    const applicationFeeAmount = 50;
 
     let checkoutSession;
 
@@ -489,6 +487,40 @@ app.post("/charge-saved", async (req, res) => {
       });
     } catch (notifyErr) {
       console.error("Error creating purchase notification:", notifyErr);
+    }
+
+    // Send confirmation email to the buyer (non-fatal)
+    try {
+      const sendgridService = require("./services/sendgrid.service");
+      const authService = require("./services/auth.service");
+      const profileDoc = await authService.getStudentProfileByAuthUid(user.uid);
+      const recipientEmail = profileDoc ? profileDoc.data().email : null;
+
+      if (recipientEmail) {
+        const emailDetails = {
+          itemName: itemDetails.itemName,
+          studioName: itemDetails.studioName,
+          amountPaid: itemDetails.price?.toFixed(2),
+        };
+
+        if (purchaseType === "package") {
+          const expirationDays = itemDetails.metadata?.expirationDays;
+          if (expirationDays) {
+            const expirationDate = new Date();
+            expirationDate.setDate(expirationDate.getDate() + expirationDays);
+            emailDetails.packageName = itemDetails.itemName;
+            emailDetails.creditsAdded = creditResult.creditsGranted;
+            emailDetails.expirationDate = expirationDate.toLocaleDateString("en-US", {year: "numeric", month: "long", day: "numeric"});
+          } else {
+            emailDetails.packageName = itemDetails.itemName;
+            emailDetails.creditsAdded = creditResult.creditsGranted;
+          }
+        }
+
+        await sendgridService.sendConfirmationEmail(recipientEmail, purchaseType, emailDetails);
+      }
+    } catch (emailErr) {
+      console.error("Error sending purchase confirmation email:", emailErr);
     }
 
     sendJsonResponse(req, res, 200, {

@@ -65,7 +65,6 @@ class StudioEnrollmentService {
       email: studentProfileData.email || null,
       phone: studentProfileData.phone || null,
       authUid: authUid,
-      credits: 0,
     };
 
     const studentId = await studentsService.createStudent(studentData, studioOwnerId);
@@ -78,9 +77,9 @@ class StudioEnrollmentService {
     // Ensure studios object exists and convert from studioIds if needed
     const studios = ensureStudiosStructure(currentData);
     
-    // Add new studio with 0 credits if not already present
+    // Add new studio entry if not already present
     if (!studios[studioOwnerId]) {
-      studios[studioOwnerId] = { credits: 0 };
+      studios[studioOwnerId] = {};
       
       const updateData = {
         studios: studios,

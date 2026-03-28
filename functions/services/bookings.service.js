@@ -1,5 +1,7 @@
 const admin = require("firebase-admin");
 const authService = require("./auth.service");
+const stripeService = require("./stripe.service");
+const instructorsService = require("./instructors.service");
 const {getFirestore} = require("../utils/firestore");
 
 /**
@@ -350,6 +352,139 @@ class BookingsService {
       student: studentInfo,
       instructor: instructorInfo,
     };
+  }
+
+  /**
+   * Create a Stripe Checkout Session for a private lesson.
+   * Validates the time slot is still available before creating the session.
+   * The booking itself is created later by the Stripe webhook on payment success.
+   * @param {Object} bookingData - { instructorId, studioId, date, timeSlot, notes, contactInfo }
+   * @param {Object} user - Firebase Auth user object { uid, email }
+   * @param {string} studentId - Student document ID
+   * @param {string} successUrl - Redirect URL (must include {CHECKOUT_SESSION_ID} placeholder)
+   * @param {string} cancelUrl - Redirect URL on cancellation
+   * @returns {Promise<{ checkoutUrl: string, sessionId: string }>}
+   */
+  async createPrivateLessonCheckout(bookingData, user, studentId, successUrl, cancelUrl) {
+    // Confirm slot is still free
+    const isAvailable = await this.isTimeSlotAvailable(
+        bookingData.instructorId,
+        bookingData.date,
+        bookingData.timeSlot,
+    );
+    if (!isAvailable) {
+      throw new Error("This time slot is no longer available");
+    }
+
+    // Fetch instructor to get rate and studioOwnerId
+    const instructor = await instructorsService.getPublicInstructorById(bookingData.instructorId);
+    if (!instructor) {
+      throw new Error("Instructor not found");
+    }
+
+    const privateRate = instructor.privateRate;
+    if (!privateRate || privateRate <= 0) {
+      throw new Error("This instructor does not have a private lesson rate set");
+    }
+
+    // Look up studio owner's Stripe Connect account (if configured)
+    const db = getFirestore();
+    const studioOwnerRef = db.collection("users").doc(bookingData.studioId);
+    const studioOwnerDoc = await studioOwnerRef.get();
+    const studioOwnerData = studioOwnerDoc.exists ? studioOwnerDoc.data() : {};
+    const connectedAccountId = studioOwnerData.stripeAccountId || null;
+    const studioName = studioOwnerData.studioName || "Studio";
+
+    const instructorName = [instructor.firstName, instructor.lastName].filter(Boolean).join(" ");
+    const amountCents = Math.round(privateRate * 100);
+
+    const metadata = {
+      purchaseType: "private_lesson",
+      instructorId: bookingData.instructorId,
+      instructorName,
+      studioId: bookingData.studioId,
+      studioName,
+      date: bookingData.date,
+      timeSlotStart: bookingData.timeSlot.startTime,
+      timeSlotEnd: bookingData.timeSlot.endTime,
+      notes: bookingData.notes || "",
+      studentId,
+      authUid: user.uid,
+      amountPaid: String(privateRate),
+    };
+
+    if (bookingData.contactInfo?.email) metadata.contactEmail = bookingData.contactInfo.email;
+    if (bookingData.contactInfo?.phone) metadata.contactPhone = bookingData.contactInfo.phone;
+
+    // Build full success URL with all booking details so the confirmation page can display them
+    const timeLabel = encodeURIComponent(`${bookingData.timeSlot.startTime} - ${bookingData.timeSlot.endTime}`);
+    const fullSuccessUrl = `${successUrl}?session_id={CHECKOUT_SESSION_ID}` +
+      `&studioId=${encodeURIComponent(bookingData.studioId)}` +
+      `&instructorId=${encodeURIComponent(bookingData.instructorId)}` +
+      `&bookingDate=${encodeURIComponent(bookingData.date)}` +
+      `&bookingTime=${timeLabel}` +
+      `&instructorName=${encodeURIComponent(instructorName)}` +
+      `&studioName=${encodeURIComponent(studioName)}`;
+
+    const session = await stripeService.createPrivateLessonCheckoutSession({
+      amountCents,
+      instructorName,
+      customerEmail: user.email || undefined,
+      connectedAccountId,
+      metadata,
+      successUrl: fullSuccessUrl,
+      cancelUrl,
+    });
+
+    return {checkoutUrl: session.url, sessionId: session.id};
+  }
+
+  /**
+   * Create a confirmed booking from a completed Stripe Checkout Session.
+   * Called by the Stripe webhook handler after checkout.session.completed.
+   * @param {Object} session - Stripe Checkout Session object (already verified)
+   * @returns {Promise<string>} Created booking document ID
+   */
+  async createConfirmedBookingFromSession(session) {
+    const meta = session.metadata || {};
+    if (meta.purchaseType !== "private_lesson") {
+      throw new Error("Session is not a private_lesson purchase");
+    }
+
+    const db = getFirestore();
+    const bookingsRef = db.collection("privateLessonBookings");
+
+    // Idempotency: skip if a booking for this session already exists
+    const existing = await bookingsRef
+        .where("stripeSessionId", "==", session.id)
+        .limit(1)
+        .get();
+    if (!existing.empty) {
+      return existing.docs[0].id;
+    }
+
+    const bookingDoc = {
+      studentId: meta.studentId || "guest",
+      authUid: meta.authUid || "guest",
+      instructorId: meta.instructorId,
+      studioId: meta.studioId,
+      date: meta.date,
+      timeSlot: {startTime: meta.timeSlotStart, endTime: meta.timeSlotEnd},
+      status: "confirmed",
+      paymentStatus: "paid",
+      stripeSessionId: session.id,
+      notes: meta.notes || null,
+      contactInfo: {
+        email: meta.contactEmail || session.customer_details?.email || null,
+        phone: meta.contactPhone || null,
+      },
+      amountPaid: parseFloat(meta.amountPaid) || 0,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    const docRef = await bookingsRef.add(bookingDoc);
+    return docRef.id;
   }
 }
 

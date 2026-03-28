@@ -5,6 +5,7 @@ const cors = require("cors");
 const authService = require("./services/auth.service");
 const storageService = require("./services/storage.service");
 const studioEnrollmentService = require("./services/studio-enrollment.service");
+const creditTrackingService = require("./services/credit-tracking.service");
 const {createCustomer, createSetupIntent, listPaymentMethods, detachPaymentMethod, updatePaymentMethod, getStripePublishableKey} = require("./services/stripe.service");
 const {verifyToken} = require("./utils/auth");
 const {getFirestore} = require("./utils/firestore");
@@ -100,6 +101,7 @@ app.post("/register", async (req, res) => {
       city,
       state,
       zip,
+      phone,
       danceGenre,
       subscribeToNewsletter,
       avatarFile,
@@ -139,6 +141,7 @@ app.post("/register", async (req, res) => {
         city: city.trim(),
         state: state.trim().toUpperCase(),
         zip: zip.trim(),
+        phone: phone ? phone.trim() : null,
         danceGenre: danceGenre || null,
         subscribeToNewsletter: subscribeToNewsletter || false,
         photoURL: avatarUrl,
@@ -313,7 +316,14 @@ app.get("/me", async (req, res) => {
     const studentData = studentDoc.data();
 
     // Ensure studios object structure (backward compatibility)
-    const studios = studioEnrollmentService.ensureStudiosStructure(studentData);
+    const studiosBase = studioEnrollmentService.ensureStudiosStructure(studentData);
+
+    // Build studios with live credit totals from subcollection (single source of truth)
+    const studiosWithLiveCredits = {};
+    for (const studioId of Object.keys(studiosBase)) {
+      const credits = await creditTrackingService.getLiveCreditsForAuthUser(user.uid, studioId);
+      studiosWithLiveCredits[studioId] = { credits };
+    }
 
     sendJsonResponse(req, res, 200, {
       uid: user.uid,
@@ -325,13 +335,14 @@ app.get("/me", async (req, res) => {
         city: studentData.city,
         state: studentData.state,
         zip: studentData.zip,
+        phone: studentData.phone || null,
         danceGenre: studentData.danceGenre || null,
         subscribeToNewsletter: studentData.subscribeToNewsletter || false,
         photoURL: studentData.photoURL || null,
         role: studentData.role || "student",
-        studios: studios,
+        studios: studiosWithLiveCredits,
         // Keep studioIds for backward compatibility (deprecated)
-        studioIds: Object.keys(studios),
+        studioIds: Object.keys(studiosWithLiveCredits),
       },
     });
   } catch (error) {
@@ -367,6 +378,7 @@ app.put("/me", async (req, res) => {
       city,
       state,
       zip,
+      phone,
       danceGenre,
       subscribeToNewsletter,
       avatarFile,
@@ -379,6 +391,7 @@ app.put("/me", async (req, res) => {
       city: city?.trim(),
       state: state?.trim().toUpperCase(),
       zip: zip?.trim(),
+      phone: phone ? phone.trim() : null,
       danceGenre: danceGenre || null,
       subscribeToNewsletter: subscribeToNewsletter || false,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -408,6 +421,25 @@ app.put("/me", async (req, res) => {
     const db = getFirestore();
     await db.collection("usersStudentProfiles").doc(studentDoc.id).update(updateData);
 
+    // Sync phone to any enrolled students records for this user
+    if (phone !== undefined) {
+      try {
+        const studentsSnapshot = await db.collection("students")
+            .where("authUid", "==", user.uid)
+            .get();
+        const batch = db.batch();
+        studentsSnapshot.forEach((doc) => {
+          batch.update(doc.ref, {phone: phone ? phone.trim() : null});
+        });
+        if (!studentsSnapshot.empty) {
+          await batch.commit();
+        }
+      } catch (syncError) {
+        console.error("Error syncing phone to students collection:", syncError);
+        // Non-fatal: profile is already updated
+      }
+    }
+
     // Fetch updated profile
     const updatedDoc = await authService.getStudentProfileByAuthUid(user.uid);
     const updatedData = updatedDoc.data();
@@ -422,6 +454,7 @@ app.put("/me", async (req, res) => {
         city: updatedData.city,
         state: updatedData.state,
         zip: updatedData.zip,
+        phone: updatedData.phone || null,
         danceGenre: updatedData.danceGenre || null,
         subscribeToNewsletter: updatedData.subscribeToNewsletter || false,
         photoURL: updatedData.photoURL || null,

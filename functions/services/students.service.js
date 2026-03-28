@@ -1,6 +1,7 @@
 const admin = require("firebase-admin");
 const authService = require("./auth.service");
 const {ensureStudiosStructure} = require("../utils/studio-enrollment.utils");
+const creditTrackingService = require("./credit-tracking.service");
 const {getFirestore} = require("../utils/firestore");
 
 /**
@@ -33,12 +34,11 @@ class StudentsService {
         .get();
 
     const students = [];
-    snapshot.forEach((doc) => {
-      students.push({
-        id: doc.id,
-        ...doc.data(),
-      });
-    });
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      const credits = await creditTrackingService.getAvailableCredits(doc.id, studioOwnerId);
+      students.push({ id: doc.id, ...data, credits });
+    }
 
     return students;
   }
@@ -63,9 +63,11 @@ class StudentsService {
       throw new Error("Access denied: Student does not belong to this studio owner");
     }
 
+    const credits = await creditTrackingService.getAvailableCredits(studentId, studioOwnerId);
     return {
       id: doc.id,
       ...studentData,
+      credits,
     };
   }
 
@@ -80,7 +82,6 @@ class StudentsService {
     const studentDataWithMetadata = {
       ...studentData,
       studioOwnerId,
-      credits: studentData.credits || 0,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
@@ -267,61 +268,6 @@ class StudentsService {
     return now > checkTime;
   }
 
-  /**
-   * Sync credits between usersStudentProfiles and students collections
-   * @param {string} authUid - Firebase Auth UID
-   * @param {string} studioOwnerId - Studio owner document ID
-   * @param {number} credits - Credit amount to sync
-   * @returns {Promise<void>}
-   */
-  async syncCreditsBetweenCollections(authUid, studioOwnerId, credits) {
-    const db = getFirestore();
-
-    // Get user profile
-    const studentProfileDoc = await authService.getStudentProfileByAuthUid(authUid);
-    if (!studentProfileDoc) {
-      throw new Error("Student profile not found");
-    }
-
-    const userProfileRef = db.collection("usersStudentProfiles").doc(studentProfileDoc.id);
-    const userProfileData = (await userProfileRef.get()).data();
-
-    // Ensure studios structure exists
-    const studios = ensureStudiosStructure(userProfileData);
-    
-    // Find student document
-    const studentsRef = db.collection("students");
-    const studentSnapshot = await studentsRef
-        .where("authUid", "==", authUid)
-        .where("studioOwnerId", "==", studioOwnerId)
-        .limit(1)
-        .get();
-
-    if (studentSnapshot.empty) {
-      throw new Error("Student record not found for this studio");
-    }
-
-    const studentDoc = studentSnapshot.docs[0];
-    const studentRef = studentsRef.doc(studentDoc.id);
-
-    // Update both collections atomically using batch
-    const batch = db.batch();
-
-    // Update user profile studios object
-    studios[studioOwnerId] = { credits: credits };
-    batch.update(userProfileRef, {
-      studios: studios,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    // Update student document credits
-    batch.update(studentRef, {
-      credits: credits,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    await batch.commit();
-  }
 }
 
 module.exports = new StudentsService();

@@ -24,6 +24,7 @@ exports.bookings = require("./bookings").bookings;
 exports.notifications = require("./notifications").notifications;
 exports.updateClassImages = require("./updateClassImages").updateClassImages;
 exports.expireCredits = require("./credit-expiration").expireCredits;
+exports.expireCreditsManual = require("./credit-expiration").expireCreditsManual;
 exports.stripe = require("./stripe").stripe;
 exports.purchases = require("./purchases").purchases;
 exports.reviews = require("./reviews").reviews;

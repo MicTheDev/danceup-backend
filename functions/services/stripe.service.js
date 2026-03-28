@@ -1,6 +1,9 @@
 const Stripe = require("stripe");
 const {getSecret} = require("../utils/secret-manager");
 
+// Platform fee charged on every credit card transaction (in cents)
+const PLATFORM_FEE_CENTS = 50;
+
 let stripeClient = null;
 
 /**
@@ -691,6 +694,7 @@ async function chargePaymentMethodDirectly(customerId, paymentMethodId, amountCe
 
   if (connectedAccountId) {
     params.transfer_data = {destination: connectedAccountId};
+    params.application_fee_amount = PLATFORM_FEE_CENTS;
   }
 
   try {
@@ -732,6 +736,10 @@ async function createSubscriptionWithSavedCard(customerId, priceParams, paymentM
 
   if (connectedAccountId) {
     subParams.transfer_data = {destination: connectedAccountId};
+    // Express a fixed $0.50 platform fee as a percentage of the per-cycle price
+    if (priceParams.unit_amount && priceParams.unit_amount > 0) {
+      subParams.application_fee_percent = (PLATFORM_FEE_CENTS / priceParams.unit_amount) * 100;
+    }
   }
 
   try {
@@ -953,6 +961,75 @@ async function createAccountSession(accountId) {
   });
 }
 
+/**
+ * Create a Stripe Checkout Session for a private lesson (ad-hoc price, no pre-created Price object).
+ * @param {Object} opts
+ * @param {number} opts.amountCents - Price in cents
+ * @param {string} opts.instructorName - Instructor display name (shown on Stripe checkout page)
+ * @param {string} opts.customerEmail - Pre-fill email on checkout page (optional)
+ * @param {string} opts.connectedAccountId - Studio owner's Stripe Connect account ID (optional)
+ * @param {Object} opts.metadata - Metadata stored on the session (booking details, purchaseType etc.)
+ * @param {string} opts.successUrl - Redirect URL after successful payment (include {CHECKOUT_SESSION_ID} placeholder)
+ * @param {string} opts.cancelUrl - Redirect URL if user cancels
+ * @param {number} [opts.applicationFeeAmount] - Platform fee in cents
+ * @returns {Promise<Stripe.Checkout.Session>}
+ */
+async function createPrivateLessonCheckoutSession({
+  amountCents,
+  instructorName,
+  customerEmail,
+  connectedAccountId,
+  metadata,
+  successUrl,
+  cancelUrl,
+  applicationFeeAmount = PLATFORM_FEE_CENTS,
+}) {
+  const stripe = await getStripeClient();
+
+  const sessionParams = {
+    mode: "payment",
+    line_items: [
+      {
+        price_data: {
+          currency: "usd",
+          unit_amount: amountCents,
+          product_data: {
+            name: `Private Lesson — ${instructorName}`,
+            description: "1-hour private lesson",
+          },
+        },
+        quantity: 1,
+      },
+    ],
+    metadata,
+    payment_intent_data: {metadata},
+    payment_method_types: ["card"],
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+  };
+
+  if (customerEmail) {
+    sessionParams.customer_email = customerEmail;
+  }
+
+  if (connectedAccountId) {
+    sessionParams.payment_intent_data.transfer_data = {destination: connectedAccountId};
+    if (applicationFeeAmount > 0) {
+      sessionParams.payment_intent_data.application_fee_amount = applicationFeeAmount;
+    }
+  }
+
+  const session = await stripe.checkout.sessions.create(sessionParams);
+
+  console.log("[createPrivateLessonCheckoutSession] Created session:", {
+    sessionId: session.id,
+    amountCents,
+    connectedAccountId,
+  });
+
+  return session;
+}
+
 module.exports = {
   getStripeClient,
   createConnectedAccount,
@@ -965,6 +1042,7 @@ module.exports = {
   createCheckoutSession,
   createConnectCheckoutSession,
   createConnectSubscriptionSession,
+  createPrivateLessonCheckoutSession,
   getCheckoutSession,
   verifyWebhookSignature,
   createPaymentLink,

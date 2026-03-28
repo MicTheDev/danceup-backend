@@ -14,7 +14,7 @@ function convertStudioIdsToStudios(studioIds) {
   }
   const studios = {};
   studioIds.forEach((studioId) => {
-    studios[studioId] = { credits: 0 };
+    studios[studioId] = {};
   });
   return studios;
 }

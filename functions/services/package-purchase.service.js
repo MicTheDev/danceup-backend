@@ -133,7 +133,7 @@ class PackagePurchaseService {
     
     // Ensure user is enrolled in this studio
     if (!studios[studioOwnerId]) {
-      studios[studioOwnerId] = { credits: 0 };
+      studios[studioOwnerId] = {};
     }
 
     // Get expiration days from package (default to 365 if not set)

@@ -164,6 +164,7 @@ class InstructorsService {
       bio: instructorData.bio || null,
       email: instructorData.email || null,
       phone: instructorData.phone || null,
+      privateRate: instructorData.privateRate != null ? instructorData.privateRate : null,
     };
 
     // Include availability data if it exists

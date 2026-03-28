@@ -1992,6 +1992,14 @@ function validateStudentRegistrationPayload(payload) {
     }
   }
 
+  // Phone validation (optional)
+  if (payload.phone !== undefined && payload.phone !== null && payload.phone.trim() !== "") {
+    const phoneValidation = validatePhone(payload.phone);
+    if (!phoneValidation.valid) {
+      errors.push({field: "phone", message: phoneValidation.message});
+    }
+  }
+
   // Subscribe to newsletter validation (optional, boolean)
   if (payload.subscribeToNewsletter !== undefined && payload.subscribeToNewsletter !== null) {
     if (typeof payload.subscribeToNewsletter !== "boolean") {

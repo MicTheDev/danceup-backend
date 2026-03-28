@@ -145,9 +145,129 @@ async function getTemplates() {
   }));
 }
 
+/**
+ * Build a simple confirmation email body.
+ * @param {Object} opts
+ * @param {string} opts.type - 'private_lesson' | 'package' | 'class' | 'event' | 'workshop'
+ * @param {Object} opts.details - Type-specific details
+ * @returns {{ subject: string, html: string, text: string }}
+ */
+function buildConfirmationEmail({type, details}) {
+  let subject = "Your booking confirmation";
+  let bodyLines = [];
+
+  switch (type) {
+    case "private_lesson":
+      subject = `Private Lesson Confirmed — ${details.instructorName}`;
+      bodyLines = [
+        `<h2 style="color:#1e293b;margin:0 0 16px">Private Lesson Confirmed!</h2>`,
+        `<p>Your private lesson has been booked and payment received. Here are the details:</p>`,
+        `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
+        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Instructor</td><td style="padding:8px 0;font-weight:600">${details.instructorName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${details.studioName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Date</td><td style="padding:8px 0">${details.date}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Time</td><td style="padding:8px 0">${details.timeSlot}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${details.amountPaid}</td></tr>`,
+        `</table>`,
+        `<p style="color:#475569">The studio may reach out to confirm any final details. If you have questions, contact the studio directly.</p>`,
+      ];
+      break;
+
+    case "package":
+      subject = `Package Purchase Confirmed — ${details.packageName}`;
+      bodyLines = [
+        `<h2 style="color:#1e293b;margin:0 0 16px">Package Purchase Confirmed!</h2>`,
+        `<p>Your package has been purchased successfully.</p>`,
+        `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
+        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Package</td><td style="padding:8px 0;font-weight:600">${details.packageName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${details.studioName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Credits Added</td><td style="padding:8px 0;font-weight:600">${details.creditsAdded}</td></tr>`,
+        details.expirationDate ? `<tr><td style="padding:8px 0;color:#64748b">Expires</td><td style="padding:8px 0">${details.expirationDate}</td></tr>` : "",
+        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${details.amountPaid}</td></tr>`,
+        `</table>`,
+        `<p style="color:#475569">Your credits are ready to use. Book a class and use credits at checkout.</p>`,
+      ];
+      break;
+
+    case "class":
+      subject = `Class Registration Confirmed — ${details.itemName}`;
+      bodyLines = [
+        `<h2 style="color:#1e293b;margin:0 0 16px">Class Registration Confirmed!</h2>`,
+        `<p>You're registered for the following class:</p>`,
+        `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
+        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Class</td><td style="padding:8px 0;font-weight:600">${details.itemName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${details.studioName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${details.amountPaid}</td></tr>`,
+        `</table>`,
+      ];
+      break;
+
+    case "event":
+    case "workshop":
+      subject = `Registration Confirmed — ${details.itemName}`;
+      bodyLines = [
+        `<h2 style="color:#1e293b;margin:0 0 16px">Registration Confirmed!</h2>`,
+        `<p>You're registered for the following ${type}:</p>`,
+        `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
+        `<tr><td style="padding:8px 0;color:#64748b;width:140px">${type === "event" ? "Event" : "Workshop"}</td><td style="padding:8px 0;font-weight:600">${details.itemName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${details.studioName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${details.amountPaid}</td></tr>`,
+        `</table>`,
+      ];
+      break;
+
+    default:
+      subject = "Purchase Confirmation";
+      bodyLines = [`<p>Thank you for your purchase!</p>`];
+  }
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        ${bodyLines.join("\n")}
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">
+          This is an automated confirmation. Please do not reply to this email.
+        </p>
+      </div>
+    </div>`;
+
+  const text = bodyLines
+      .map((l) => l.replace(/<[^>]+>/g, "").trim())
+      .filter(Boolean)
+      .join("\n");
+
+  return {subject, html, text};
+}
+
+/**
+ * Send a purchase / booking confirmation email.
+ * @param {string} to - Recipient email address
+ * @param {string} type - 'private_lesson' | 'package' | 'class' | 'event' | 'workshop'
+ * @param {Object} details - Type-specific detail fields (see buildConfirmationEmail)
+ * @returns {Promise<void>}
+ */
+async function sendConfirmationEmail(to, type, details) {
+  if (!to) {
+    console.warn("[SendGrid] sendConfirmationEmail: no recipient email, skipping");
+    return;
+  }
+
+  const {subject, html, text} = buildConfirmationEmail({type, details});
+
+  await sendEmail({
+    to,
+    from: {email: "info@danceup.app", name: "DanceUp"},
+    subject,
+    html,
+    text,
+  });
+}
+
 module.exports = {
   sendEmail,
   getApiKey,
   getCategoryStats,
   getTemplates,
+  sendConfirmationEmail,
 };

@@ -813,19 +813,41 @@ class AttendanceService {
     // --- Monthly Revenue ---
     const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const startOfPrevMonthForRevenue = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
+    // Fetch completed purchases (packages, classes, events, workshops, cash)
     const purchasesSnapshot = await db.collection("purchases")
       .where("studioOwnerId", "==", studioOwnerId)
       .get();
+
+    // Fetch paid private lesson bookings
+    const privateLessonSnapshot = await db.collection("privateLessonBookings")
+      .where("studioId", "==", studioOwnerId)
+      .where("paymentStatus", "==", "paid")
+      .get();
+
     let currentMonthRevenue = 0;
     let prevMonthRevenue = 0;
+
     purchasesSnapshot.forEach((doc) => {
       const data = doc.data();
+      // Exclude refunded/failed purchases
+      if (data.status && data.status !== "completed") return;
       const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : null;
       if (!createdAt) return;
       const amount = data.price ?? data.amount ?? 0;
       if (createdAt >= startOfCurrentMonth) currentMonthRevenue += amount;
       else if (createdAt >= startOfPrevMonthForRevenue && createdAt < startOfCurrentMonth) prevMonthRevenue += amount;
     });
+
+    privateLessonSnapshot.forEach((doc) => {
+      const data = doc.data();
+      const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : null;
+      if (!createdAt) return;
+      const amount = data.amountPaid ?? 0;
+      if (createdAt >= startOfCurrentMonth) currentMonthRevenue += amount;
+      else if (createdAt >= startOfPrevMonthForRevenue && createdAt < startOfCurrentMonth) prevMonthRevenue += amount;
+    });
+
     const revenueChange = prevMonthRevenue > 0
       ? Math.round(((currentMonthRevenue - prevMonthRevenue) / prevMonthRevenue) * 100)
       : currentMonthRevenue > 0 ? 100 : 0;
