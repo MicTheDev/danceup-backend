@@ -8,36 +8,27 @@ const {
   sendErrorResponse,
   handleError,
   corsOptions,
+  isAllowedOrigin,
 } = require("./utils/http");
 
 // Initialize Express app
 const app = express();
 
-// Explicit CORS handling - must be before other middleware
+// CORS — only reflect origin if it is in the allowlist
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  
-  // Set CORS headers
-  if (origin) {
+  if (origin && isAllowedOrigin(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
   }
-  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
   res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Max-Age", "3600");
-  
-  // Handle preflight requests
-  if (req.method === "OPTIONS") {
-    return res.status(204).send("");
-  }
-  
+  if (req.method === "OPTIONS") return res.status(204).send("");
   next();
 });
 
-// Apply CORS middleware (backup)
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(express.json());

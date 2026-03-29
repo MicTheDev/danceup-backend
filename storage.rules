@@ -1,13 +1,51 @@
 rules_version = '2';
 
-// For local development, allow all access
-// In production, you should implement proper security rules
+// All file uploads are handled exclusively through Cloud Functions using the Admin SDK.
+// The Admin SDK bypasses these rules, so writes here are denied to block direct client uploads.
+// Files are made publicly readable after upload (via file.makePublic() in the Admin SDK),
+// so read access is allowed on all known image paths.
 service firebase.storage {
   match /b/{bucket}/o {
+
+    // Studio owner profile images
+    match /studio-images/{fileName} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Instructor headshots
+    match /instructor-photos/{fileName} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Workshop banner images
+    match /workshops/{studioOwnerId}/{workshopId}/{fileName} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Class images
+    match /classes/{studioOwnerId}/{classId}/{fileName} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Event images
+    match /events/{studioOwnerId}/{eventId}/{fileName} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Student avatar photos
+    match /student-avatars/{authUid}/{fileName} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Deny everything else
     match /{allPaths=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }
-
-

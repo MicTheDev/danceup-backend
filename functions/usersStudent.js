@@ -21,6 +21,8 @@ const {
   sendJsonResponse,
   sendErrorResponse,
   handleError,
+  corsOptions,
+  isAllowedOrigin,
 } = require("./utils/http");
 
 // Initialize Firebase Admin
@@ -31,49 +33,22 @@ if (!admin.apps.length) {
 // Initialize Express app
 const app = express();
 
-// Explicit CORS handling - must be before other middleware
-app.use((req, res, next) => {
+// Handle OPTIONS preflight — only reflect origin if it is in the allowlist
+app.options("*", (req, res) => {
   const origin = req.headers.origin;
-  
-  // Set CORS headers
-  if (origin) {
+  if (origin && isAllowedOrigin(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
   }
-  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
   res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Max-Age", "3600");
-  
-  // Handle preflight requests
-  if (req.method === "OPTIONS") {
-    return res.status(204).send("");
-  }
-  
-  next();
+  return res.status(204).send("");
 });
 
-// CORS configuration (backup)
-const corsOptions = {
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
-      return callback(null, true);
-    }
-    callback(null, true);
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  exposedHeaders: ["Content-Type", "Authorization"],
-  preflightContinue: false,
-  optionsSuccessStatus: 204,
-};
-
+// Apply CORS middleware using the shared allowlist
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
 
 app.use(express.json());
 app.use(express.urlencoded({extended: true}));
@@ -669,7 +644,7 @@ app.get("/my-classes", async (req, res) => {
 
 /**
  * GET /my-workshops
- * Get workshops from studios the student is enrolled in
+ * Get workshops the student has purchased tickets for.
  */
 app.get("/my-workshops", async (req, res) => {
   try {
@@ -681,67 +656,72 @@ app.get("/my-workshops", async (req, res) => {
       return handleError(req, res, authError);
     }
 
-    const studentsService = require("./services/students.service");
     const workshopsService = require("./services/workshops.service");
     const studiosService = require("./services/studios.service");
     const db = getFirestore();
 
-    // Get enrolled studio IDs
-    const studioIds = await studentsService.getEnrolledStudios(user.uid);
-    if (studioIds.length === 0) {
-      return sendJsonResponse(req, res, 200, {
-        upcoming: [],
-        past: [],
-      });
-    }
+    // Query all completed workshop purchases for this user
+    const purchasesSnapshot = await db.collection("purchases")
+        .where("authUid", "==", user.uid)
+        .where("purchaseType", "==", "workshop")
+        .where("status", "==", "completed")
+        .get();
 
-    // Fetch all workshops from enrolled studios
-    const allWorkshops = [];
-    for (const studioId of studioIds) {
-      try {
-        const workshops = await workshopsService.getWorkshops(studioId);
-        allWorkshops.push(...workshops.map((w) => ({ ...w, studioOwnerId: studioId })));
-      } catch (error) {
-        console.error(`Error fetching workshops for studio ${studioId}:`, error);
-        // Continue with other studios
-      }
+    if (purchasesSnapshot.empty) {
+      return sendJsonResponse(req, res, 200, {upcoming: [], past: []});
     }
 
     const now = new Date();
     const upcoming = [];
     const past = [];
 
-    // Process each workshop
-    for (const workshop of allWorkshops) {
+    for (const doc of purchasesSnapshot.docs) {
+      const purchase = doc.data();
+      const workshopId = purchase.itemId;
+
       try {
-        // Get studio info
-        const studio = await studiosService.getPublicStudioById(workshop.studioOwnerId);
-        if (!studio) continue;
+        const workshop = await workshopsService.getPublicWorkshopById(workshopId);
+        if (!workshop) continue;
+
+        const studioId = workshop.studioOwnerId || workshop.studio?.id || purchase.studioOwnerId;
+        let studioInfo = {
+          id: studioId,
+          name: purchase.studioName || "Studio",
+          city: "",
+          state: "",
+        };
+        if (studioId) {
+          try {
+            const studio = await studiosService.getPublicStudioById(studioId);
+            if (studio) {
+              studioInfo = {id: studio.id, name: studio.studioName, city: studio.city, state: studio.state};
+            }
+          } catch (e) {
+            // use fallback studioInfo
+          }
+        }
 
         const startTime = workshop.startTime?.toDate ? workshop.startTime.toDate() : new Date(workshop.startTime);
         const endTime = workshop.endTime?.toDate ? workshop.endTime.toDate() : new Date(workshop.endTime);
 
         const workshopData = {
-          id: workshop.id,
+          id: workshop.id || workshopId,
+          purchaseId: doc.id,
           name: workshop.name,
-          levels: workshop.levels,
+          levels: workshop.levels || [],
           description: workshop.description,
           startTime: startTime.toISOString(),
           endTime: endTime.toISOString(),
           imageUrl: workshop.imageUrl,
-          priceTiers: workshop.priceTiers,
-          addressLine1: workshop.addressLine1,
+          priceTiers: workshop.priceTiers || [],
+          addressLine1: workshop.addressLine1 || "",
           addressLine2: workshop.addressLine2,
-          city: workshop.city,
-          state: workshop.state,
-          zip: workshop.zip,
+          city: workshop.city || "",
+          state: workshop.state || "",
+          zip: workshop.zip || "",
           locationName: workshop.locationName,
-          studio: {
-            id: studio.id,
-            name: studio.studioName,
-            city: studio.city,
-            state: studio.state,
-          },
+          studio: studioInfo,
+          isCheckedIn: purchase.checkedIn || false,
         };
 
         if (endTime > now) {
@@ -750,8 +730,8 @@ app.get("/my-workshops", async (req, res) => {
           past.push(workshopData);
         }
       } catch (error) {
-        console.error(`Error processing workshop ${workshop.id}:`, error);
-        // Continue with next workshop
+        console.error(`Error processing workshop purchase ${doc.id}:`, error);
+        // Continue with next purchase
       }
     }
 
@@ -760,10 +740,7 @@ app.get("/my-workshops", async (req, res) => {
     // Sort past by start time (descending - most recent first)
     past.sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
 
-    sendJsonResponse(req, res, 200, {
-      upcoming,
-      past,
-    });
+    sendJsonResponse(req, res, 200, {upcoming, past});
   } catch (error) {
     console.error("Error getting my workshops:", error);
     handleError(req, res, error);
@@ -889,19 +866,6 @@ app.get("/event-passes", async (req, res) => {
   sendJsonResponse(req, res, 200, []);
 });
 
-/**
- * OPTIONS /forgot-password
- * Handle CORS preflight for forgot password endpoint
- */
-app.options("/forgot-password", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /forgot-password
@@ -925,35 +889,25 @@ app.post("/forgot-password", async (req, res) => {
       handleCodeInApp: false,
     };
 
-    // Send password reset email
-    await authService.sendPasswordResetEmail(email, actionCodeSettings);
+    // Send password reset email — silently swallow user-not-found to prevent enumeration
+    try {
+      await authService.sendPasswordResetEmail(email, actionCodeSettings);
+    } catch (emailError) {
+      const msg = emailError.message || "";
+      if (!msg.includes("user-not-found") && !msg.includes("No user found")) {
+        throw emailError;
+      }
+    }
 
     sendJsonResponse(req, res, 200, {
-      message: "Password reset email sent successfully",
+      message: "If an account with that email exists, a password reset link has been sent.",
     });
   } catch (error) {
     console.error("Forgot password error:", error);
-    const message = error.message || "Failed to send password reset email";
-    if (message.includes("user-not-found") || message.includes("No user found")) {
-      return sendErrorResponse(req, res, 404, "Not Found", "No account found with this email address");
-    }
     handleError(req, res, error);
   }
 });
 
-/**
- * OPTIONS /reset-password
- * Handle CORS preflight for reset password endpoint
- */
-app.options("/reset-password", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /reset-password
@@ -987,19 +941,6 @@ app.post("/reset-password", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /change-email
- * Handle CORS preflight for change email endpoint
- */
-app.options("/change-email", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /change-email

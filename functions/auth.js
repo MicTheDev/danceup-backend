@@ -2,6 +2,7 @@ const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const express = require("express");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const authService = require("./services/auth.service");
 const storageService = require("./services/storage.service");
 const {verifyToken} = require("./utils/auth");
@@ -19,6 +20,8 @@ const {
   sendJsonResponse,
   sendErrorResponse,
   handleError,
+  corsOptions,
+  isAllowedOrigin,
 } = require("./utils/http");
 
 // Initialize Firebase Admin
@@ -29,86 +32,59 @@ if (!admin.apps.length) {
 // Initialize Express app
 const app = express();
 
-// CORS configuration - explicitly allow localhost for emulator
-const corsOptions = {
-  origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, Postman)
-    if (!origin) return callback(null, true);
-    
-    // Allow localhost and 127.0.0.1 for local development
-    if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
-      return callback(null, true);
-    }
-    
-    // Allow all origins for now (you can restrict this in production)
-    callback(null, true);
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
-  exposedHeaders: ["Content-Type", "Authorization"],
-  preflightContinue: false,
-  optionsSuccessStatus: 204,
-};
-
-// Handle OPTIONS preflight requests FIRST - must be before cors() and other middleware
-// This ensures preflight requests are handled even if cors() middleware doesn't catch them
+// Handle OPTIONS preflight — only reflect origin if it is in the allowlist
 app.options("*", (req, res) => {
-  const origin = req.headers.origin || "*";
-  
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
+  const origin = req.headers.origin;
+  if (origin && isAllowedOrigin(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
   res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Max-Age", "86400");
-  
   return res.status(204).send();
 });
 
-// Apply CORS middleware - this handles OPTIONS automatically
+// Apply CORS middleware using the shared allowlist
 app.use(cors(corsOptions));
-
-// Additional explicit CORS handling for all requests (backup)
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  
-  // Set CORS headers explicitly on every response
-  if (origin) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  
-  next();
-});
 app.use(express.json());
 app.use(express.urlencoded({extended: true}));
 
-/**
- * OPTIONS /register
- * Handle CORS preflight for register endpoint
- */
-app.options("/register", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
+// Trust the first proxy so req.ip reflects the real client IP via X-Forwarded-For
+app.set("trust proxy", 1);
+
+// Rate limiters for sensitive auth endpoints
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {error: "Too Many Requests", message: "Too many login attempts. Please try again in 15 minutes."},
 });
+
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {error: "Too Many Requests", message: "Too many registration attempts. Please try again in an hour."},
+});
+
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {error: "Too Many Requests", message: "Too many password reset attempts. Please try again in 15 minutes."},
+});
+
 
 /**
  * POST /register
  * Register a new studio owner
  */
-app.post("/register", async (req, res) => {
+app.post("/register", registerLimiter, async (req, res) => {
   try {
     // Validate input
     const validation = validateRegistrationPayload(req.body);
@@ -223,33 +199,12 @@ app.post("/register", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /login
- * Handle CORS preflight for login endpoint (redundant but kept for explicit handling)
- */
-app.options("/login", (req, res) => {
-  const origin = req.headers.origin;
-  
-  // Set all CORS headers
-  if (origin) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  
-  // Send 204 No Content response
-  res.status(204).send("");
-});
 
 /**
  * POST /login
  * Login with email and password
  */
-app.post("/login", async (req, res) => {
+app.post("/login", loginLimiter, async (req, res) => {
   try {
     // Validate input
     const validation = validateLoginPayload(req.body);
@@ -282,7 +237,7 @@ app.post("/login", async (req, res) => {
     try {
       userRecord = await authService.getUserByEmail(email);
     } catch (error) {
-      return sendErrorResponse(req, res, 401, "Authentication Failed", "User not found");
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid email or password");
     }
 
     // Get user document from Firestore
@@ -313,19 +268,6 @@ app.post("/login", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /me
- * Handle CORS preflight for me endpoint
- */
-app.options("/me", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * GET /me
@@ -377,19 +319,6 @@ app.get("/me", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /logout
- * Handle CORS preflight for logout endpoint
- */
-app.options("/logout", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /logout
@@ -413,25 +342,12 @@ app.post("/logout", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /forgot-password
- * Handle CORS preflight for forgot password endpoint
- */
-app.options("/forgot-password", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /forgot-password
  * Send password reset email
  */
-app.post("/forgot-password", async (req, res) => {
+app.post("/forgot-password", forgotPasswordLimiter, async (req, res) => {
   try {
     // Validate input
     const validation = validateForgotPasswordPayload(req.body);
@@ -449,35 +365,28 @@ app.post("/forgot-password", async (req, res) => {
       handleCodeInApp: false,
     };
 
-    // Send password reset email
-    await authService.sendPasswordResetEmail(email, actionCodeSettings);
+    // Send password reset email.
+    // If the email doesn't exist we intentionally swallow the error and return
+    // the same success response to prevent account enumeration — callers cannot
+    // distinguish a registered address from an unregistered one.
+    try {
+      await authService.sendPasswordResetEmail(email, actionCodeSettings);
+    } catch (emailError) {
+      const msg = emailError.message || "";
+      if (!msg.includes("user-not-found") && !msg.includes("No user found")) {
+        throw emailError;
+      }
+    }
 
     sendJsonResponse(req, res, 200, {
-      message: "Password reset email sent successfully",
+      message: "If an account with that email exists, a password reset link has been sent.",
     });
   } catch (error) {
     console.error("Forgot password error:", error);
-    const message = error.message || "Failed to send password reset email";
-    if (message.includes("user-not-found") || message.includes("No user found")) {
-      return sendErrorResponse(req, res, 404, "Not Found", "No account found with this email address");
-    }
     handleError(req, res, error);
   }
 });
 
-/**
- * OPTIONS /reset-password
- * Handle CORS preflight for reset password endpoint
- */
-app.options("/reset-password", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /reset-password
@@ -511,19 +420,6 @@ app.post("/reset-password", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /change-email
- * Handle CORS preflight for change email endpoint
- */
-app.options("/change-email", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /change-email
@@ -598,19 +494,6 @@ app.post("/change-email", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /update-membership
- * Handle CORS preflight for update-membership endpoint
- */
-app.options("/update-membership", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "PATCH, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * PATCH /update-membership
@@ -650,8 +533,19 @@ app.patch("/update-membership", async (req, res) => {
     }
 
     const userDoc = userQuery.docs[0];
+    const userData = userDoc.data();
 
-    // Update membership
+    // Block direct membership changes for users who already have a confirmed Stripe
+    // subscription. Their membership tier is owned by Stripe — upgrades/downgrades
+    // must go through the billing portal so payments are always authoritative.
+    if (userData.stripeSubscriptionId && userData.stripeSubscriptionStatus === "active") {
+      return sendErrorResponse(
+          req, res, 403, "Forbidden",
+          "Your membership is managed through your Stripe subscription. Please use the billing portal to make changes.",
+      );
+    }
+
+    // Update membership (only reachable during registration, before payment completes)
     await userDoc.ref.update({
       membership,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),

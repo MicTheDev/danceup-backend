@@ -10,6 +10,8 @@ const {
   sendJsonResponse,
   sendErrorResponse,
   handleError,
+  corsOptions,
+  isAllowedOrigin,
 } = require("./utils/http");
 
 // Initialize Firebase Admin
@@ -20,58 +22,34 @@ if (!admin.apps.length) {
 // Initialize Express app
 const app = express();
 
-// Handle OPTIONS preflight requests FIRST
+// CORS — only reflect origin if it is in the allowlist
 app.options("*", (req, res) => {
-  const origin = req.headers.origin || "*";
-
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
+  const origin = req.headers.origin;
+  if (origin && isAllowedOrigin(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
   res.setHeader("Access-Control-Max-Age", "86400");
-
   return res.status(204).send();
 });
 
-// CORS middleware
 app.use((req, res, next) => {
-  const origin = req.headers.origin || "*";
-
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  const origin = req.headers.origin;
+  if (origin && isAllowedOrigin(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
   res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
-
   next();
 });
 
-app.use(cors({
-  origin: true,
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
-  exposedHeaders: ["Content-Type", "Authorization"],
-  preflightContinue: false,
-  optionsSuccessStatus: 204,
-}));
+app.use(cors(corsOptions));
 
 app.use(express.json());
 app.use(express.urlencoded({extended: true}));
 
-/**
- * OPTIONS /create-payment-link
- * Handle CORS preflight
- */
-app.options("/create-payment-link", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /create-payment-link
@@ -536,19 +514,6 @@ app.post("/charge-saved", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /success
- * Handle CORS preflight
- */
-app.options("/success", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /success
@@ -889,19 +854,6 @@ app.post("/success", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /
- * Handle CORS preflight for purchase history
- */
-app.options("/", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * GET /
@@ -964,19 +916,6 @@ app.get("/", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /student/:studentId
- * Handle CORS preflight
- */
-app.options("/student/:studentId", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * GET /student/:studentId
@@ -1047,19 +986,6 @@ app.get("/student/:studentId", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /subscriptions
- * Handle CORS preflight
- */
-app.options("/subscriptions", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * GET /subscriptions
@@ -1162,19 +1088,6 @@ app.get("/subscriptions", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /subscriptions/:subscriptionId/cancel
- * Handle CORS preflight
- */
-app.options("/subscriptions/:subscriptionId/cancel", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /subscriptions/:subscriptionId/cancel
@@ -1276,6 +1189,119 @@ app.post("/cash", async (req, res) => {
     sendJsonResponse(req, res, 201, {id: docRef.id, message: "Cash payment recorded successfully"});
   } catch (error) {
     console.error("Error recording cash payment:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * POST /:purchaseId/check-in
+ * Mark an event or workshop purchase as checked in.
+ * Studio owners can check in any attendee for their item.
+ * Students can self-check-in for their own workshop/event purchase.
+ */
+app.post("/:purchaseId/check-in", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const {purchaseId} = req.params;
+    const db = getFirestore();
+
+    const purchaseRef = db.collection("purchases").doc(purchaseId);
+    const purchaseDoc = await purchaseRef.get();
+
+    if (!purchaseDoc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Purchase not found");
+    }
+
+    const purchase = purchaseDoc.data();
+
+    // Check if caller is the studio owner for this purchase
+    const studioOwnerSnapshot = await db.collection("users")
+        .where("authUid", "==", user.uid)
+        .limit(1)
+        .get();
+    const isStudioOwner = !studioOwnerSnapshot.empty &&
+      studioOwnerSnapshot.docs[0].id === purchase.studioOwnerId;
+
+    // Or the student who owns this purchase
+    const isOwnPurchase = purchase.authUid === user.uid;
+
+    if (!isStudioOwner && !isOwnPurchase) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "You do not have permission to check in this attendee");
+    }
+
+    if (purchase.checkedIn) {
+      return sendErrorResponse(req, res, 409, "Conflict", "Attendee is already checked in");
+    }
+
+    const checkedInBy = isStudioOwner ? "studio" : "student";
+
+    await purchaseRef.update({
+      checkedIn: true,
+      checkedInAt: admin.firestore.FieldValue.serverTimestamp(),
+      checkedInBy,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, {message: "Attendee checked in successfully"});
+  } catch (error) {
+    console.error("Error checking in attendee:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * POST /:purchaseId/check-out
+ * Remove check-in for a purchase (studio owner only).
+ */
+app.post("/:purchaseId/check-out", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const {purchaseId} = req.params;
+    const db = getFirestore();
+
+    const purchaseRef = db.collection("purchases").doc(purchaseId);
+    const purchaseDoc = await purchaseRef.get();
+
+    if (!purchaseDoc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Purchase not found");
+    }
+
+    const purchase = purchaseDoc.data();
+
+    // Only studio owner can remove a check-in
+    const studioOwnerSnapshot = await db.collection("users")
+        .where("authUid", "==", user.uid)
+        .limit(1)
+        .get();
+    const isStudioOwner = !studioOwnerSnapshot.empty &&
+      studioOwnerSnapshot.docs[0].id === purchase.studioOwnerId;
+
+    if (!isStudioOwner) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Only studio owners can remove a check-in");
+    }
+
+    await purchaseRef.update({
+      checkedIn: false,
+      checkedInAt: null,
+      checkedInBy: null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, {message: "Check-in removed successfully"});
+  } catch (error) {
+    console.error("Error removing check-in:", error);
     handleError(req, res, error);
   }
 });

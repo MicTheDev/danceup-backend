@@ -4,20 +4,44 @@
  */
 
 /**
+ * Allowed origins for CORS.
+ * Localhost is permitted for local development and emulator use.
+ * Add custom production domains here when they are configured.
+ */
+const ALLOWED_ORIGINS = new Set([
+  // Dev
+  "https://danceup-users-dev--dev-danceup.us-east4.hosted.app",
+  "https://danceup-studio-owners-dev--dev-danceup.us-east4.hosted.app",
+  // Staging
+  "https://danceup-users-staging--staging-danceup.us-east4.hosted.app",
+  "https://danceup-studio-owners--staging-danceup.us-east4.hosted.app",
+  // Production (Firebase Hosting URLs — replace or supplement with custom domains when ready)
+  "https://danceup-users-production--production-danceup.us-east4.hosted.app",
+  "https://danceup-studio-owners--production-danceup.us-east4.hosted.app",
+]);
+
+/**
+ * Returns true if the given origin is allowed to make cross-origin requests.
+ * @param {string} origin
+ * @returns {boolean}
+ */
+function isAllowedOrigin(origin) {
+  if (!origin) return false;
+  if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+    return true;
+  }
+  return ALLOWED_ORIGINS.has(origin);
+}
+
+/**
  * CORS configuration
  */
 const corsOptions = {
   origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, Postman)
+    // Allow requests with no origin (mobile apps, curl, Postman, server-to-server)
     if (!origin) return callback(null, true);
-
-    // Allow localhost for development
-    if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
-      return callback(null, true);
-    }
-
-    // Allow all origins for now (you can restrict this in production)
-    callback(null, true);
+    if (isAllowedOrigin(origin)) return callback(null, true);
+    callback(new Error(`Origin ${origin} not allowed by CORS policy`));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -35,10 +59,13 @@ const corsOptions = {
  */
 function handleCorsPreflight(req, res) {
   if (req.method === "OPTIONS") {
-    res.set("Access-Control-Allow-Origin", req.headers.origin || "*");
+    const origin = req.headers.origin;
+    if (origin && isAllowedOrigin(origin)) {
+      res.set("Access-Control-Allow-Origin", origin);
+      res.set("Access-Control-Allow-Credentials", "true");
+    }
     res.set("Access-Control-Allow-Methods", corsOptions.methods.join(", "));
     res.set("Access-Control-Allow-Headers", corsOptions.allowedHeaders.join(", "));
-    res.set("Access-Control-Allow-Credentials", "true");
     res.set("Access-Control-Max-Age", "3600");
     res.status(corsOptions.optionsSuccessStatus).send("");
     return true;
@@ -52,8 +79,11 @@ function handleCorsPreflight(req, res) {
  * @param {Response} res - HTTP response
  */
 function setCorsHeaders(req, res) {
-  res.set("Access-Control-Allow-Origin", req.headers.origin || "*");
-  res.set("Access-Control-Allow-Credentials", "true");
+  const origin = req.headers.origin;
+  if (origin && isAllowedOrigin(origin)) {
+    res.set("Access-Control-Allow-Origin", origin);
+    res.set("Access-Control-Allow-Credentials", "true");
+  }
   res.set("Access-Control-Expose-Headers", corsOptions.exposedHeaders.join(", "));
 }
 
@@ -179,6 +209,7 @@ function extractPathParams(url, pattern) {
 
 module.exports = {
   corsOptions,
+  isAllowedOrigin,
   handleCorsPreflight,
   setCorsHeaders,
   parseJsonBody,

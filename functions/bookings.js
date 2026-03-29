@@ -8,51 +8,27 @@ const {
   sendJsonResponse,
   sendErrorResponse,
   handleError,
+  corsOptions,
+  isAllowedOrigin,
 } = require("./utils/http");
 
 // Initialize Express app
 const app = express();
 
-// Explicit CORS handling - must be before other middleware
+// CORS — only reflect origin if it is in the allowlist
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  
-  // Set CORS headers
-  if (origin) {
+  if (origin && isAllowedOrigin(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
   }
-  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
   res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Max-Age", "3600");
-  
-  // Handle preflight requests
-  if (req.method === "OPTIONS") {
-    return res.status(204).send("");
-  }
-  
+  if (req.method === "OPTIONS") return res.status(204).send("");
   next();
 });
-
-// CORS configuration (backup)
-const corsOptions = {
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
-      return callback(null, true);
-    }
-    callback(null, true);
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  exposedHeaders: ["Content-Type", "Authorization"],
-  preflightContinue: false,
-  optionsSuccessStatus: 204,
-};
 
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
@@ -345,13 +321,6 @@ app.post("/charge-saved", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /instructor/:instructorId
- * Handle CORS preflight for instructor bookings endpoint
- */
-app.options("/instructor/:instructorId", (req, res) => {
-  res.status(204).send("");
-});
 
 /**
  * GET /instructor/:instructorId
@@ -360,6 +329,13 @@ app.options("/instructor/:instructorId", (req, res) => {
  */
 app.get("/instructor/:instructorId", async (req, res) => {
   try {
+    // Verify token — booking schedules include student PII
+    try {
+      await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
     const {instructorId} = req.params;
     const {startDate, endDate} = req.query;
 
@@ -382,13 +358,6 @@ app.get("/instructor/:instructorId", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /:bookingId
- * Handle CORS preflight for booking detail endpoint
- */
-app.options("/:bookingId", (req, res) => {
-  res.status(204).send("");
-});
 
 /**
  * GET /:bookingId
@@ -424,13 +393,6 @@ app.get("/:bookingId", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /:bookingId/cancel
- * Handle CORS preflight for cancel booking endpoint
- */
-app.options("/:bookingId/cancel", (req, res) => {
-  res.status(204).send("");
-});
 
 /**
  * PATCH /:bookingId/cancel
@@ -468,13 +430,6 @@ app.patch("/:bookingId/cancel", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /student/my-bookings
- * Handle CORS preflight for student bookings endpoint
- */
-app.options("/student/my-bookings", (req, res) => {
-  res.status(204).send("");
-});
 
 /**
  * GET /student/my-bookings
@@ -503,13 +458,6 @@ app.get("/student/my-bookings", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /:bookingId/confirm
- * Handle CORS preflight for confirm booking endpoint
- */
-app.options("/:bookingId/confirm", (req, res) => {
-  res.status(204).send("");
-});
 
 /**
  * PATCH /:bookingId/confirm

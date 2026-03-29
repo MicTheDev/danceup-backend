@@ -9,6 +9,8 @@ const {
   sendJsonResponse,
   sendErrorResponse,
   handleError,
+  corsOptions,
+  isAllowedOrigin,
 } = require("./utils/http");
 
 // Initialize Firebase Admin
@@ -19,59 +21,35 @@ if (!admin.apps.length) {
 // Initialize Express app
 const app = express();
 
-// Handle OPTIONS preflight requests FIRST
+// CORS — only reflect origin if it is in the allowlist
 app.options("*", (req, res) => {
-  const origin = req.headers.origin || "*";
-
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
+  const origin = req.headers.origin;
+  if (origin && isAllowedOrigin(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
   res.setHeader("Access-Control-Max-Age", "86400");
-
   return res.status(204).send();
 });
 
-// CORS middleware
 app.use((req, res, next) => {
-  const origin = req.headers.origin || "*";
-
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
+  const origin = req.headers.origin;
+  if (origin && isAllowedOrigin(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
   res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
-
   next();
 });
 
-app.use(cors({
-  origin: true,
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
-  exposedHeaders: ["Content-Type", "Authorization"],
-  preflightContinue: false,
-  optionsSuccessStatus: 204,
-}));
+app.use(cors(corsOptions));
 // Middleware setup
 // Note: Webhook endpoint needs raw body, so we'll handle it separately
 app.use(express.json());
 app.use(express.urlencoded({extended: true}));
 
-/**
- * OPTIONS /products
- * Handle CORS preflight
- */
-app.options("/products", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * GET /products
@@ -90,19 +68,6 @@ app.get("/products", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /create-account
- * Handle CORS preflight
- */
-app.options("/create-account", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /create-account
@@ -194,19 +159,6 @@ app.post("/create-account", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /account/:accountId
- * Handle CORS preflight
- */
-app.options("/account/:accountId", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * GET /account/:accountId
@@ -252,19 +204,6 @@ app.get("/account/:accountId", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /complete-setup
- * Handle CORS preflight
- */
-app.options("/complete-setup", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * GET /complete-setup
@@ -383,19 +322,6 @@ app.post("/complete-setup", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /login-link
- * Handle CORS preflight
- */
-app.options("/login-link", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /login-link
@@ -441,19 +367,6 @@ app.post("/login-link", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /account-session
- * Handle CORS preflight
- */
-app.options("/account-session", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /account-session
@@ -495,19 +408,6 @@ app.post("/account-session", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /create-checkout-session
- * Handle CORS preflight
- */
-app.options("/create-checkout-session", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /create-checkout-session
@@ -634,19 +534,6 @@ app.post("/create-checkout-session", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /create-payment-link
- * Handle CORS preflight
- */
-app.options("/create-payment-link", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /create-payment-link
@@ -712,19 +599,6 @@ app.post("/create-payment-link", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /checkout-success
- * Handle CORS preflight
- */
-app.options("/checkout-success", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * POST /checkout-success

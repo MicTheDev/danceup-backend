@@ -13,54 +13,32 @@ const {
   sendErrorResponse,
   handleError,
   corsOptions,
+  isAllowedOrigin,
 } = require("./utils/http");
 
 // Initialize Express app
 const app = express();
 
-// Explicit CORS handling - must be before other middleware
+// CORS — only reflect origin if it is in the allowlist
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  
-  // Set CORS headers
-  if (origin) {
+  if (origin && isAllowedOrigin(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
   }
-  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
   res.setHeader("Access-Control-Expose-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Max-Age", "3600");
-  
-  // Handle preflight requests
-  if (req.method === "OPTIONS") {
-    return res.status(204).send("");
-  }
-  
+  if (req.method === "OPTIONS") return res.status(204).send("");
   next();
 });
 
-// Apply CORS middleware (backup)
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({extended: true}));
 
-/**
- * OPTIONS /public
- * Handle CORS preflight for public workshops endpoint
- */
-app.options("/public", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * GET /public
@@ -90,19 +68,6 @@ app.get("/public", async (req, res) => {
   }
 });
 
-/**
- * OPTIONS /public/:id
- * Handle CORS preflight for public workshop detail endpoint
- */
-app.options("/public/:id", (req, res) => {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  return res.status(204).send();
-});
 
 /**
  * GET /public/:id
@@ -233,7 +198,7 @@ app.post("/", async (req, res) => {
 
 /**
  * GET /:id/attendees
- * Get attendees (purchases) for a workshop. Stub: returns [] until full implementation.
+ * Get attendees (purchases) for a workshop.
  */
 app.get("/:id/attendees", async (req, res) => {
   try {
@@ -244,6 +209,8 @@ app.get("/:id/attendees", async (req, res) => {
       return handleError(req, res, authError);
     }
     const {id} = req.params;
+    const {getFirestore} = require("./utils/firestore");
+    const db = getFirestore();
     const studioOwnerId = await workshopsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
@@ -252,7 +219,86 @@ app.get("/:id/attendees", async (req, res) => {
     if (!workshopData) {
       return sendErrorResponse(req, res, 404, "Not Found", "Workshop not found");
     }
-    sendJsonResponse(req, res, 200, []);
+
+    // Query all completed purchases for this workshop
+    const purchasesSnapshot = await db.collection("purchases")
+        .where("purchaseType", "==", "workshop")
+        .where("itemId", "==", id)
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("status", "==", "completed")
+        .get();
+
+    const attendees = [];
+    for (const doc of purchasesSnapshot.docs) {
+      const purchase = doc.data();
+
+      let firstName = "";
+      let lastName = "";
+      let email = "";
+      let city = null;
+      let state = null;
+      let zip = null;
+      let isGuest = !purchase.studentId || purchase.studentId === "guest";
+
+      // Look up student record for name/email
+      if (purchase.studentId && purchase.studentId !== "guest") {
+        try {
+          const studentDoc = await db.collection("students").doc(purchase.studentId).get();
+          if (studentDoc.exists) {
+            const s = studentDoc.data();
+            firstName = s.firstName || "";
+            lastName = s.lastName || "";
+            email = s.email || "";
+            city = s.city || null;
+            state = s.state || null;
+            zip = s.zip || null;
+          }
+        } catch (err) {
+          console.error(`Error fetching student ${purchase.studentId}:`, err);
+        }
+      }
+
+      // Fallback to the user's profile document if no student record
+      if (!firstName && !email && purchase.authUid && purchase.authUid !== "guest") {
+        try {
+          const userSnapshot = await db.collection("users")
+              .where("authUid", "==", purchase.authUid)
+              .limit(1)
+              .get();
+          if (!userSnapshot.empty) {
+            const u = userSnapshot.docs[0].data();
+            firstName = firstName || u.firstName || "";
+            lastName = lastName || u.lastName || "";
+            email = email || u.email || "";
+          }
+        } catch (err) {
+          console.error(`Error fetching user profile ${purchase.authUid}:`, err);
+        }
+      }
+
+      attendees.push({
+        id: doc.id,
+        purchaseId: doc.id,
+        firstName,
+        lastName,
+        email,
+        city,
+        state,
+        zip,
+        priceTierName: null,
+        priceTierPrice: purchase.price || null,
+        price: purchase.price || 0,
+        purchaseDate: purchase.createdAt || null,
+        checkedIn: purchase.checkedIn || false,
+        checkedInAt: purchase.checkedInAt || null,
+        checkedInBy: purchase.checkedInBy || null,
+        eventCode: null,
+        stripePaymentIntentId: purchase.stripePaymentIntentId || null,
+        isGuest,
+      });
+    }
+
+    sendJsonResponse(req, res, 200, attendees);
   } catch (error) {
     console.error("Error getting workshop attendees:", error);
     handleError(req, res, error);
@@ -261,7 +307,7 @@ app.get("/:id/attendees", async (req, res) => {
 
 /**
  * GET /:id/report
- * Get workshop report (ticket sales by tier, revenue). Stub: returns empty report until full implementation.
+ * Get workshop report: ticket sales by tier, revenue, and check-in counts.
  */
 app.get("/:id/report", async (req, res) => {
   try {
@@ -272,6 +318,9 @@ app.get("/:id/report", async (req, res) => {
       return handleError(req, res, authError);
     }
     const {id} = req.params;
+    const {getFirestore} = require("./utils/firestore");
+    const db = getFirestore();
+
     const studioOwnerId = await workshopsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
@@ -280,19 +329,62 @@ app.get("/:id/report", async (req, res) => {
     if (!workshopData) {
       return sendErrorResponse(req, res, 404, "Not Found", "Workshop not found");
     }
+
+    // Fetch all completed purchases for this workshop
+    const purchasesSnapshot = await db.collection("purchases")
+        .where("purchaseType", "==", "workshop")
+        .where("itemId", "==", id)
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("status", "==", "completed")
+        .get();
+
+    const purchases = purchasesSnapshot.docs.map((d) => d.data());
+    const totalTickets = purchases.length;
+    const totalRevenue = purchases.reduce((sum, p) => sum + (p.price || 0), 0);
+    const checkedInCount = purchases.filter((p) => p.checkedIn === true).length;
+
+    // Map price tiers from the workshop definition and tally actual sales by
+    // matching each purchase's price against a tier price (best-effort, since
+    // tier name is not stored on the purchase record).
     const priceTiers = workshopData.priceTiers || [];
-    const ticketSalesByTier = priceTiers.map((t) => ({
-      tierName: t.name || "Tier",
-      quantity: 0,
-      revenue: 0,
-    }));
+    const tierMap = new Map();
+    for (const tier of priceTiers) {
+      tierMap.set(tier.price, {
+        tierName: tier.name || "Tier",
+        quantity: 0,
+        revenue: 0,
+      });
+    }
+
+    // If there are no defined tiers (shouldn't happen) fall back to a single bucket
+    const fallback = {tierName: "General", quantity: 0, revenue: 0};
+
+    for (const purchase of purchases) {
+      const price = purchase.price || 0;
+      if (tierMap.has(price)) {
+        const entry = tierMap.get(price);
+        entry.quantity += 1;
+        entry.revenue += price;
+      } else {
+        // Price doesn't match any known tier — put in fallback bucket
+        fallback.quantity += 1;
+        fallback.revenue += price;
+      }
+    }
+
+    const ticketSalesByTier = [...tierMap.values()];
+    if (fallback.quantity > 0) {
+      ticketSalesByTier.push(fallback);
+    }
+
     const report = {
       workshopId: id,
       name: workshopData.name || "Workshop",
-      attendeesCount: 0,
+      attendeesCount: totalTickets,
+      checkedInCount,
       ticketSalesByTier,
-      totalTickets: 0,
-      totalRevenue: 0,
+      totalTickets,
+      totalRevenue,
     };
     sendJsonResponse(req, res, 200, report);
   } catch (error) {
