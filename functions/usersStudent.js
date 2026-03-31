@@ -8,6 +8,7 @@ const studioEnrollmentService = require("./services/studio-enrollment.service");
 const creditTrackingService = require("./services/credit-tracking.service");
 const {createCustomer, createSetupIntent, listPaymentMethods, detachPaymentMethod, updatePaymentMethod, getStripePublishableKey} = require("./services/stripe.service");
 const {verifyToken} = require("./utils/auth");
+const {sendWelcomeEmail} = require("./services/sendgrid.service");
 const {getFirestore} = require("./utils/firestore");
 const {getFirebaseApiKey} = require("./utils/firebase-api-key");
 const {
@@ -77,7 +78,7 @@ app.post("/register", async (req, res) => {
       state,
       zip,
       phone,
-      danceGenre,
+      danceGenres,
       subscribeToNewsletter,
       avatarFile,
     } = req.body;
@@ -117,7 +118,7 @@ app.post("/register", async (req, res) => {
         state: state.trim().toUpperCase(),
         zip: zip.trim(),
         phone: phone ? phone.trim() : null,
-        danceGenre: danceGenre || null,
+        danceGenres: Array.isArray(danceGenres) ? danceGenres : [],
         subscribeToNewsletter: subscribeToNewsletter || false,
         photoURL: avatarUrl,
       };
@@ -143,6 +144,13 @@ app.post("/register", async (req, res) => {
       } catch (stripeError) {
         console.error("Error creating Stripe customer during registration:", stripeError);
         // Registration still succeeds — customer can be created later
+      }
+
+      // Send welcome email — non-fatal
+      try {
+        await sendWelcomeEmail(userRecord.email, firstName);
+      } catch (emailError) {
+        console.error("Error sending welcome email:", emailError);
       }
 
       // Generate custom token
@@ -311,7 +319,7 @@ app.get("/me", async (req, res) => {
         state: studentData.state,
         zip: studentData.zip,
         phone: studentData.phone || null,
-        danceGenre: studentData.danceGenre || null,
+        danceGenres: studentData.danceGenres || (studentData.danceGenre ? [studentData.danceGenre] : []),
         subscribeToNewsletter: studentData.subscribeToNewsletter || false,
         photoURL: studentData.photoURL || null,
         role: studentData.role || "student",
@@ -354,7 +362,7 @@ app.put("/me", async (req, res) => {
       state,
       zip,
       phone,
-      danceGenre,
+      danceGenres,
       subscribeToNewsletter,
       avatarFile,
     } = req.body;
@@ -367,7 +375,7 @@ app.put("/me", async (req, res) => {
       state: state?.trim().toUpperCase(),
       zip: zip?.trim(),
       phone: phone ? phone.trim() : null,
-      danceGenre: danceGenre || null,
+      danceGenres: Array.isArray(danceGenres) ? danceGenres : [],
       subscribeToNewsletter: subscribeToNewsletter || false,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
@@ -430,7 +438,7 @@ app.put("/me", async (req, res) => {
         state: updatedData.state,
         zip: updatedData.zip,
         phone: updatedData.phone || null,
-        danceGenre: updatedData.danceGenre || null,
+        danceGenres: updatedData.danceGenres || (updatedData.danceGenre ? [updatedData.danceGenre] : []),
         subscribeToNewsletter: updatedData.subscribeToNewsletter || false,
         photoURL: updatedData.photoURL || null,
         role: updatedData.role || "student",
@@ -497,7 +505,7 @@ app.delete("/me/avatar", async (req, res) => {
         city: updatedData.city,
         state: updatedData.state,
         zip: updatedData.zip,
-        danceGenre: updatedData.danceGenre || null,
+        danceGenres: updatedData.danceGenres || (updatedData.danceGenre ? [updatedData.danceGenre] : []),
         subscribeToNewsletter: updatedData.subscribeToNewsletter || false,
         photoURL: null,
         role: updatedData.role || "student",

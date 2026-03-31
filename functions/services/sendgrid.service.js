@@ -241,6 +241,100 @@ function buildConfirmationEmail({type, details}) {
 }
 
 /**
+ * Send a welcome email to a newly registered student.
+ * @param {string} to - Recipient email address
+ * @param {string} firstName - Recipient's first name
+ * @returns {Promise<void>}
+ */
+async function sendWelcomeEmail(to, firstName) {
+  if (!to) {
+    console.warn("[SendGrid] sendWelcomeEmail: no recipient email, skipping");
+    return;
+  }
+
+  const name = firstName ? firstName.trim() : "there";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:580px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+
+        <h1 style="margin:0 0 4px;font-size:26px;color:#1e293b">Welcome to DanceUp, ${name}! 🎉</h1>
+        <p style="margin:0 0 24px;color:#64748b;font-size:15px">We're so excited to have you in the community. Here's a quick look at what you can do.</p>
+
+        <div style="background:#f1f5f9;border-radius:10px;padding:20px 24px;margin-bottom:24px">
+
+          <div style="display:flex;align-items:flex-start;margin-bottom:18px">
+            <span style="font-size:22px;margin-right:12px;flex-shrink:0">🔍</span>
+            <div>
+              <p style="margin:0 0 2px;font-weight:600;color:#1e293b;font-size:15px">Browse Classes &amp; Studios</p>
+              <p style="margin:0;color:#64748b;font-size:14px">Search for dance classes, explore local studios, and meet the instructors behind them — all filtered by style, city, and skill level.</p>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:flex-start;margin-bottom:18px">
+            <span style="font-size:22px;margin-right:12px;flex-shrink:0">🎟️</span>
+            <div>
+              <p style="margin:0 0 2px;font-weight:600;color:#1e293b;font-size:15px">Discover Events &amp; Workshops</p>
+              <p style="margin:0;color:#64748b;font-size:14px">Find socials, festivals, congresses, and intensive workshops happening near you. Register and pay directly through DanceUp.</p>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:flex-start;margin-bottom:18px">
+            <span style="font-size:22px;margin-right:12px;flex-shrink:0">🧑‍🏫</span>
+            <div>
+              <p style="margin:0 0 2px;font-weight:600;color:#1e293b;font-size:15px">Book Private Lessons</p>
+              <p style="margin:0;color:#64748b;font-size:14px">Browse instructor profiles and book one-on-one sessions at studios near you. Perfect for leveling up your technique.</p>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:flex-start">
+            <span style="font-size:22px;margin-right:12px;flex-shrink:0">📊</span>
+            <div>
+              <p style="margin:0 0 2px;font-weight:600;color:#1e293b;font-size:15px">Your Dashboard</p>
+              <p style="margin:0;color:#64748b;font-size:14px">Head to your dashboard to view your purchase history, manage your profile, check your upcoming bookings, and track any class credits or packages you've bought.</p>
+            </div>
+          </div>
+
+        </div>
+
+        <a href="https://danceup.app" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          Start Exploring →
+        </a>
+
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:0 0 16px"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">
+          You're receiving this because you just created a DanceUp account. If this wasn't you, please ignore this email.
+        </p>
+      </div>
+    </div>`;
+
+  const text = [
+    `Welcome to DanceUp, ${name}!`,
+    ``,
+    `Here's what you can do:`,
+    ``,
+    `Browse Classes & Studios — Search for dance classes, explore local studios, and meet instructors, filtered by style, city, and skill level.`,
+    ``,
+    `Discover Events & Workshops — Find socials, festivals, congresses, and intensive workshops near you. Register and pay directly through DanceUp.`,
+    ``,
+    `Book Private Lessons — Browse instructor profiles and book one-on-one sessions at studios near you.`,
+    ``,
+    `Your Dashboard — View your purchase history, manage your profile, check upcoming bookings, and track class credits or packages.`,
+    ``,
+    `Start exploring at https://danceup.app`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: {email: "info@danceup.app", name: "DanceUp"},
+    subject: `Welcome to DanceUp, ${name}!`,
+    html,
+    text,
+    categories: ["welcome-email"],
+  });
+}
+
+/**
  * Send a purchase / booking confirmation email.
  * @param {string} to - Recipient email address
  * @param {string} type - 'private_lesson' | 'package' | 'class' | 'event' | 'workshop'
@@ -270,4 +364,5 @@ module.exports = {
   getCategoryStats,
   getTemplates,
   sendConfirmationEmail,
+  sendWelcomeEmail,
 };

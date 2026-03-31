@@ -404,6 +404,12 @@ function validateCreateClassPayload(payload) {
     }
   }
 
+  // Dance genre validation (required)
+  const danceGenreValidation = validateDanceGenre(payload.danceGenre);
+  if (!danceGenreValidation.valid) {
+    errors.push({field: "danceGenre", message: danceGenreValidation.message});
+  }
+
   // Optional image file validation
   if (payload.imageFile !== undefined && payload.imageFile !== null) {
     if (typeof payload.imageFile !== "string") {
@@ -501,6 +507,14 @@ function validateUpdateClassPayload(payload) {
   if (payload.room !== undefined && payload.room !== null) {
     if (typeof payload.room !== "string") {
       errors.push({field: "room", message: "Room must be a string"});
+    }
+  }
+
+  // Dance genre validation (optional for update)
+  if (payload.danceGenre !== undefined && payload.danceGenre !== null && payload.danceGenre !== "") {
+    const danceGenreValidation = validateDanceGenre(payload.danceGenre);
+    if (!danceGenreValidation.valid) {
+      errors.push({field: "danceGenre", message: danceGenreValidation.message});
     }
   }
 
@@ -1188,6 +1202,12 @@ function validateCreateWorkshopPayload(payload) {
     }
   }
 
+  // Dance genre validation (required)
+  const danceGenreValidation = validateDanceGenre(payload.danceGenre);
+  if (!danceGenreValidation.valid) {
+    errors.push({field: "danceGenre", message: danceGenreValidation.message});
+  }
+
   // Image file validation (optional, base64 string)
   if (payload.imageFile !== undefined && payload.imageFile !== null) {
     if (typeof payload.imageFile !== "string") {
@@ -1299,6 +1319,14 @@ function validateUpdateWorkshopPayload(payload) {
     }
   }
 
+  // Dance genre validation (optional for update)
+  if (payload.danceGenre !== undefined && payload.danceGenre !== null && payload.danceGenre !== "") {
+    const danceGenreValidation = validateDanceGenre(payload.danceGenre);
+    if (!danceGenreValidation.valid) {
+      errors.push({field: "danceGenre", message: danceGenreValidation.message});
+    }
+  }
+
   // Image file validation (optional, base64 string)
   if (payload.imageFile !== undefined && payload.imageFile !== null) {
     if (typeof payload.imageFile !== "string") {
@@ -1392,6 +1420,12 @@ function validateCreateEventPayload(payload) {
     if (typeof payload.locationName !== "string") {
       errors.push({field: "locationName", message: "Location name must be a string"});
     }
+  }
+
+  // Dance genre validation (required)
+  const danceGenreValidation = validateDanceGenre(payload.danceGenre);
+  if (!danceGenreValidation.valid) {
+    errors.push({field: "danceGenre", message: danceGenreValidation.message});
   }
 
   // Image file validation (optional, base64 string)
@@ -1502,6 +1536,14 @@ function validateUpdateEventPayload(payload) {
   if (payload.locationName !== undefined && payload.locationName !== null) {
     if (typeof payload.locationName !== "string") {
       errors.push({field: "locationName", message: "Location name must be a string"});
+    }
+  }
+
+  // Dance genre validation (optional for update)
+  if (payload.danceGenre !== undefined && payload.danceGenre !== null && payload.danceGenre !== "") {
+    const danceGenreValidation = validateDanceGenre(payload.danceGenre);
+    if (!danceGenreValidation.valid) {
+      errors.push({field: "danceGenre", message: danceGenreValidation.message});
     }
   }
 
@@ -1925,7 +1967,22 @@ function validateDanceGenre(genre) {
     return {valid: true, message: ""}; // Optional field
   }
 
-  const validGenres = ["salsa", "bachata", "zouk", "kizomba"];
+  const validGenres = [
+    // Latin
+    "salsa", "bachata", "merengue", "cumbia", "cha-cha", "reggaeton",
+    // African / Brazilian
+    "zouk", "kizomba", "semba", "afrobeats", "samba",
+    // Ballroom
+    "waltz", "tango", "argentine tango", "foxtrot", "quickstep", "viennese waltz",
+    // Swing
+    "west coast swing", "lindy hop", "east coast swing",
+    // Urban / Street
+    "hip-hop", "breakdance", "house", "waacking", "voguing", "popping & locking",
+    // Contemporary / Theater
+    "contemporary", "jazz", "modern", "lyrical",
+    // Classical / Other
+    "ballet", "tap", "flamenco", "belly dance",
+  ];
   if (!validGenres.includes(genre.toLowerCase())) {
     return {
       valid: false,
