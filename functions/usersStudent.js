@@ -208,6 +208,105 @@ app.post("/register", async (req, res) => {
 
 
 /**
+ * POST /google-signin
+ * Sign in or register a student using a Google-issued Firebase ID token.
+ * The client completes signInWithPopup/Redirect on the frontend, then sends
+ * the resulting Firebase ID token here so we can issue our own backend JWT
+ * and ensure a student profile exists in Firestore.
+ */
+app.post("/google-signin", async (req, res) => {
+  try {
+    const {idToken: googleIdToken} = req.body;
+    if (!googleIdToken) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "idToken is required");
+    }
+
+    // Verify the token with Firebase Admin — this also confirms it came from Google
+    let decodedToken;
+    try {
+      decodedToken = await admin.auth().verifyIdToken(googleIdToken);
+    } catch (error) {
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid or expired Google ID token");
+    }
+
+    const {uid, email, name, picture} = decodedToken;
+
+    // Look up existing student profile
+    let studentDoc = await authService.getStudentProfileByAuthUid(uid);
+
+    if (!studentDoc) {
+      // First-time Google sign-in — create a minimal profile
+      const nameParts = (name || "").trim().split(" ");
+      const firstName = nameParts[0] || "";
+      const lastName = nameParts.slice(1).join(" ") || "";
+
+      const profileData = {
+        email: email || "",
+        firstName,
+        lastName,
+        city: "",
+        state: "",
+        zip: "",
+        phone: null,
+        danceGenres: [],
+        subscribeToNewsletter: false,
+        photoURL: picture || null,
+        provider: "google",
+      };
+
+      const studentProfileId = await authService.createStudentProfileDocument(uid, profileData);
+
+      // Re-fetch so we have the doc reference
+      studentDoc = await authService.getStudentProfileByAuthUid(uid);
+
+      // Create Stripe customer — non-fatal
+      try {
+        const {createCustomer} = require("./services/stripe.service");
+        const stripeCustomer = await createCustomer(email, {
+          uid,
+          studentProfileId,
+          name: `${firstName} ${lastName}`.trim(),
+        });
+        const db = getFirestore();
+        await db.collection("usersStudentProfiles").doc(studentProfileId).update({
+          stripeCustomerId: stripeCustomer.id,
+          stripeEmail: stripeCustomer.email,
+        });
+      } catch (stripeError) {
+        console.error("Error creating Stripe customer for Google sign-in:", stripeError);
+      }
+    }
+
+    // Get Firebase Web API key
+    let apiKey;
+    try {
+      apiKey = await getFirebaseApiKey();
+    } catch (error) {
+      return sendErrorResponse(req, res, 500, "Configuration Error", "Server configuration error");
+    }
+
+    // Issue our backend JWT via custom token exchange
+    const customToken = await authService.createCustomToken(uid);
+    const tokenResponse = await authService.exchangeCustomTokenForIdToken(customToken, apiKey);
+
+    sendJsonResponse(req, res, 200, {
+      idToken: tokenResponse.idToken,
+      refreshToken: tokenResponse.refreshToken,
+      expiresIn: tokenResponse.expiresIn,
+      user: {
+        uid,
+        email: email || "",
+        studentProfileId: studentDoc ? studentDoc.id : null,
+      },
+    });
+  } catch (error) {
+    console.error("Google sign-in error:", error);
+    handleError(req, res, error);
+  }
+});
+
+
+/**
  * POST /login
  * Login with email and password for student users
  */

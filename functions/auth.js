@@ -5,6 +5,7 @@ const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 const authService = require("./services/auth.service");
 const storageService = require("./services/storage.service");
+const {sendStudioOwnerWelcomeEmail} = require("./services/sendgrid.service");
 const {verifyToken} = require("./utils/auth");
 const {getFirestore} = require("./utils/firestore");
 const {getFirebaseApiKey} = require("./utils/firebase-api-key");
@@ -178,6 +179,11 @@ app.post("/register", registerLimiter, async (req, res) => {
           email: userRecord.email,
           studioOwnerId,
         },
+      });
+
+      // Send welcome email (non-blocking — don't fail registration if email fails)
+      sendStudioOwnerWelcomeEmail(userRecord.email, firstName, studioName).catch((err) => {
+        console.error("Failed to send studio owner welcome email:", err);
       });
     } catch (error) {
       // Cleanup: delete Firebase Auth user if Firestore creation failed

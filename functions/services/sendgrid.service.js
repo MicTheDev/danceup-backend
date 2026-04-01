@@ -335,6 +335,125 @@ async function sendWelcomeEmail(to, firstName) {
 }
 
 /**
+ * Send a welcome email to a newly registered studio owner.
+ * @param {string} to - Recipient email address
+ * @param {string} firstName - Studio owner's first name
+ * @param {string} studioName - Name of the studio
+ * @returns {Promise<void>}
+ */
+async function sendStudioOwnerWelcomeEmail(to, firstName, studioName) {
+  if (!to) {
+    console.warn("[SendGrid] sendStudioOwnerWelcomeEmail: no recipient email, skipping");
+    return;
+  }
+
+  const name = firstName ? firstName.trim() : "there";
+  const studio = studioName ? studioName.trim() : "your studio";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+
+        <h1 style="margin:0 0 4px;font-size:26px;color:#1e293b">Welcome to DanceUp, ${name}!</h1>
+        <p style="margin:0 0 24px;color:#64748b;font-size:15px">
+          <strong>${studio}</strong> is now live on DanceUp. Here's a quick look at everything you can do from your dashboard.
+        </p>
+
+        <div style="background:#f1f5f9;border-radius:10px;padding:20px 24px;margin-bottom:24px">
+
+          <div style="margin-bottom:18px">
+            <p style="margin:0 0 2px;font-weight:600;color:#1e293b;font-size:15px">📋 Classes, Workshops &amp; Events</p>
+            <p style="margin:0;color:#64748b;font-size:14px">Create and schedule your class catalog, plan one-off workshops and intensives, or organize recitals and showcases. Manage attendees, check-ins, and refunds — all in one place.</p>
+          </div>
+
+          <div style="margin-bottom:18px">
+            <p style="margin:0 0 2px;font-weight:600;color:#1e293b;font-size:15px">📦 Packages</p>
+            <p style="margin:0;color:#64748b;font-size:14px">Bundle classes into credit packages and offer flexible pricing to your students. Set expiration dates and control how credits are applied at checkout.</p>
+          </div>
+
+          <div style="margin-bottom:18px">
+            <p style="margin:0 0 2px;font-weight:600;color:#1e293b;font-size:15px">👩‍🎓 Students &amp; Instructors</p>
+            <p style="margin:0;color:#64748b;font-size:14px">View enrollment details, track attendance, and manage student credit balances. Add instructors to your team and manage their profiles and schedules.</p>
+          </div>
+
+          <div style="margin-bottom:18px">
+            <p style="margin:0 0 2px;font-weight:600;color:#1e293b;font-size:15px">📊 Analytics &amp; Revenue</p>
+            <p style="margin:0;color:#64748b;font-size:14px">Monitor attendance trends, track tuition and package revenue, and read student reviews — all from your Analytics section.</p>
+          </div>
+
+          <div style="margin-bottom:18px">
+            <p style="margin:0 0 2px;font-weight:600;color:#1e293b;font-size:15px">📣 Email Marketing</p>
+            <p style="margin:0;color:#64748b;font-size:14px">Create and send email campaigns directly to your enrolled students. Track opens, clicks, and engagement from your Marketing dashboard.</p>
+          </div>
+
+          <div>
+            <p style="margin:0 0 2px;font-weight:600;color:#1e293b;font-size:15px">📲 Check-In Kiosk</p>
+            <p style="margin:0;color:#64748b;font-size:14px">Set up an in-person check-in station so students can self-check into classes when they arrive at your studio.</p>
+          </div>
+
+        </div>
+
+        <div style="background:#fef9ec;border:1px solid #fcd34d;border-radius:10px;padding:20px 24px;margin-bottom:24px">
+          <p style="margin:0 0 6px;font-weight:700;color:#92400e;font-size:15px">⚡ One more step before you can accept payments</p>
+          <p style="margin:0 0 14px;color:#78350f;font-size:14px">
+            To start collecting tuition, selling packages, and processing registrations, you'll need to connect a Stripe account. Stripe is how DanceUp handles all payouts to your studio — it's free to set up and only takes a few minutes.
+          </p>
+          <a href="https://studio-owners.danceup.app/register/stripe-setup"
+             style="display:inline-block;background:#f59e0b;color:#fff;text-decoration:none;padding:11px 24px;border-radius:8px;font-weight:600;font-size:14px">
+            Connect Stripe Now →
+          </a>
+        </div>
+
+        <a href="https://studio-owners.danceup.app/dashboard"
+           style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          Go to Your Dashboard →
+        </a>
+
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:0 0 16px"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">
+          You're receiving this because you just created a DanceUp studio account. If this wasn't you, please contact us at <a href="mailto:info@danceup.app" style="color:#94a3b8">info@danceup.app</a>.
+        </p>
+
+      </div>
+    </div>`;
+
+  const text = [
+    `Welcome to DanceUp, ${name}!`,
+    ``,
+    `${studio} is now live on DanceUp. Here's a quick look at what you can do:`,
+    ``,
+    `Classes, Workshops & Events — Create and schedule classes, plan workshops and intensives, and organize showcases. Manage attendees, check-ins, and refunds.`,
+    ``,
+    `Packages — Bundle classes into credit packages with flexible pricing and expiration dates.`,
+    ``,
+    `Students & Instructors — Track enrollment and attendance, manage student credits, and add instructor profiles.`,
+    ``,
+    `Analytics & Revenue — Monitor attendance trends, track revenue, and read student reviews.`,
+    ``,
+    `Email Marketing — Create and send campaigns to your students and track engagement.`,
+    ``,
+    `Check-In Kiosk — Set up an in-person self-check-in station at your studio.`,
+    ``,
+    `--- IMPORTANT: Connect Stripe to Accept Payments ---`,
+    ``,
+    `Before you can collect tuition or sell packages, you need to connect a Stripe account. It's free and only takes a few minutes.`,
+    ``,
+    `Connect Stripe: https://studio-owners.danceup.app/register/stripe-setup`,
+    ``,
+    `Go to your dashboard: https://studio-owners.danceup.app/dashboard`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: {email: "info@danceup.app", name: "DanceUp"},
+    subject: `Welcome to DanceUp — let's get ${studio} set up!`,
+    html,
+    text,
+    categories: ["studio-owner-welcome"],
+  });
+}
+
+/**
  * Send a purchase / booking confirmation email.
  * @param {string} to - Recipient email address
  * @param {string} type - 'private_lesson' | 'package' | 'class' | 'event' | 'workshop'
@@ -365,4 +484,5 @@ module.exports = {
   getTemplates,
   sendConfirmationEmail,
   sendWelcomeEmail,
+  sendStudioOwnerWelcomeEmail,
 };
