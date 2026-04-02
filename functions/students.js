@@ -2,6 +2,7 @@ const functions = require("firebase-functions");
 const express = require("express");
 const cors = require("cors");
 const studentsService = require("./services/students.service");
+const creditTrackingService = require("./services/credit-tracking.service");
 const {verifyToken} = require("./utils/auth");
 const {
   validateCreateStudentPayload,
@@ -242,6 +243,64 @@ app.delete("/:id", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", error.message);
     }
 
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * POST /:id/adjust-credits
+ * Manually add or remove credits for a student (studio owner only).
+ * Body: { amount: number (positive = add, negative = remove), reason: string }
+ */
+app.post("/:id/adjust-credits", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const {id} = req.params;
+    const {amount, reason} = req.body;
+
+    if (typeof amount !== "number" || !Number.isInteger(amount) || amount === 0) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "amount must be a non-zero integer");
+    }
+    if (!reason || typeof reason !== "string" || !reason.trim()) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "reason is required");
+    }
+
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const studentData = await studentsService.getStudentById(id, studioOwnerId);
+    if (!studentData) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student not found");
+    }
+
+    if (amount > 0) {
+      await creditTrackingService.addCredits(id, studioOwnerId, amount, 365, null, null);
+    } else {
+      await creditTrackingService.removeCredits(id, studioOwnerId, Math.abs(amount));
+    }
+
+    const newBalance = await creditTrackingService.getAvailableCredits(id, studioOwnerId);
+
+    sendJsonResponse(req, res, 200, {
+      message: `Credits adjusted by ${amount > 0 ? "+" : ""}${amount}`,
+      newBalance,
+    });
+  } catch (error) {
+    console.error("Error adjusting credits:", error);
+    if (error.message?.includes("not found") || error.message?.includes("Access denied")) {
+      return sendErrorResponse(req, res, 404, "Not Found", error.message);
+    }
+    if (error.message?.includes("Not enough credits")) {
+      return sendErrorResponse(req, res, 400, "Insufficient Credits", error.message);
+    }
     handleError(req, res, error);
   }
 });

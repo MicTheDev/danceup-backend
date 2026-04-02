@@ -199,6 +199,55 @@ class CreditTrackingService {
   }
 
   /**
+   * Remove a specified number of credits from a student's account (FIFO — oldest expiring first).
+   * Used for manual studio adjustments.
+   * @param {string} studentId - Student document ID
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @param {number} amount - Number of credits to remove (must be > 0)
+   * @returns {Promise<void>}
+   */
+  async removeCredits(studentId, studioOwnerId, amount) {
+    const db = getFirestore();
+    const now = admin.firestore.Timestamp.now();
+    const creditsRef = db.collection("students").doc(studentId).collection("credits");
+
+    const snapshot = await creditsRef
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("expirationDate", ">", now)
+        .orderBy("expirationDate", "asc")
+        .get();
+
+    let available = 0;
+    snapshot.forEach((doc) => { available += doc.data().credits || 0; });
+
+    if (available < amount) {
+      throw new Error(`Not enough credits. Student has ${available}, tried to remove ${amount}.`);
+    }
+
+    let remaining = amount;
+    const batch = db.batch();
+
+    for (const doc of snapshot.docs) {
+      if (remaining <= 0) break;
+      const current = doc.data().credits || 0;
+      if (current <= 0) continue;
+
+      if (current <= remaining) {
+        batch.delete(doc.ref);
+        remaining -= current;
+      } else {
+        batch.update(doc.ref, {
+          credits: current - remaining,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        remaining = 0;
+      }
+    }
+
+    await batch.commit();
+  }
+
+  /**
    * Delete expired credit entries from the subcollection.
    * Called by the scheduled credit-expiration function.
    * @returns {Promise<Object>} Summary of expired credits
