@@ -4,6 +4,7 @@ const cors = require("cors");
 const studentsService = require("./services/students.service");
 const marketingService = require("./services/marketing.service");
 const sendgridService = require("./services/sendgrid.service");
+const aiService = require("./services/ai.service");
 const {verifyToken} = require("./utils/auth");
 const {sendJsonResponse, sendErrorResponse, handleError, corsOptions, isAllowedOrigin} = require("./utils/http");
 
@@ -42,6 +43,96 @@ function getUnsubscribeBaseUrl(req) {
 
 const DEFAULT_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || "info@danceup.app";
 const DEFAULT_FROM_NAME = process.env.SENDGRID_FROM_NAME || "DanceUp";
+
+/**
+ * GET /content - Return studio classes/events/workshops for the AI content picker (requires auth)
+ * Returns: { studioName, classes, events, workshops }
+ */
+app.get("/content", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const content = await marketingService.getStudioContentPreview(studioOwnerId);
+    sendJsonResponse(req, res, 200, content);
+  } catch (error) {
+    console.error("Error fetching studio content:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * POST /generate - Generate an AI email campaign draft (requires auth)
+ * Body: {
+ *   tone?: 'promotional' | 'informational' | 'community',
+ *   selectedClassIds?: string[],
+ *   selectedEventIds?: string[],
+ *   selectedWorkshopIds?: string[],
+ *   instructions?: string,
+ *   imageUrl?: string,
+ * }
+ * Returns: { subject: string, htmlBody: string }
+ */
+app.post("/generate", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const {
+      tone = "community",
+      selectedClassIds,
+      selectedEventIds,
+      selectedWorkshopIds,
+      instructions,
+      imageUrl,
+    } = req.body || {};
+
+    const validTones = ["promotional", "informational", "community"];
+    const resolvedTone = validTones.includes(tone) ? tone : "community";
+
+    const resolvedInstructions = typeof instructions === "string" ? instructions.trim().slice(0, 500) : "";
+    const resolvedImageUrl = typeof imageUrl === "string" && imageUrl.trim().startsWith("http") ? imageUrl.trim() : null;
+
+    const {studioName, classes, events, workshops} = await marketingService.getStudioContentForAI(studioOwnerId, {
+      selectedClassIds: Array.isArray(selectedClassIds) ? selectedClassIds : undefined,
+      selectedEventIds: Array.isArray(selectedEventIds) ? selectedEventIds : undefined,
+      selectedWorkshopIds: Array.isArray(selectedWorkshopIds) ? selectedWorkshopIds : undefined,
+    });
+
+    const {subject, htmlBody} = await aiService.generateEmailCampaign({
+      studioName,
+      classes,
+      events,
+      workshops,
+      tone: resolvedTone,
+      instructions: resolvedInstructions || undefined,
+      imageUrl: resolvedImageUrl || undefined,
+    });
+
+    sendJsonResponse(req, res, 200, {subject, htmlBody});
+  } catch (error) {
+    console.error("Error generating AI campaign:", error);
+    handleError(req, res, error);
+  }
+});
 
 /**
  * GET /recipients - List subscribed students (requires auth)

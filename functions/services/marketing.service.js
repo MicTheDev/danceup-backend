@@ -187,6 +187,73 @@ async function unsubscribeByAuthUid(authUid) {
   });
 }
 
+/**
+ * Fetch all studio content for display (picker) and AI generation.
+ * Returns the studio name plus active classes, upcoming events, and upcoming workshops.
+ * @param {string} studioOwnerId
+ * @returns {Promise<{studioName: string, classes: Array, events: Array, workshops: Array}>}
+ */
+async function getStudioContentPreview(studioOwnerId) {
+  const db = getFirestore();
+
+  const [studioDoc, classesSnap, eventsSnap, workshopsSnap] = await Promise.all([
+    db.collection("users").doc(studioOwnerId).get(),
+    db.collection("classes")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("isActive", "==", true)
+        .limit(20)
+        .get(),
+    db.collection("events")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .limit(15)
+        .get(),
+    db.collection("workshops")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .limit(15)
+        .get(),
+  ]);
+
+  const studioName = studioDoc.exists ? (studioDoc.data().studioName || "Our Studio") : "Our Studio";
+
+  const now = new Date();
+  const toItems = (snap) => snap.docs.map((d) => ({id: d.id, ...d.data()}));
+  const filterUpcoming = (items) => items.filter((item) => {
+    if (!item.startTime) return true;
+    return new Date(item.startTime) >= now;
+  });
+
+  return {
+    studioName,
+    classes: toItems(classesSnap),
+    events: filterUpcoming(toItems(eventsSnap)),
+    workshops: filterUpcoming(toItems(workshopsSnap)),
+  };
+}
+
+/**
+ * Fetch all studio content needed for AI campaign generation, with optional ID filtering.
+ * @param {string} studioOwnerId
+ * @param {{selectedClassIds?: string[], selectedEventIds?: string[], selectedWorkshopIds?: string[]}} [filters]
+ * @returns {Promise<{studioName: string, classes: Array, events: Array, workshops: Array}>}
+ */
+async function getStudioContentForAI(studioOwnerId, filters = {}) {
+  const {studioName, classes, events, workshops} = await getStudioContentPreview(studioOwnerId);
+
+  const filterByIds = (items, ids) => {
+    // null/undefined = use all; empty array = use all (no items selected means no filter applied)
+    if (!Array.isArray(ids) || ids.length === 0) return items;
+    const idSet = new Set(ids);
+    return items.filter((item) => idSet.has(item.id));
+  };
+
+  return {
+    studioName,
+    classes: filterByIds(classes, filters.selectedClassIds),
+    events: filterByIds(events, filters.selectedEventIds),
+    workshops: filterByIds(workshops, filters.selectedWorkshopIds),
+  };
+}
+
 module.exports = {
   createUnsubscribeToken,
   verifyUnsubscribeToken,
@@ -195,5 +262,7 @@ module.exports = {
   listCampaigns,
   getCampaignById,
   unsubscribeByAuthUid,
+  getStudioContentPreview,
+  getStudioContentForAI,
   CAMPAIGNS_COLLECTION,
 };
