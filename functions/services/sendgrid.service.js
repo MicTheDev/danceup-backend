@@ -26,7 +26,15 @@ async function ensureApiKey() {
  */
 async function sendEmail(msg) {
   await ensureApiKey();
-  return sgMail.send(msg);
+  // Disable click tracking so URLs in emails are never rewritten by SendGrid
+  const msgWithTracking = {
+    ...msg,
+    tracking_settings: {
+      click_tracking: { enable: false },
+      ...msg.tracking_settings,
+    },
+  };
+  return sgMail.send(msgWithTracking);
 }
 
 /**

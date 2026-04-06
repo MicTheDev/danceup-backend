@@ -783,34 +783,50 @@ app.get("/revenue-forecast", async (req, res) => {
     const sixMonthsAgo = new Date(now);
     sixMonthsAgo.setMonth(now.getMonth() - 6);
 
-    const [purchasesSnap, packagesSnap, studioDoc] = await Promise.all([
+    const [purchasesSnap, cashPurchasesSnap, packagesSnap, studioDoc] = await Promise.all([
       db.collection("purchases").where("studioOwnerId", "==", studioOwnerId).get(),
+      db.collection("cashPurchases").where("studioOwnerId", "==", studioOwnerId).get(),
       db.collection("packages").where("studioOwnerId", "==", studioOwnerId).where("isActive", "==", true).get(),
       db.collection("users").doc(studioOwnerId).get(),
     ]);
 
     const studioName = studioDoc.exists ? (studioDoc.data().studioName || "Your Studio") : "Your Studio";
 
-    // Aggregate monthly revenue (last 6 months)
-    const monthlyMap = {}; // "YYYY-MM" → revenue
+    // Aggregate monthly revenue (last 6 months) — Stripe purchases only (exclude legacy cash entries)
+    const monthlyMap = {}; // "YYYY-MM" → { stripe, cash }
     purchasesSnap.forEach((doc) => {
+      const d = doc.data();
+      if (d.status && d.status !== "completed") return;
+      if (d.paymentMethod === "cash") return; // now tracked in cashPurchases
+      const createdAt = d.createdAt?.toDate ? d.createdAt.toDate() : null;
+      if (!createdAt || createdAt < sixMonthsAgo) return;
+      const key = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, "0")}`;
+      if (!monthlyMap[key]) monthlyMap[key] = {stripe: 0, cash: 0};
+      monthlyMap[key].stripe += (d.price ?? d.amount ?? 0);
+    });
+
+    // Aggregate cash purchases
+    cashPurchasesSnap.forEach((doc) => {
       const d = doc.data();
       if (d.status && d.status !== "completed") return;
       const createdAt = d.createdAt?.toDate ? d.createdAt.toDate() : null;
       if (!createdAt || createdAt < sixMonthsAgo) return;
       const key = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, "0")}`;
-      monthlyMap[key] = (monthlyMap[key] || 0) + (d.price ?? d.amount ?? 0);
+      if (!monthlyMap[key]) monthlyMap[key] = {stripe: 0, cash: 0};
+      monthlyMap[key].cash += (d.amount ?? 0);
     });
 
-    // Build sorted monthly revenue array
+    // Build sorted monthly revenue array (stripe + cash combined)
     const monthlyRevenue = Object.entries(monthlyMap)
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([key, revenue]) => {
+        .map(([key, {stripe, cash}]) => {
           const [year, month] = key.split("-");
           const date = new Date(Number(year), Number(month) - 1, 1);
           return {
             month: date.toLocaleDateString("en-US", {month: "short", year: "numeric"}),
-            revenue,
+            revenue: stripe + cash,
+            stripe,
+            cash,
           };
         });
 
@@ -845,11 +861,18 @@ app.get("/revenue-forecast", async (req, res) => {
       });
     }
 
+    const totalCash = monthlyRevenue.reduce((s, m) => s + m.cash, 0);
+    const totalStripe = monthlyRevenue.reduce((s, m) => s + m.stripe, 0);
+    const cashPercent = (totalStripe + totalCash) > 0
+      ? Math.round((totalCash / (totalStripe + totalCash)) * 100)
+      : 0;
+
     const {forecast, projectedRevenue, drivers, risks} = await aiService.generateRevenueForecast({
       studioName,
       monthlyRevenue,
       activeSubscriptions,
       avgMonthlyGrowth,
+      cashPercent,
     });
 
     sendJsonResponse(req, res, 200, {forecast, projectedRevenue, drivers, risks, generatedAt: new Date().toISOString()});

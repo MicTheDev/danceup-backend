@@ -3,18 +3,12 @@ const {getSecret} = require("../utils/secret-manager");
 
 let cachedClient = null;
 
-/**
- * Get (or lazily initialise) the Gemini client using Secret Manager.
- * @returns {Promise<GoogleGenerativeAI>}
- */
 async function getClient() {
   if (cachedClient) return cachedClient;
-
   const apiKey = await getSecret("gemini-api-key");
   if (!apiKey || !apiKey.trim()) {
     throw new Error("Gemini API key not found in Secret Manager. Add a secret named 'gemini-api-key'.");
   }
-
   cachedClient = new GoogleGenerativeAI(apiKey.trim());
   return cachedClient;
 }
@@ -827,20 +821,24 @@ Return ONLY a valid JSON object (no markdown, no extra text):
  * @param {{ studioName: string, monthlyRevenue: Array<{month, revenue}>, activeSubscriptions: number, avgMonthlyGrowth: number }} data
  * @returns {Promise<{forecast: string, projectedRevenue: {low, mid, high}, drivers: string[], risks: string[]}>}
  */
-async function generateRevenueForecast({studioName, monthlyRevenue, activeSubscriptions, avgMonthlyGrowth}) {
+async function generateRevenueForecast({studioName, monthlyRevenue, activeSubscriptions, avgMonthlyGrowth, cashPercent = 0}) {
   const genAI = await getClient();
 
-  const revenueLines = monthlyRevenue.map((m) => `  ${m.month}: $${m.revenue.toFixed(2)}`).join("\n");
+  const revenueLines = monthlyRevenue.map((m) => {
+    const cashNote = m.cash > 0 ? ` (Stripe: $${m.stripe.toFixed(2)}, Cash: $${m.cash.toFixed(2)})` : "";
+    return `  ${m.month}: $${m.revenue.toFixed(2)}${cashNote}`;
+  }).join("\n");
 
   const prompt = `You are a financial analyst for "${studioName}", a dance studio.
 
-REVENUE HISTORY (last 6 months):
+REVENUE HISTORY (last 6 months, Stripe + cash combined):
 ${revenueLines || "No historical data available."}
 
 Active recurring subscriptions: ${activeSubscriptions}
 Average month-over-month growth: ${avgMonthlyGrowth > 0 ? "+" : ""}${avgMonthlyGrowth}%
+Cash payments as % of total revenue: ${cashPercent}%
 
-Based on this data, forecast next month's revenue. Provide:
+Based on this data, forecast next month's revenue. Consider both card/online payments and cash payments in your analysis. Provide:
 1. A 2–3 sentence narrative forecast
 2. A low/mid/high revenue range (numbers only, no $ symbol in JSON)
 3. 2–3 key revenue drivers

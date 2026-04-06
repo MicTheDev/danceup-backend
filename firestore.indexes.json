@@ -241,9 +241,23 @@
           "order": "DESCENDING"
         }
       ]
-    }
-    ,{
+    },
+    {
       "collectionGroup": "purchases",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "studioOwnerId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "cashPurchases",
       "queryScope": "COLLECTION",
       "fields": [
         {

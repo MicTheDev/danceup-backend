@@ -1141,6 +1141,60 @@ app.post("/subscriptions/:subscriptionId/cancel", async (req, res) => {
 });
 
 /**
+ * GET /cash
+ * List cash payments recorded by the authenticated studio owner
+ * Query params: limit (default 50), startDate (ISO), endDate (ISO)
+ */
+app.get("/cash", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const db = getFirestore();
+
+    const userQuery = await db.collection("users")
+        .where("authUid", "==", user.uid)
+        .limit(1)
+        .get();
+    if (userQuery.empty) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found");
+    }
+    const studioOwnerId = userQuery.docs[0].id;
+
+    const limitParam = Math.min(parseInt(req.query.limit) || 50, 200);
+    const {startDate, endDate} = req.query;
+
+    let query = db.collection("cashPurchases")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .orderBy("createdAt", "desc")
+        .limit(limitParam);
+
+    if (startDate) {
+      query = query.where("createdAt", ">=", new Date(startDate));
+    }
+    if (endDate) {
+      query = query.where("createdAt", "<=", new Date(endDate));
+    }
+
+    const snapshot = await query.get();
+    const transactions = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: doc.data().createdAt?.toDate?.()?.toISOString() || null,
+    }));
+
+    sendJsonResponse(req, res, 200, {transactions, total: transactions.length});
+  } catch (error) {
+    console.error("Error fetching cash transactions:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * POST /cash
  * Record a manual cash payment made outside of Stripe
  */
@@ -1176,6 +1230,7 @@ app.post("/cash", async (req, res) => {
       amount: parseFloat(amount),
       paymentMethod: "cash",
       status: "completed",
+      source: "manual",
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
@@ -1184,7 +1239,18 @@ app.post("/cash", async (req, res) => {
     if (itemType) docData.purchaseType = itemType;
     if (itemId) docData.itemId = itemId;
 
-    const docRef = await db.collection("purchases").add(docData);
+    // Optionally denormalize student name for display
+    if (studentId) {
+      try {
+        const studentDoc = await db.collection("students").doc(studentId).get();
+        if (studentDoc.exists) {
+          const s = studentDoc.data();
+          docData.studentName = [s.firstName, s.lastName].filter(Boolean).join(" ");
+        }
+      } catch (_) { /* non-critical */ }
+    }
+
+    const docRef = await db.collection("cashPurchases").add(docData);
 
     sendJsonResponse(req, res, 201, {id: docRef.id, message: "Cash payment recorded successfully"});
   } catch (error) {

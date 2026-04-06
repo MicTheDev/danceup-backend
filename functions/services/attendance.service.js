@@ -814,8 +814,13 @@ class AttendanceService {
     const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const startOfPrevMonthForRevenue = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
-    // Fetch completed purchases (packages, classes, events, workshops, cash)
+    // Fetch completed purchases (packages, classes, events, workshops — Stripe)
     const purchasesSnapshot = await db.collection("purchases")
+      .where("studioOwnerId", "==", studioOwnerId)
+      .get();
+
+    // Fetch cash purchases from dedicated cashPurchases collection
+    const cashPurchasesSnapshot = await db.collection("cashPurchases")
       .where("studioOwnerId", "==", studioOwnerId)
       .get();
 
@@ -830,11 +835,22 @@ class AttendanceService {
 
     purchasesSnapshot.forEach((doc) => {
       const data = doc.data();
-      // Exclude refunded/failed purchases
+      // Exclude refunded/failed purchases and cash entries (now tracked in cashPurchases)
       if (data.status && data.status !== "completed") return;
+      if (data.paymentMethod === "cash") return;
       const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : null;
       if (!createdAt) return;
       const amount = data.price ?? data.amount ?? 0;
+      if (createdAt >= startOfCurrentMonth) currentMonthRevenue += amount;
+      else if (createdAt >= startOfPrevMonthForRevenue && createdAt < startOfCurrentMonth) prevMonthRevenue += amount;
+    });
+
+    cashPurchasesSnapshot.forEach((doc) => {
+      const data = doc.data();
+      if (data.status && data.status !== "completed") return;
+      const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : null;
+      if (!createdAt) return;
+      const amount = data.amount ?? 0;
       if (createdAt >= startOfCurrentMonth) currentMonthRevenue += amount;
       else if (createdAt >= startOfPrevMonthForRevenue && createdAt < startOfCurrentMonth) prevMonthRevenue += amount;
     });

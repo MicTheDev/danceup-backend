@@ -1,4 +1,5 @@
 const functions = require("firebase-functions");
+const admin = require("firebase-admin");
 const express = require("express");
 const cors = require("cors");
 const packagePurchaseService = require("./services/package-purchase.service");
@@ -317,6 +318,40 @@ app.post("/cash-for-student", async (req, res) => {
     }
 
     const result = await packagePurchaseService.purchasePackageForStudent(packageId, studentId, studioOwnerId);
+
+    // Write to cashPurchases for cash tracking ledger
+    try {
+      const db = getFirestore();
+      let packagePrice = 0;
+      try {
+        const pkgDoc = await db.collection("packages").doc(packageId).get();
+        if (pkgDoc.exists) packagePrice = pkgDoc.data().price || 0;
+      } catch (_) { /* non-critical */ }
+
+      const cashDoc = {
+        studioOwnerId,
+        amount: packagePrice,
+        paymentMethod: "cash",
+        status: "completed",
+        source: "package",
+        studentId,
+        purchaseType: "package",
+        itemId: packageId,
+        itemName: result.packageName,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      // Optionally denormalize student name
+      try {
+        const studentDoc = await db.collection("students").doc(studentId).get();
+        if (studentDoc.exists) {
+          const s = studentDoc.data();
+          cashDoc.studentName = [s.firstName, s.lastName].filter(Boolean).join(" ");
+        }
+      } catch (_) { /* non-critical */ }
+      await db.collection("cashPurchases").add(cashDoc);
+    } catch (cashErr) {
+      console.error("Non-critical: failed to write cashPurchases record:", cashErr);
+    }
 
     sendJsonResponse(req, res, 200, {
       message: "Cash payment recorded and package credited successfully",
