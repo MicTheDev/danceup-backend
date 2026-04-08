@@ -46,7 +46,7 @@ app.use((req, res, next) => {
 
 app.use(cors(corsOptions));
 // Middleware setup
-// Note: Webhook endpoint needs raw body, so we'll handle it separately
+// Note: Firebase Functions pre-parses req.body; for webhooks we use req.rawBody for signature verification
 app.use(express.json());
 app.use(express.urlencoded({extended: true}));
 
@@ -700,7 +700,7 @@ app.post("/checkout-success", async (req, res) => {
  * This endpoint should be configured in Stripe dashboard
  * Note: This endpoint uses raw body parsing for signature verification
  */
-app.post("/webhook", express.raw({type: "application/json"}), async (req, res) => {
+app.post("/webhook", async (req, res) => {
   const sig = req.headers["stripe-signature"];
 
   if (!sig) {
@@ -730,9 +730,9 @@ app.post("/webhook", express.raw({type: "application/json"}), async (req, res) =
       return sendErrorResponse(req, res, 500, "Configuration Error", "Webhook secret not configured");
     }
 
-    // Verify webhook signature
+    // Verify webhook signature using rawBody (Firebase Functions pre-parses req.body)
     const event = await stripeService.verifyWebhookSignature(
-        req.body,
+        req.rawBody,
         sig,
         webhookSecret.trim(),
     );
@@ -861,7 +861,7 @@ app.post("/webhook", express.raw({type: "application/json"}), async (req, res) =
 
       case "invoice.payment_succeeded": {
         const invoice = event.data.object;
-        const subscriptionId = invoice.subscription;
+        const subscriptionId = invoice.subscription ?? invoice.parent?.subscription_details?.subscription;
 
         if (!subscriptionId) {
           // Not a subscription invoice, skip

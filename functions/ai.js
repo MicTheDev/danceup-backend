@@ -455,11 +455,11 @@ app.get("/instructor-performance", async (req, res) => {
 
     const studioName = studioDoc.exists ? (studioDoc.data().studioName || "Your Studio") : "Your Studio";
 
-    // Build class → instructorId map and capacity
-    const classMap = {}; // classId → {instructorId, maxCapacity}
+    // Build class → instructorIds map and capacity
+    const classMap = {}; // classId → {instructorIds, maxCapacity}
     classesSnap.forEach((doc) => {
       const d = doc.data();
-      classMap[doc.id] = {instructorId: d.instructorId, maxCapacity: d.maxCapacity || 20};
+      classMap[doc.id] = {instructorIds: d.instructorIds || [], maxCapacity: d.maxCapacity || 20};
     });
 
     // Aggregate attendance per instructor
@@ -468,12 +468,13 @@ app.get("/instructor-performance", async (req, res) => {
       const d = doc.data();
       if (d.isRemoved) return;
       const cls = classMap[d.classId];
-      if (!cls || !cls.instructorId) return;
-      const iid = cls.instructorId;
-      if (!instructorStats[iid]) instructorStats[iid] = {checkIns: 0, capacityTotal: 0, sessionDates: new Set()};
-      instructorStats[iid].checkIns++;
+      if (!cls || !cls.instructorIds || cls.instructorIds.length === 0) return;
       const dateKey = d.classInstanceDate?.toDate ? d.classInstanceDate.toDate().toISOString().split("T")[0] : "";
-      if (dateKey) instructorStats[iid].sessionDates.add(`${d.classId}_${dateKey}`);
+      for (const iid of cls.instructorIds) {
+        if (!instructorStats[iid]) instructorStats[iid] = {checkIns: 0, capacityTotal: 0, sessionDates: new Set()};
+        instructorStats[iid].checkIns++;
+        if (dateKey) instructorStats[iid].sessionDates.add(`${d.classId}_${dateKey}`);
+      }
     });
 
     // Aggregate reviews per instructor
@@ -490,8 +491,9 @@ app.get("/instructor-performance", async (req, res) => {
     // Build class count per instructor
     const classCountMap = {};
     classesSnap.forEach((doc) => {
-      const iid = doc.data().instructorId;
-      if (iid) classCountMap[iid] = (classCountMap[iid] || 0) + 1;
+      for (const iid of (doc.data().instructorIds || [])) {
+        classCountMap[iid] = (classCountMap[iid] || 0) + 1;
+      }
     });
 
     const instructors = [];
@@ -504,7 +506,7 @@ app.get("/instructor-performance", async (req, res) => {
       // Estimate fill rate: average check-ins per session vs avg capacity
       const avgCapacity = classCount > 0 ? (
         [...classesSnap.docs]
-            .filter((c) => c.data().instructorId === iid)
+            .filter((c) => (c.data().instructorIds || []).includes(iid))
             .reduce((sum, c) => sum + (c.data().maxCapacity || 20), 0) / classCount
       ) : 20;
       const avgFillRate = sessions > 0

@@ -646,7 +646,7 @@ async function createConnectSubscriptionSession(
       // Add application fee if specified
       if (applicationFeeAmount && applicationFeeAmount > 0 && metadata.price) {
         const priceInCents = Math.round(metadata.price * 100);
-        const feePercent = (applicationFeeAmount / priceInCents) * 100;
+        const feePercent = Math.round((applicationFeeAmount / priceInCents) * 100 * 100) / 100;
         sessionParams.subscription_data.application_fee_percent = feePercent;
       }
     }
@@ -738,7 +738,7 @@ async function createSubscriptionWithSavedCard(customerId, priceParams, paymentM
     subParams.transfer_data = {destination: connectedAccountId};
     // Express a fixed $0.50 platform fee as a percentage of the per-cycle price
     if (priceParams.unit_amount && priceParams.unit_amount > 0) {
-      subParams.application_fee_percent = (PLATFORM_FEE_CENTS / priceParams.unit_amount) * 100;
+      subParams.application_fee_percent = Math.round((PLATFORM_FEE_CENTS / priceParams.unit_amount) * 100 * 100) / 100;
     }
   }
 
@@ -1055,5 +1055,15 @@ module.exports = {
   chargePaymentMethodDirectly,
   createSubscriptionWithSavedCard,
   createAccountSession,
+  createRefund,
 };
+
+async function createRefund(paymentIntentId, reason) {
+  const stripe = await getStripeClient();
+  return await stripe.refunds.create({
+    payment_intent: paymentIntentId,
+    reason: "requested_by_customer",
+    metadata: {reason: reason || ""},
+  });
+}
 

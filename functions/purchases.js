@@ -6,6 +6,7 @@ const {verifyToken} = require("./utils/auth");
 const {getFirestore} = require("./utils/firestore");
 const stripeService = require("./services/stripe.service");
 const purchaseService = require("./services/purchase.service");
+const creditTrackingService = require("./services/credit-tracking.service");
 const {
   sendJsonResponse,
   sendErrorResponse,
@@ -1368,6 +1369,74 @@ app.post("/:purchaseId/check-out", async (req, res) => {
     sendJsonResponse(req, res, 200, {message: "Check-in removed successfully"});
   } catch (error) {
     console.error("Error removing check-in:", error);
+    handleError(req, res, error);
+  }
+});
+
+// POST /:purchaseId/refund — refund a purchase (studio owner only)
+app.post("/:purchaseId/refund", async (req, res) => {
+  try {
+    const decodedToken = await verifyToken(req);
+    const authUid = decodedToken.uid;
+    const {purchaseId} = req.params;
+    const {reason} = req.body;
+
+    const db = getFirestore();
+
+    // Look up the studio owner record for the requesting user
+    const studioOwnerSnapshot = await db
+      .collection("studioOwners")
+      .where("authUid", "==", authUid)
+      .limit(1)
+      .get();
+    if (studioOwnerSnapshot.empty) {
+      return sendErrorResponse(req, res, 403, "Not authorized");
+    }
+    const studioOwnerId = studioOwnerSnapshot.docs[0].id;
+
+    // Fetch the purchase
+    const purchaseRef = db.collection("purchases").doc(purchaseId);
+    const purchaseSnap = await purchaseRef.get();
+    if (!purchaseSnap.exists) {
+      return sendErrorResponse(req, res, 404, "Purchase not found");
+    }
+    const purchase = purchaseSnap.data();
+
+    // Verify ownership
+    if (purchase.studioOwnerId !== studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Not authorized to refund this purchase");
+    }
+
+    // Prevent double refund
+    if (purchase.status === "refunded") {
+      return sendErrorResponse(req, res, 400, "This purchase has already been refunded");
+    }
+
+    const {stripePaymentIntentId, creditIds, studentId, creditsGranted} = purchase;
+
+    // Process Stripe refund if this was a card payment
+    if (!stripePaymentIntentId || !stripePaymentIntentId.startsWith("pi_")) {
+      return sendErrorResponse(req, res, 400, "This was a cash purchase and cannot be refunded through Stripe");
+    }
+
+    await stripeService.createRefund(stripePaymentIntentId, reason);
+
+    // Revoke credits if this was a package purchase
+    if (creditIds && creditIds.length > 0 && creditsGranted > 0) {
+      await creditTrackingService.removeCredits(studentId, studioOwnerId, creditsGranted);
+    }
+
+    // Mark purchase as refunded
+    await purchaseRef.update({
+      status: "refunded",
+      refundedAt: admin.firestore.FieldValue.serverTimestamp(),
+      refundReason: reason || "",
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, {message: "Refund processed successfully"});
+  } catch (error) {
+    console.error("Error processing refund:", error);
     handleError(req, res, error);
   }
 });
