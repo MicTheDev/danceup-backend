@@ -162,8 +162,8 @@ app.post("/create-payment-link", async (req, res) => {
       authUid: user ? user.uid : "guest",
     };
 
-    // Flat $0.50 platform fee on every credit card charge
-    const applicationFeeAmount = 50;
+    // Platform fee: $0.25 + 1% of the transaction amount
+    const applicationFeeAmount = 25 + Math.round(itemDetails.price * 100 * 0.01);
 
     let checkoutSession;
 
@@ -172,23 +172,9 @@ app.post("/create-payment-link", async (req, res) => {
       const stripe = await stripeService.getStripeClient();
       
       // Map billing frequency to Stripe interval
-      let interval;
-      let intervalCount = itemDetails.billingInterval || 1;
-      
-      if (itemDetails.billingFrequency === 'monthly') {
-        interval = 'month';
-      } else if (itemDetails.billingFrequency === 'weekly') {
-        interval = 'week';
-      } else if (itemDetails.billingFrequency === 'daily') {
-        interval = 'day';
-      } else if (typeof itemDetails.billingFrequency === 'number') {
-        // Custom days - use day interval with the number as interval count
-        interval = 'day';
-        intervalCount = itemDetails.billingFrequency;
-      } else {
-        // Default to monthly
-        interval = 'month';
-      }
+      const intervalMap = {monthly: "month", weekly: "week", daily: "day", yearly: "year"};
+      const interval = intervalMap[itemDetails.billingFrequency] || "month";
+      const intervalCount = itemDetails.billingInterval || 1;
 
       const price = await stripe.prices.create({
         unit_amount: Math.round(itemDetails.price * 100), // Convert to cents
@@ -197,15 +183,10 @@ app.post("/create-payment-link", async (req, res) => {
           interval: interval,
           interval_count: intervalCount,
         },
-        product_data: {
-          name: itemDetails.itemName,
-          metadata: {
-            purchaseType,
-            itemId,
-            studioOwnerId: itemDetails.studioOwnerId,
-            studentId: studentDoc ? studentDoc.id : "guest",
-          },
-        },
+        ...(itemDetails.stripeProductId
+          ? {product: itemDetails.stripeProductId}
+          : {product_data: {name: itemDetails.itemName, metadata: {purchaseType, itemId, studioOwnerId: itemDetails.studioOwnerId, studentId: studentDoc ? studentDoc.id : "guest"}}}
+        ),
       });
 
       // Create Subscription Checkout Session with Stripe Connect
@@ -234,15 +215,10 @@ app.post("/create-payment-link", async (req, res) => {
       const price = await stripe.prices.create({
         unit_amount: Math.round(itemDetails.price * 100), // Convert to cents
         currency: "usd",
-        product_data: {
-          name: itemDetails.itemName,
-          metadata: {
-            purchaseType,
-            itemId,
-            studioOwnerId: itemDetails.studioOwnerId,
-            studentId: studentDoc ? studentDoc.id : "guest",
-          },
-        },
+        ...(itemDetails.stripeProductId
+          ? {product: itemDetails.stripeProductId}
+          : {product_data: {name: itemDetails.itemName, metadata: {purchaseType, itemId, studioOwnerId: itemDetails.studioOwnerId, studentId: studentDoc ? studentDoc.id : "guest"}}}
+        ),
       });
 
       // Create Checkout Session with Stripe Connect (payments go to studio owner's connected account)
@@ -354,25 +330,18 @@ app.post("/charge-saved", async (req, res) => {
 
     if (isRecurring) {
       // Build price params (mirrors the logic in /create-payment-link)
-      let interval = "month";
-      let intervalCount = itemDetails.billingInterval || 1;
-      if (itemDetails.billingFrequency === "weekly") {
-        interval = "week";
-      } else if (itemDetails.billingFrequency === "daily") {
-        interval = "day";
-      } else if (typeof itemDetails.billingFrequency === "number") {
-        interval = "day";
-        intervalCount = itemDetails.billingFrequency;
-      }
+      const intervalMap = {monthly: "month", weekly: "week", daily: "day", yearly: "year"};
+      const interval = intervalMap[itemDetails.billingFrequency] || "month";
+      const intervalCount = itemDetails.billingInterval || 1;
 
       const priceParams = {
         unit_amount: Math.round(itemDetails.price * 100),
         currency: "usd",
         recurring: {interval, interval_count: intervalCount},
-        product_data: {
-          name: itemDetails.itemName,
-          metadata: {purchaseType, itemId, studioOwnerId, studentId: studentDoc.id},
-        },
+        ...(itemDetails.stripeProductId
+          ? {product: itemDetails.stripeProductId}
+          : {product_data: {name: itemDetails.itemName, metadata: {purchaseType, itemId, studioOwnerId, studentId: studentDoc.id}}}
+        ),
       };
 
       const subscription = await stripeService.createSubscriptionWithSavedCard(

@@ -194,6 +194,7 @@ class PurchaseService {
       billingFrequency,
       billingInterval,
       subscriptionDuration,
+      stripeProductId: itemData?.stripeProductId || null,
     };
   }
 

@@ -1,8 +1,24 @@
 const Stripe = require("stripe");
 const {getSecret} = require("../utils/secret-manager");
 
-// Platform fee charged on every credit card transaction (in cents)
-const PLATFORM_FEE_CENTS = 50;
+/**
+ * Compute the platform fee for a transaction: $0.25 + 1% of the charge amount.
+ * @param {number} amountCents - Transaction amount in cents
+ * @returns {number} Platform fee in cents (rounded)
+ */
+function platformFeeCents(amountCents) {
+  return 25 + Math.round(amountCents * 0.01);
+}
+
+/**
+ * Compute the platform fee as a percentage of the charge amount: $0.25 + 1%.
+ * Used for Stripe subscriptions which only accept application_fee_percent.
+ * @param {number} amountCents - Recurring price in cents
+ * @returns {number} Fee percentage rounded to 2 decimal places
+ */
+function platformFeePercent(amountCents) {
+  return Math.round((1 + (25 / amountCents) * 100) * 100) / 100;
+}
 
 let stripeClient = null;
 
@@ -643,11 +659,10 @@ async function createConnectSubscriptionSession(
     if (connectedAccountId) {
       sessionParams.subscription_data.transfer_data = {destination: connectedAccountId};
 
-      // Add application fee if specified
-      if (applicationFeeAmount && applicationFeeAmount > 0 && metadata.price) {
+      // Add application fee ($0.25 + 1%) expressed as a percentage for subscriptions
+      if (metadata.price) {
         const priceInCents = Math.round(metadata.price * 100);
-        const feePercent = Math.round((applicationFeeAmount / priceInCents) * 100 * 100) / 100;
-        sessionParams.subscription_data.application_fee_percent = feePercent;
+        sessionParams.subscription_data.application_fee_percent = platformFeePercent(priceInCents);
       }
     }
 
@@ -694,7 +709,7 @@ async function chargePaymentMethodDirectly(customerId, paymentMethodId, amountCe
 
   if (connectedAccountId) {
     params.transfer_data = {destination: connectedAccountId};
-    params.application_fee_amount = PLATFORM_FEE_CENTS;
+    params.application_fee_amount = platformFeeCents(amountCents);
   }
 
   try {
@@ -736,9 +751,9 @@ async function createSubscriptionWithSavedCard(customerId, priceParams, paymentM
 
   if (connectedAccountId) {
     subParams.transfer_data = {destination: connectedAccountId};
-    // Express a fixed $0.50 platform fee as a percentage of the per-cycle price
+    // Express $0.25 + 1% platform fee as a percentage of the per-cycle price
     if (priceParams.unit_amount && priceParams.unit_amount > 0) {
-      subParams.application_fee_percent = Math.round((PLATFORM_FEE_CENTS / priceParams.unit_amount) * 100 * 100) / 100;
+      subParams.application_fee_percent = platformFeePercent(priceParams.unit_amount);
     }
   }
 
@@ -854,7 +869,7 @@ async function createStripeProduct(packageData, studioOwnerId, studioName) {
   const stripe = await getStripeClient();
 
   // Map billing frequency string to Stripe interval
-  const intervalMap = {monthly: "month", weekly: "week", daily: "day"};
+  const intervalMap = {monthly: "month", weekly: "week", daily: "day", yearly: "year"};
 
   // Build the core product params (direct Stripe fields)
   const productParams = {
@@ -868,9 +883,10 @@ async function createStripeProduct(packageData, studioOwnerId, studioName) {
     productParams.images = packageData.images;
   }
   if (packageData.url) productParams.url = packageData.url;
-  if (packageData.statement_descriptor) {
-    productParams.statement_descriptor = packageData.statement_descriptor;
-  }
+  // Auto-generate statement descriptor from studio + package name (Stripe max 22 chars)
+  const rawDescriptor = packageData.statement_descriptor
+    || `${studioName} ${packageData.name}`.replace(/[<>"']/g, "");
+  productParams.statement_descriptor = rawDescriptor.slice(0, 22).trim();
   if (packageData.tax_code) productParams.tax_code = packageData.tax_code;
   if (packageData.unit_label) productParams.unit_label = packageData.unit_label;
   if (packageData.shippable !== undefined) productParams.shippable = packageData.shippable;
@@ -982,7 +998,7 @@ async function createPrivateLessonCheckoutSession({
   metadata,
   successUrl,
   cancelUrl,
-  applicationFeeAmount = PLATFORM_FEE_CENTS,
+  applicationFeeAmount = null,
 }) {
   const stripe = await getStripeClient();
 
@@ -1014,8 +1030,9 @@ async function createPrivateLessonCheckoutSession({
 
   if (connectedAccountId) {
     sessionParams.payment_intent_data.transfer_data = {destination: connectedAccountId};
-    if (applicationFeeAmount > 0) {
-      sessionParams.payment_intent_data.application_fee_amount = applicationFeeAmount;
+    const fee = applicationFeeAmount ?? platformFeeCents(amountCents);
+    if (fee > 0) {
+      sessionParams.payment_intent_data.application_fee_amount = fee;
     }
   }
 
