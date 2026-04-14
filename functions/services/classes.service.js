@@ -1,6 +1,8 @@
 const admin = require("firebase-admin");
 const authService = require("./auth.service");
 const {getFirestore} = require("../utils/firestore");
+const {geocodeAddress} = require("../utils/geocoding");
+const {haversineDistance} = require("../utils/distance");
 
 /**
  * Service for handling class management operations
@@ -103,10 +105,25 @@ class ClassesService {
       }
     }
     
+    // Geocode using the studio owner's address
+    let coords = null;
+    if (studioOwnerDoc.exists) {
+      const studioOwnerData = studioOwnerDoc.data();
+      if (studioOwnerData.studioAddressLine1 && studioOwnerData.city && studioOwnerData.state) {
+        coords = await geocodeAddress(
+            studioOwnerData.studioAddressLine1,
+            studioOwnerData.city,
+            studioOwnerData.state,
+            studioOwnerData.zip || "",
+        );
+      }
+    }
+
     const classDataWithMetadata = {
       ...classData,
       studioOwnerId,
-      imageUrl, // Add the studio's image or placeholder
+      imageUrl,
+      ...(coords ? {lat: coords.lat, lng: coords.lng} : {}),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
@@ -136,8 +153,25 @@ class ClassesService {
       throw new Error("Access denied: Class does not belong to this studio owner");
     }
 
+    // Re-geocode using studio owner's address if address may have changed
+    let coords = null;
+    const studioOwnerRef = db.collection("users").doc(existingData.studioOwnerId);
+    const studioOwnerDoc = await studioOwnerRef.get();
+    if (studioOwnerDoc.exists) {
+      const studioOwnerData = studioOwnerDoc.data();
+      if (studioOwnerData.studioAddressLine1 && studioOwnerData.city && studioOwnerData.state) {
+        coords = await geocodeAddress(
+            studioOwnerData.studioAddressLine1,
+            studioOwnerData.city,
+            studioOwnerData.state,
+            studioOwnerData.zip || "",
+        );
+      }
+    }
+
     const updateData = {
       ...classData,
+      ...(coords ? {lat: coords.lat, lng: coords.lng} : {}),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
@@ -303,6 +337,28 @@ class ClassesService {
         // If not on class, we could check studio's genre if available
         return false;
       });
+    }
+
+    // Apply radius filter if lat/lng provided
+    if (filters.lat != null && filters.lng != null) {
+      const radius = filters.radius != null ? filters.radius : 25;
+      const withDistance = filteredClasses
+          .filter((c) => c.lat != null && c.lng != null)
+          .map((c) => ({
+            ...c,
+            distanceMiles: haversineDistance(filters.lat, filters.lng, c.lat, c.lng),
+          }))
+          .filter((c) => c.distanceMiles <= radius)
+          .sort((a, b) => a.distanceMiles - b.distanceMiles);
+
+      if (filters.limit != null) {
+        return withDistance.slice(0, filters.limit);
+      }
+      return withDistance;
+    }
+
+    if (filters.limit != null) {
+      return filteredClasses.slice(0, filters.limit);
     }
 
     return filteredClasses;

@@ -7,6 +7,7 @@ const storageService = require("./services/storage.service");
 const {verifyToken} = require("./utils/auth");
 const {validateUpdateProfilePayload} = require("./utils/validation");
 const {getFirestore} = require("./utils/firestore");
+const {geocodeAddress} = require("./utils/geocoding");
 const {
   sendJsonResponse,
   sendErrorResponse,
@@ -90,6 +91,10 @@ app.get("/", async (req, res) => {
       stripeAccountId: userData.stripeAccountId || null,
       stripeAccountStatus: userData.stripeAccountStatus || null,
       stripeSetupCompleted: userData.stripeSetupCompleted || false,
+      stripeSubscriptionId: userData.stripeSubscriptionId || null,
+      stripeSubscriptionStatus: userData.stripeSubscriptionStatus || null,
+      // null/undefined = legacy account, treat as active to avoid false lockouts
+      subscriptionActive: userData.subscriptionActive !== false,
     });
   } catch (error) {
     console.error("Get profile error:", error);
@@ -220,6 +225,24 @@ app.put("/", async (req, res) => {
     }
     if (studioImageUrl !== null) {
       updateData.studioImageUrl = studioImageUrl;
+    }
+
+    // Geocode studio address if any address field was updated
+    const addressChanged = studioAddressLine1 !== undefined || city !== undefined ||
+      state !== undefined || zip !== undefined;
+    if (addressChanged) {
+      const existingData = userDoc.data();
+      const resolvedAddress = updateData.studioAddressLine1 || existingData.studioAddressLine1 || "";
+      const resolvedCity = updateData.city || existingData.city || "";
+      const resolvedState = updateData.state || existingData.state || "";
+      const resolvedZip = updateData.zip || existingData.zip || "";
+      if (resolvedAddress && resolvedCity && resolvedState) {
+        const coords = await geocodeAddress(resolvedAddress, resolvedCity, resolvedState, resolvedZip);
+        if (coords) {
+          updateData.lat = coords.lat;
+          updateData.lng = coords.lng;
+        }
+      }
     }
 
     // Update Firestore document

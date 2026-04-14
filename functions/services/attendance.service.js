@@ -305,7 +305,8 @@ class AttendanceService {
   }
 
   /**
-   * Get workshop attendance statistics
+   * Get workshop attendance statistics sourced from the purchases collection.
+   * Workshop "attendance" = a completed purchase of purchaseType "workshop".
    * @param {string} studioOwnerId - Studio owner document ID
    * @param {Date} startDate - Optional start date filter
    * @param {Date} endDate - Optional end date filter
@@ -313,58 +314,61 @@ class AttendanceService {
    */
   async getWorkshopAttendanceStats(studioOwnerId, startDate = null, endDate = null) {
     try {
-      const records = await this.getAttendanceRecords(studioOwnerId, startDate, endDate);
-      
-      // Filter for workshop attendance only
-      const workshopRecords = records.filter((r) => r.workshopId);
-      
-      if (workshopRecords.length === 0) {
-        return {
-          total: 0,
-          byWorkshop: [],
-        };
-      }
+      const db = getFirestore();
+      let query = db.collection("purchases")
+          .where("studioOwnerId", "==", studioOwnerId)
+          .where("purchaseType", "==", "workshop")
+          .where("status", "==", "completed");
+
+      const snapshot = await query.get();
 
       const workshopMap = new Map();
 
-      workshopRecords.forEach((record) => {
-        const workshopId = record.workshopId;
-        if (workshopId) {
-          const current = workshopMap.get(workshopId) || {count: 0, workshopId};
-          workshopMap.set(workshopId, {...current, count: current.count + 1});
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+
+        // Date filter using createdAt
+        if (startDate || endDate) {
+          const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt);
+          if (startDate && createdAt < startDate) return;
+          if (endDate && createdAt > endDate) return;
         }
+
+        const workshopId = data.itemId;
+        if (!workshopId) return;
+
+        const current = workshopMap.get(workshopId) || {count: 0, workshopId, workshopName: data.itemName || ""};
+        workshopMap.set(workshopId, {...current, count: current.count + 1});
       });
 
-      const byWorkshop = Array.from(workshopMap.entries())
-          .map(([workshopId, data]) => ({
-            workshopId,
-            workshopName: "", // Will be populated by fetching workshop names
-            totalAttendance: data.count,
+      if (workshopMap.size === 0) {
+        return {total: 0, byWorkshop: []};
+      }
+
+      const byWorkshop = Array.from(workshopMap.values())
+          .map((w) => ({
+            workshopId: w.workshopId,
+            workshopName: w.workshopName,
+            totalAttendance: w.count,
           }))
           .sort((a, b) => b.totalAttendance - a.totalAttendance);
 
-      // Get workshop names
-      const db = getFirestore();
-      const workshopIds = Array.from(workshopMap.keys());
-      if (workshopIds.length > 0) {
-        const workshopsRef = db.collection("workshops");
+      // Fill in any missing names from the workshops collection
+      const missingNames = byWorkshop.filter((w) => !w.workshopName);
+      if (missingNames.length > 0) {
         const workshopDocs = await Promise.all(
-            workshopIds.map((id) => workshopsRef.doc(id).get()),
+            missingNames.map((w) => db.collection("workshops").doc(w.workshopId).get()),
         );
-        
         workshopDocs.forEach((doc) => {
           if (doc.exists) {
-            const workshopData = doc.data();
-            const workshopStat = byWorkshop.find((w) => w.workshopId === doc.id);
-            if (workshopStat) {
-              workshopStat.workshopName = workshopData.name || "Unknown Workshop";
-            }
+            const stat = byWorkshop.find((w) => w.workshopId === doc.id);
+            if (stat) stat.workshopName = doc.data().name || "Unknown Workshop";
           }
         });
       }
 
       return {
-        total: workshopRecords.length,
+        total: byWorkshop.reduce((sum, w) => sum + w.totalAttendance, 0),
         byWorkshop,
       };
     } catch (error) {
@@ -374,41 +378,47 @@ class AttendanceService {
   }
 
   /**
-   * Get event attendance statistics
+   * Get event attendance statistics sourced from the purchases collection.
+   * Event "attendance" = a completed purchase of purchaseType "event".
    * @param {string} studioOwnerId - Studio owner document ID
    * @param {Date} startDate - Optional start date filter
    * @param {Date} endDate - Optional end date filter
-   * @returns {Promise<Object>} Event attendance stats with weekly and monthly data
+   * @returns {Promise<Object>} Event attendance stats with weekly, monthly, and per-event data
    */
   async getEventAttendanceStats(studioOwnerId, startDate = null, endDate = null) {
     try {
-      const records = await this.getAttendanceRecords(studioOwnerId, startDate, endDate);
-      
-      // Filter for event attendance only
-      const eventRecords = records.filter((r) => r.eventId);
-      
-      if (eventRecords.length === 0) {
-        return {
-          weekly: [],
-          monthly: [],
-          total: 0,
-        };
-      }
+      const db = getFirestore();
+      const query = db.collection("purchases")
+          .where("studioOwnerId", "==", studioOwnerId)
+          .where("purchaseType", "==", "event")
+          .where("status", "==", "completed");
+
+      const snapshot = await query.get();
 
       const weeklyMap = new Map();
       const monthlyMap = new Map();
+      const eventMap = new Map();
 
-      eventRecords.forEach((record) => {
-        const instanceDate = record.classInstanceDate?.toDate();
-        if (!instanceDate) return;
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt);
 
-        // Weekly aggregation
-        const weekKey = this.getWeekKey(instanceDate);
+        if (startDate && createdAt < startDate) return;
+        if (endDate && createdAt > endDate) return;
+
+        // Weekly / monthly aggregation by purchase date
+        const weekKey = this.getWeekKey(createdAt);
         weeklyMap.set(weekKey, (weeklyMap.get(weekKey) || 0) + 1);
 
-        // Monthly aggregation
-        const monthKey = this.getMonthKey(instanceDate);
+        const monthKey = this.getMonthKey(createdAt);
         monthlyMap.set(monthKey, (monthlyMap.get(monthKey) || 0) + 1);
+
+        // Per-event aggregation
+        const eventId = data.itemId;
+        if (eventId) {
+          const current = eventMap.get(eventId) || {count: 0, eventId, eventName: data.itemName || ""};
+          eventMap.set(eventId, {...current, count: current.count + 1});
+        }
       });
 
       const weekly = Array.from(weeklyMap.entries())
@@ -419,15 +429,182 @@ class AttendanceService {
           .map(([period, count]) => ({period, count}))
           .sort((a, b) => a.period.localeCompare(b.period));
 
+      const byEvent = Array.from(eventMap.values())
+          .map((e) => ({
+            eventId: e.eventId,
+            eventName: e.eventName,
+            totalAttendance: e.count,
+          }))
+          .sort((a, b) => b.totalAttendance - a.totalAttendance);
+
       return {
         weekly,
         monthly,
-        total: eventRecords.length,
+        total: snapshot.size,
+        byEvent,
       };
     } catch (error) {
       console.error("Error getting event attendance stats:", error);
       throw error;
     }
+  }
+
+  /**
+   * Get the list of attendees for a specific class (from attendance records).
+   * @param {string} studioOwnerId
+   * @param {string} classId
+   * @returns {Promise<Array>} Array of attendee objects
+   */
+  async getClassAttendees(studioOwnerId, classId) {
+    const db = getFirestore();
+    const snapshot = await db.collection("attendance")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("classId", "==", classId)
+        .get();
+
+    // Filter removed records in-memory so docs without isRemoved field are included
+    const activeDocs = snapshot.docs.filter((d) => !d.data().isRemoved);
+
+    // Sort by classInstanceDate descending in-memory
+    activeDocs.sort((a, b) => {
+      const toMs = (ts) => ts?.toDate ? ts.toDate().getTime() : new Date(ts || 0).getTime();
+      return toMs(b.data().classInstanceDate) - toMs(a.data().classInstanceDate);
+    });
+
+    const studentIds = [...new Set(activeDocs.map((d) => d.data().studentId).filter(Boolean))];
+    const studentDocs = studentIds.length > 0
+      ? await Promise.all(studentIds.map((id) => db.collection("students").doc(id).get()))
+      : [];
+
+    const studentMap = new Map();
+    studentDocs.forEach((doc) => {
+      if (doc.exists) studentMap.set(doc.id, doc.data());
+    });
+
+    return activeDocs.map((doc) => {
+      const data = doc.data();
+      const student = studentMap.get(data.studentId) || {};
+      return {
+        attendanceId: doc.id,
+        studentId: data.studentId,
+        firstName: student.firstName || "",
+        lastName: student.lastName || "",
+        email: student.email || "",
+        classInstanceDate: data.classInstanceDate?.toDate
+          ? data.classInstanceDate.toDate().toISOString()
+          : data.classInstanceDate,
+        checkedInAt: data.checkedInAt?.toDate
+          ? data.checkedInAt.toDate().toISOString()
+          : data.checkedInAt,
+        checkedInBy: data.checkedInBy,
+      };
+    });
+  }
+
+  /**
+   * Get the list of attendees for a specific workshop (from purchases).
+   * @param {string} studioOwnerId
+   * @param {string} workshopId
+   * @returns {Promise<Array>} Array of attendee objects
+   */
+  async getWorkshopAttendees(studioOwnerId, workshopId) {
+    const db = getFirestore();
+    const snapshot = await db.collection("purchases")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("purchaseType", "==", "workshop")
+        .where("itemId", "==", workshopId)
+        .get();
+
+    // Filter in-memory: include docs with no status field or status === "completed"
+    const completedDocs = snapshot.docs.filter((d) => {
+      const status = d.data().status;
+      return !status || status === "completed";
+    });
+
+    // Sort by createdAt descending in-memory
+    completedDocs.sort((a, b) => {
+      const toMs = (ts) => ts?.toDate ? ts.toDate().getTime() : new Date(ts || 0).getTime();
+      return toMs(b.data().createdAt) - toMs(a.data().createdAt);
+    });
+
+    const studentIds = [...new Set(completedDocs.map((d) => d.data().studentId).filter(Boolean))];
+    const studentDocs = studentIds.length > 0
+      ? await Promise.all(studentIds.map((id) => db.collection("students").doc(id).get()))
+      : [];
+
+    const studentMap = new Map();
+    studentDocs.forEach((doc) => {
+      if (doc.exists) studentMap.set(doc.id, doc.data());
+    });
+
+    return completedDocs.map((doc) => {
+      const data = doc.data();
+      const student = studentMap.get(data.studentId) || {};
+      return {
+        purchaseId: doc.id,
+        studentId: data.studentId,
+        firstName: student.firstName || "",
+        lastName: student.lastName || "",
+        email: student.email || "",
+        pricePaid: data.price || 0,
+        purchasedAt: data.createdAt?.toDate
+          ? data.createdAt.toDate().toISOString()
+          : data.createdAt,
+      };
+    });
+  }
+
+  /**
+   * Get the list of attendees for a specific event (from purchases).
+   * @param {string} studioOwnerId
+   * @param {string} eventId
+   * @returns {Promise<Array>} Array of attendee objects
+   */
+  async getEventAttendees(studioOwnerId, eventId) {
+    const db = getFirestore();
+    const snapshot = await db.collection("purchases")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("purchaseType", "==", "event")
+        .where("itemId", "==", eventId)
+        .get();
+
+    // Filter in-memory: include docs with no status field or status === "completed"
+    const completedDocs = snapshot.docs.filter((d) => {
+      const status = d.data().status;
+      return !status || status === "completed";
+    });
+
+    // Sort by createdAt descending in-memory
+    completedDocs.sort((a, b) => {
+      const toMs = (ts) => ts?.toDate ? ts.toDate().getTime() : new Date(ts || 0).getTime();
+      return toMs(b.data().createdAt) - toMs(a.data().createdAt);
+    });
+
+    const studentIds = [...new Set(completedDocs.map((d) => d.data().studentId).filter(Boolean))];
+    const studentDocs = studentIds.length > 0
+      ? await Promise.all(studentIds.map((id) => db.collection("students").doc(id).get()))
+      : [];
+
+    const studentMap = new Map();
+    studentDocs.forEach((doc) => {
+      if (doc.exists) studentMap.set(doc.id, doc.data());
+    });
+
+    return completedDocs.map((doc) => {
+      const data = doc.data();
+      const student = studentMap.get(data.studentId) || {};
+      return {
+        purchaseId: doc.id,
+        studentId: data.studentId,
+        firstName: student.firstName || "",
+        lastName: student.lastName || "",
+        email: student.email || "",
+        pricePaid: data.price || 0,
+        purchasedAt: data.createdAt?.toDate
+          ? data.createdAt.toDate().toISOString()
+          : data.createdAt,
+      };
+    });
   }
 
   /**

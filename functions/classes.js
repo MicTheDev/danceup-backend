@@ -62,6 +62,10 @@ app.get("/public", async (req, res) => {
       minPrice: req.query.minPrice ? parseFloat(req.query.minPrice) : null,
       maxPrice: req.query.maxPrice ? parseFloat(req.query.maxPrice) : null,
       level: req.query.level || null,
+      lat: req.query.lat ? parseFloat(req.query.lat) : null,
+      lng: req.query.lng ? parseFloat(req.query.lng) : null,
+      radius: req.query.radius ? parseFloat(req.query.radius) : null,
+      limit: req.query.limit ? parseInt(req.query.limit, 10) : null,
     };
 
     // Get all public classes with filters

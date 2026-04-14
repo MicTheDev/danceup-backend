@@ -1,6 +1,8 @@
 const admin = require("firebase-admin");
 const authService = require("./auth.service");
 const {getFirestore} = require("../utils/firestore");
+const {geocodeAddress} = require("../utils/geocoding");
+const {haversineDistance} = require("../utils/distance");
 
 /**
  * Service for handling event management operations
@@ -76,8 +78,21 @@ class EventsService {
    */
   async createEvent(eventData, studioOwnerId) {
     const db = getFirestore();
+
+    // Geocode the event's address if address fields are present
+    let coords = null;
+    if (eventData.addressLine1 && eventData.city && eventData.state) {
+      coords = await geocodeAddress(
+          eventData.addressLine1,
+          eventData.city,
+          eventData.state,
+          eventData.zip || "",
+      );
+    }
+
     const eventDataWithMetadata = {
       ...eventData,
+      ...(coords ? {lat: coords.lat, lng: coords.lng} : {}),
       studioOwnerId,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -108,8 +123,20 @@ class EventsService {
       throw new Error("Access denied: Event does not belong to this studio owner");
     }
 
+    // Re-geocode if address fields changed
+    let coords = null;
+    if (eventData.addressLine1 && eventData.city && eventData.state) {
+      coords = await geocodeAddress(
+          eventData.addressLine1,
+          eventData.city,
+          eventData.state,
+          eventData.zip || "",
+      );
+    }
+
     const updateData = {
       ...eventData,
+      ...(coords ? {lat: coords.lat, lng: coords.lng} : {}),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
@@ -219,6 +246,11 @@ class EventsService {
       const endTime = eventData.endTime?.toDate ? eventData.endTime.toDate() : (eventData.endTime ? new Date(eventData.endTime) : null);
       const compareTime = endTime || startTime;
 
+      // Skip events that have already ended (or started, if no end time)
+      if (compareTime < now) {
+        continue;
+      }
+
       // Apply date filters
       if (filters.startDate) {
         const filterStartDate = new Date(filters.startDate);
@@ -298,6 +330,28 @@ class EventsService {
       };
 
       enrichedEvents.push(enrichedEvent);
+    }
+
+    // Apply radius filter if lat/lng provided
+    if (filters.lat != null && filters.lng != null) {
+      const radius = filters.radius != null ? filters.radius : 25;
+      const withDistance = enrichedEvents
+          .filter((e) => e.lat != null && e.lng != null)
+          .map((e) => ({
+            ...e,
+            distanceMiles: haversineDistance(filters.lat, filters.lng, e.lat, e.lng),
+          }))
+          .filter((e) => e.distanceMiles <= radius)
+          .sort((a, b) => a.distanceMiles - b.distanceMiles);
+
+      if (filters.limit != null) {
+        return withDistance.slice(0, filters.limit);
+      }
+      return withDistance;
+    }
+
+    if (filters.limit != null) {
+      return enrichedEvents.slice(0, filters.limit);
     }
 
     return enrichedEvents;

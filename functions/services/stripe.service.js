@@ -54,7 +54,6 @@ async function getStripeClient() {
       throw new Error("Invalid Stripe secret key format");
     }
 
-    // Initialize Stripe client - let it use default API version
     stripeClient = new Stripe(trimmedSecretKey);
 
     return stripeClient;
@@ -399,6 +398,12 @@ async function createCustomer(email, metadata = {}) {
  * @param {string} cancelUrl - URL to redirect after cancelled payment
  * @returns {Promise<Stripe.Checkout.Session>} Checkout session object
  */
+/**
+ * uiMode values:
+ *   "custom"   – Stripe Elements / PaymentElement on your own page (no iframe, no redirect to Stripe)
+ *   "embedded" – Stripe-hosted UI embedded as an iframe
+ *   "hosted"   – Stripe-hosted redirect (classic Checkout)
+ */
 async function createCheckoutSession(
     customerId,
     priceId,
@@ -406,7 +411,7 @@ async function createCheckoutSession(
     membership,
     successUrl,
     cancelUrl,
-    useEmbedded = true,
+    uiMode = "custom",
 ) {
   const stripe = await getStripeClient();
 
@@ -433,21 +438,21 @@ async function createCheckoutSession(
       payment_method_types: ["card"],
     };
 
-    if (useEmbedded) {
-      // For Embedded Checkout, use ui_mode and return_url
-      sessionParams.ui_mode = "embedded";
+    if (uiMode === "custom" || uiMode === "embedded") {
+      // Custom: you render the PaymentElement yourself; Embedded: Stripe iframe
+      sessionParams.ui_mode = uiMode;
       sessionParams.return_url = successUrl;
     } else {
-      // For redirect-based Checkout, use success_url and cancel_url
+      // Hosted redirect-based Checkout
       sessionParams.success_url = successUrl;
       sessionParams.cancel_url = cancelUrl;
     }
 
     const session = await stripe.checkout.sessions.create(sessionParams);
 
-    console.log(`[createCheckoutSession] Created ${useEmbedded ? 'embedded' : 'redirect'} checkout session:`, {
+    console.log(`[createCheckoutSession] Created ${uiMode} checkout session:`, {
       id: session.id,
-      client_secret: session.client_secret ? 'present' : 'missing',
+      client_secret: session.client_secret ? "present" : "missing",
       url: session.url,
     });
 
@@ -591,6 +596,8 @@ async function createConnectCheckoutSession(
 
     // Only route to connected account if one is provided
     if (connectedAccountId) {
+      // on_behalf_of routes Stripe's processing fee to the connected account (studio owner pays it)
+      sessionParams.payment_intent_data.on_behalf_of = connectedAccountId;
       sessionParams.payment_intent_data.transfer_data = {destination: connectedAccountId};
 
       // Add application fee if specified (platform fee)
@@ -657,6 +664,8 @@ async function createConnectSubscriptionSession(
 
     // Only route to connected account if one is provided
     if (connectedAccountId) {
+      // on_behalf_of routes Stripe's processing fee to the connected account (studio owner pays it)
+      sessionParams.on_behalf_of = connectedAccountId;
       sessionParams.subscription_data.transfer_data = {destination: connectedAccountId};
 
       // Add application fee ($0.25 + 1%) expressed as a percentage for subscriptions
@@ -708,6 +717,8 @@ async function chargePaymentMethodDirectly(customerId, paymentMethodId, amountCe
   };
 
   if (connectedAccountId) {
+    // on_behalf_of routes Stripe's processing fee to the connected account (studio owner pays it)
+    params.on_behalf_of = connectedAccountId;
     params.transfer_data = {destination: connectedAccountId};
     params.application_fee_amount = platformFeeCents(amountCents);
   }
@@ -750,6 +761,8 @@ async function createSubscriptionWithSavedCard(customerId, priceParams, paymentM
   };
 
   if (connectedAccountId) {
+    // on_behalf_of routes Stripe's processing fee to the connected account (studio owner pays it)
+    subParams.on_behalf_of = connectedAccountId;
     subParams.transfer_data = {destination: connectedAccountId};
     // Express $0.25 + 1% platform fee as a percentage of the per-cycle price
     if (priceParams.unit_amount && priceParams.unit_amount > 0) {
@@ -855,6 +868,24 @@ async function listPaymentMethods(customerId) {
   } catch (error) {
     console.error("Error listing payment methods:", error);
     throw new Error(`Failed to list payment methods: ${error.message}`);
+  }
+}
+
+/**
+ * Set a payment method as the customer's default for invoices.
+ * @param {string} customerId - Stripe customer ID
+ * @param {string} paymentMethodId - Stripe PaymentMethod ID to make default
+ * @returns {Promise<Stripe.Customer>} Updated customer object
+ */
+async function setDefaultPaymentMethod(customerId, paymentMethodId) {
+  const stripe = await getStripeClient();
+  try {
+    return await stripe.customers.update(customerId, {
+      invoice_settings: { default_payment_method: paymentMethodId },
+    });
+  } catch (error) {
+    console.error("Error setting default payment method:", error);
+    throw new Error(`Failed to set default payment method: ${error.message}`);
   }
 }
 
@@ -1029,6 +1060,8 @@ async function createPrivateLessonCheckoutSession({
   }
 
   if (connectedAccountId) {
+    // on_behalf_of routes Stripe's processing fee to the connected account (studio owner pays it)
+    sessionParams.payment_intent_data.on_behalf_of = connectedAccountId;
     sessionParams.payment_intent_data.transfer_data = {destination: connectedAccountId};
     const fee = applicationFeeAmount ?? platformFeeCents(amountCents);
     if (fee > 0) {
@@ -1045,6 +1078,52 @@ async function createPrivateLessonCheckoutSession({
   });
 
   return session;
+}
+
+/**
+ * Create a Stripe subscription in default_incomplete state and return the
+ * underlying PaymentIntent client_secret (pi_xxx_secret_xxx format).
+ * This avoids Checkout Sessions whose client_secret format is rejected by
+ * Stripe.js when the secret contains base64 '/' characters.
+ *
+ * @param {string} customerId - Stripe customer ID
+ * @param {string} priceId - Stripe price ID for the subscription plan
+ * @param {string|null} userId - Internal user ID for metadata
+ * @param {string} membership - Membership tier for metadata
+ * @returns {Promise<{subscriptionId: string, paymentIntentId: string, clientSecret: string}>}
+ */
+async function createSubscriptionCheckout(customerId, priceId, userId, membership) {
+  const stripe = await getStripeClient();
+
+  try {
+    const subscription = await stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: priceId }],
+      payment_behavior: "default_incomplete",
+      payment_settings: { save_default_payment_method: "on_subscription" },
+      expand: ["latest_invoice.payment_intent"],
+      metadata: { userId: userId || "", membership },
+    });
+
+    const paymentIntent = subscription.latest_invoice?.payment_intent;
+    if (!paymentIntent?.client_secret) {
+      throw new Error("Subscription did not produce a pending PaymentIntent");
+    }
+
+    console.log("[createSubscriptionCheckout] Created incomplete subscription:", {
+      subscriptionId: subscription.id,
+      paymentIntentId: paymentIntent.id,
+    });
+
+    return {
+      subscriptionId: subscription.id,
+      paymentIntentId: paymentIntent.id,
+      clientSecret: paymentIntent.client_secret,
+    };
+  } catch (error) {
+    console.error("Error creating subscription checkout:", error);
+    throw new Error(`Failed to create subscription: ${error.message}`);
+  }
 }
 
 module.exports = {
@@ -1066,10 +1145,12 @@ module.exports = {
   createStripeProduct,
   createSetupIntent,
   listPaymentMethods,
+  setDefaultPaymentMethod,
   detachPaymentMethod,
   updatePaymentMethod,
   getStripePublishableKey,
   chargePaymentMethodDirectly,
+  createSubscriptionCheckout,
   createSubscriptionWithSavedCard,
   createAccountSession,
   createRefund,

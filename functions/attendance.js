@@ -277,6 +277,87 @@ app.get("/students/:studentId", async (req, res) => {
 });
 
 /**
+ * GET /classes/:classId/attendees
+ * Get the list of students who attended a specific class
+ */
+app.get("/classes/:classId/attendees", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const {classId} = req.params;
+    const attendees = await attendanceService.getClassAttendees(studioOwnerId, classId);
+    sendJsonResponse(req, res, 200, attendees);
+  } catch (error) {
+    console.error("Error getting class attendees:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /workshops/:workshopId/attendees
+ * Get the list of students who purchased/attended a specific workshop
+ */
+app.get("/workshops/:workshopId/attendees", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const {workshopId} = req.params;
+    const attendees = await attendanceService.getWorkshopAttendees(studioOwnerId, workshopId);
+    sendJsonResponse(req, res, 200, attendees);
+  } catch (error) {
+    console.error("Error getting workshop attendees:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /events/:eventId/attendees
+ * Get the list of students who purchased/attended a specific event
+ */
+app.get("/events/:eventId/attendees", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const {eventId} = req.params;
+    const attendees = await attendanceService.getEventAttendees(studioOwnerId, eventId);
+    sendJsonResponse(req, res, 200, attendees);
+  } catch (error) {
+    console.error("Error getting event attendees:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * GET /classes/:classId
  * Get attendance statistics for a specific class
  */

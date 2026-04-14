@@ -33,6 +33,10 @@ class StudiosService {
     snapshot.forEach((doc) => {
       const userData = doc.data();
       
+      // Hide studios whose subscription has lapsed (subscriptionActive === false).
+      // null/undefined = legacy account with no subscription tracking → keep visible.
+      if (userData.subscriptionActive === false) return;
+
       // Apply filters that require checking data
       if (filters.city && userData.city) {
         const studioCity = userData.city.toLowerCase().trim();
@@ -84,6 +88,11 @@ class StudiosService {
     
     // Verify this is a studio owner
     if (!studioData.roles || !studioData.roles.includes("studio_owner")) {
+      return null;
+    }
+
+    // Hide studios whose subscription has lapsed
+    if (studioData.subscriptionActive === false) {
       return null;
     }
 

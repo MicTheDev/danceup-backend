@@ -56,6 +56,10 @@ app.get("/public", async (req, res) => {
       maxPrice: req.query.maxPrice ? parseFloat(req.query.maxPrice) : null,
       startDate: req.query.startDate || null,
       endDate: req.query.endDate || null,
+      lat: req.query.lat ? parseFloat(req.query.lat) : null,
+      lng: req.query.lng ? parseFloat(req.query.lng) : null,
+      radius: req.query.radius ? parseFloat(req.query.radius) : null,
+      limit: req.query.limit ? parseInt(req.query.limit, 10) : null,
     };
 
     // Get all public workshops with filters

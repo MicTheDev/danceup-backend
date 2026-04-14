@@ -1,6 +1,8 @@
 const admin = require("firebase-admin");
 const authService = require("./auth.service");
 const {getFirestore} = require("../utils/firestore");
+const {geocodeAddress} = require("../utils/geocoding");
+const {haversineDistance} = require("../utils/distance");
 
 /**
  * Service for handling workshop management operations
@@ -76,8 +78,20 @@ class WorkshopsService {
    */
   async createWorkshop(workshopData, studioOwnerId) {
     const db = getFirestore();
+
+    let coords = null;
+    if (workshopData.addressLine1 && workshopData.city && workshopData.state) {
+      coords = await geocodeAddress(
+          workshopData.addressLine1,
+          workshopData.city,
+          workshopData.state,
+          workshopData.zip || "",
+      );
+    }
+
     const workshopDataWithMetadata = {
       ...workshopData,
+      ...(coords ? {lat: coords.lat, lng: coords.lng} : {}),
       studioOwnerId,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -108,8 +122,19 @@ class WorkshopsService {
       throw new Error("Access denied: Workshop does not belong to this studio owner");
     }
 
+    let coords = null;
+    if (workshopData.addressLine1 && workshopData.city && workshopData.state) {
+      coords = await geocodeAddress(
+          workshopData.addressLine1,
+          workshopData.city,
+          workshopData.state,
+          workshopData.zip || "",
+      );
+    }
+
     const updateData = {
       ...workshopData,
+      ...(coords ? {lat: coords.lat, lng: coords.lng} : {}),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
@@ -212,6 +237,12 @@ class WorkshopsService {
       // Parse workshop dates
       const startTime = workshopData.startTime?.toDate ? workshopData.startTime.toDate() : new Date(workshopData.startTime);
       const endTime = workshopData.endTime?.toDate ? workshopData.endTime.toDate() : new Date(workshopData.endTime);
+      const now = new Date();
+
+      // Skip workshops that have already ended
+      if (endTime < now) {
+        continue;
+      }
 
       // Apply date filters
       if (filters.startDate) {
@@ -300,6 +331,28 @@ class WorkshopsService {
       };
 
       enrichedWorkshops.push(enrichedWorkshop);
+    }
+
+    // Apply radius filter if lat/lng provided
+    if (filters.lat != null && filters.lng != null) {
+      const radius = filters.radius != null ? filters.radius : 25;
+      const withDistance = enrichedWorkshops
+          .filter((w) => w.lat != null && w.lng != null)
+          .map((w) => ({
+            ...w,
+            distanceMiles: haversineDistance(filters.lat, filters.lng, w.lat, w.lng),
+          }))
+          .filter((w) => w.distanceMiles <= radius)
+          .sort((a, b) => a.distanceMiles - b.distanceMiles);
+
+      if (filters.limit != null) {
+        return withDistance.slice(0, filters.limit);
+      }
+      return withDistance;
+    }
+
+    if (filters.limit != null) {
+      return enrichedWorkshops.slice(0, filters.limit);
     }
 
     return enrichedWorkshops;

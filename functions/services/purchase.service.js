@@ -282,6 +282,8 @@ class PurchaseService {
       stripeCustomerId: purchaseData.stripeCustomerId || null,
       stripeSubscriptionId: purchaseData.stripeSubscriptionId || null,
       isRecurring: purchaseData.isRecurring || false,
+      isRenewal: purchaseData.isRenewal === true,
+      renewalNumber: purchaseData.renewalNumber || null,
       subscriptionStatus: purchaseData.subscriptionStatus || null,
       status: purchaseData.status || "completed",
       creditGranted: purchaseData.creditGranted || false,
