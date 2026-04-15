@@ -1,6 +1,8 @@
 const functions = require("firebase-functions");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const creditTrackingService = require("./services/credit-tracking.service");
+const {verifyToken} = require("./utils/auth");
+const admin = require("firebase-admin");
 
 /**
  * Scheduled Cloud Function to expire credits.
@@ -31,10 +33,43 @@ exports.expireCredits = onSchedule(
 );
 
 /**
- * HTTP endpoint to manually trigger credit expiration (for testing/admin use).
+ * HTTP endpoint to manually trigger credit expiration (admin-only).
+ * Requires a valid Firebase ID token with admin: true custom claim.
  */
 exports.expireCreditsManual = functions.https.onRequest(async (req, res) => {
-  console.log("[Credit Expiration] Manual trigger started");
+  // Verify the caller is authenticated
+  let callerUid;
+  try {
+    const decoded = await verifyToken(req);
+    callerUid = decoded.uid;
+  } catch (authError) {
+    res.status(authError.status || 401).json({
+      success: false,
+      error: authError.message || "Unauthorized",
+    });
+    return;
+  }
+
+  // Verify the caller has the admin custom claim
+  try {
+    const userRecord = await admin.auth().getUser(callerUid);
+    const claims = userRecord.customClaims || {};
+    if (!claims.admin) {
+      res.status(403).json({
+        success: false,
+        error: "Forbidden — admin role required",
+      });
+      return;
+    }
+  } catch (claimError) {
+    res.status(500).json({
+      success: false,
+      error: "Failed to verify user permissions",
+    });
+    return;
+  }
+
+  console.log("[Credit Expiration] Manual trigger started by admin:", callerUid);
 
   try {
     const result = await creditTrackingService.expireCredits();
@@ -50,7 +85,7 @@ exports.expireCreditsManual = functions.https.onRequest(async (req, res) => {
       affectedStudents: result.affectedStudents,
     });
   } catch (error) {
-    console.error("[Credit Expiration] Error during manual expiration:", error);
+    console.error("[Credit Expiration] Error during manual expiration:", error.message);
     res.status(500).json({
       success: false,
       error: error.message,
