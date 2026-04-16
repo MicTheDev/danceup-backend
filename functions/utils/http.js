@@ -3,6 +3,8 @@
  * Provides CORS handling, error handling, and response helpers
  */
 
+const helmet = require("helmet");
+
 /**
  * Allowed origins for CORS.
  * Localhost is permitted for local development and emulator use.
@@ -138,13 +140,15 @@ function sendJsonResponse(req, res, statusCode, data) {
  */
 function sendErrorResponse(req, res, statusCode, error, message, additionalData = {}) {
   setCorsHeaders(req, res);
+  // Never include stack traces or internal details outside of local development
+  const {stack: _stack, ...safeData} = additionalData;
   const response = {
     error,
     message,
-    ...additionalData,
+    ...safeData,
   };
-  if (process.env.NODE_ENV === "development" && additionalData.stack) {
-    response.stack = additionalData.stack;
+  if (process.env.NODE_ENV === "development" && _stack) {
+    response.stack = _stack;
   }
   res.status(statusCode).json(response);
 }
@@ -156,22 +160,22 @@ function sendErrorResponse(req, res, statusCode, error, message, additionalData 
  * @param {Error} error - Error object
  */
 function handleError(req, res, error) {
-  console.error("Error:", error);
-  
+  console.error("Unhandled error:", error instanceof Error ? error.message : String(error));
+
   // Handle known error types
   if (error.status) {
     return sendErrorResponse(req, res, error.status, error.error || "Error", error.message || "An error occurred");
   }
-  
+
   // Handle validation errors
   if (error.name === "ValidationError" || error.message?.includes("Validation")) {
     return sendErrorResponse(req, res, 400, "Validation Error", error.message || "Invalid input", {
       errors: error.errors || [],
     });
   }
-  
-  // Default to 500
-  sendErrorResponse(req, res, 500, "Internal Server Error", error.message || "An unexpected error occurred", {
+
+  // Default to 500 — stack is stripped from the response by sendErrorResponse in non-dev
+  sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred", {
     stack: error.stack,
   });
 }
@@ -207,6 +211,23 @@ function extractPathParams(url, pattern) {
   return params;
 }
 
+/**
+ * Apply common security middleware to an Express app.
+ * Call this once per app, before registering routes.
+ * @param {import('express').Application} app
+ */
+function applySecurityMiddleware(app) {
+  // Standard security headers (X-Content-Type-Options, X-Frame-Options,
+  // Strict-Transport-Security, Referrer-Policy, etc.)
+  app.use(helmet({
+    // crossOriginResourcePolicy is set to cross-origin so Firebase Hosting
+    // can serve assets from a different origin without blocking them.
+    crossOriginResourcePolicy: {policy: "cross-origin"},
+    // contentSecurityPolicy is left to the frontend apps; APIs don't serve HTML.
+    contentSecurityPolicy: false,
+  }));
+}
+
 module.exports = {
   corsOptions,
   isAllowedOrigin,
@@ -217,5 +238,6 @@ module.exports = {
   sendErrorResponse,
   handleError,
   extractPathParams,
+  applySecurityMiddleware,
 };
 

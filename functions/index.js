@@ -32,3 +32,4 @@ exports.marketing = require("./marketing").marketing;
 exports.emailTemplates = require("./email-templates").emailTemplates;
 exports.ai = require("./ai").ai;
 exports.analytics = require("./analytics").analytics;
+exports.health = require("./health").health;

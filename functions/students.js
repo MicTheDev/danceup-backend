@@ -14,6 +14,7 @@ const {
   handleError,
   corsOptions,
   isAllowedOrigin,
+  applySecurityMiddleware,
 } = require("./utils/http");
 
 // Initialize Express app
@@ -37,6 +38,7 @@ app.use((req, res, next) => {
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(express.json());
+applySecurityMiddleware(app);
 app.use(express.urlencoded({extended: true}));
 
 /**
@@ -59,10 +61,19 @@ app.get("/", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
-    // Get all students for this studio owner
-    const students = await studentsService.getStudents(studioOwnerId);
+    // Get paginated students for this studio owner
+    const limit = req.query.limit;
+    const after = req.query.after || null;
+    const result = await studentsService.getStudents(studioOwnerId, {limit, after});
 
-    sendJsonResponse(req, res, 200, students);
+    sendJsonResponse(req, res, 200, {
+      data: result.students,
+      pagination: {
+        hasMore: result.hasMore,
+        nextCursor: result.nextCursor,
+        limit: result.students.length,
+      },
+    });
   } catch (error) {
     console.error("Error getting students:", error);
     handleError(req, res, error);

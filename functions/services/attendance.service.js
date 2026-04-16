@@ -47,9 +47,19 @@ class AttendanceService {
    * @param {string} studioOwnerId - Studio owner document ID
    * @returns {Promise<Array>} Array of attendance records
    */
-  async getAttendanceRecordsByStudent(studentId, studioOwnerId) {
+  /**
+   * Get attendance records for a student with cursor-based pagination.
+   * @param {string} studentId
+   * @param {string} studioOwnerId
+   * @param {object} options
+   * @param {number} [options.limit=100] - Max records (capped at 200)
+   * @param {string} [options.after]     - Document ID cursor
+   * @returns {Promise<{records: Array, nextCursor: string|null, hasMore: boolean}>}
+   */
+  async getAttendanceRecordsByStudent(studentId, studioOwnerId, {limit = 100, after = null} = {}) {
     const db = getFirestore();
-    
+    const pageSize = Math.min(Math.max(1, Number(limit) || 100), 200);
+
     // Verify student belongs to this studio owner
     const studentRef = db.collection("students").doc(studentId);
     const studentDoc = await studentRef.get();
@@ -60,46 +70,39 @@ class AttendanceService {
     if (studentData.studioOwnerId !== studioOwnerId) {
       throw new Error("Access denied: Student does not belong to this studio owner");
     }
-    
-    // Get attendance records for this student
-    const attendanceRef = db.collection("attendance");
-    const query = attendanceRef
+
+    let query = db.collection("attendance")
         .where("studentId", "==", studentId)
         .where("studioOwnerId", "==", studioOwnerId)
-        .orderBy("classInstanceDate", "desc");
-    
+        .orderBy("classInstanceDate", "desc")
+        .limit(pageSize + 1);
+
+    if (after) {
+      const cursorDoc = await db.collection("attendance").doc(after).get();
+      if (cursorDoc.exists) {
+        query = query.startAfter(cursorDoc);
+      }
+    }
+
     const snapshot = await query.get();
-    
-    const records = [];
-    snapshot.forEach((doc) => {
+    const hasMore = snapshot.docs.length > pageSize;
+    const docs = hasMore ? snapshot.docs.slice(0, pageSize) : snapshot.docs;
+
+    const records = docs.map((doc) => {
       const data = doc.data();
-      
-      // Convert Firestore Timestamps to ISO strings for JSON serialization
-      const record = {
-        id: doc.id,
-        ...data,
-      };
-      
-      // Convert Timestamp fields to ISO strings
-      if (data.classInstanceDate && data.classInstanceDate.toDate) {
-        record.classInstanceDate = data.classInstanceDate.toDate().toISOString();
-      }
-      if (data.checkedInAt && data.checkedInAt.toDate) {
-        record.checkedInAt = data.checkedInAt.toDate().toISOString();
-      }
-      if (data.createdAt && data.createdAt.toDate) {
-        record.createdAt = data.createdAt.toDate().toISOString();
-      }
-      if (data.removedAt && data.removedAt.toDate) {
-        record.removedAt = data.removedAt.toDate().toISOString();
-      }
-      
-      records.push(record);
+      const record = {id: doc.id, ...data};
+      if (data.classInstanceDate?.toDate) record.classInstanceDate = data.classInstanceDate.toDate().toISOString();
+      if (data.checkedInAt?.toDate) record.checkedInAt = data.checkedInAt.toDate().toISOString();
+      if (data.createdAt?.toDate) record.createdAt = data.createdAt.toDate().toISOString();
+      if (data.removedAt?.toDate) record.removedAt = data.removedAt.toDate().toISOString();
+      return record;
     });
 
-    // Note: We return all records including removed ones
-    // The frontend can filter based on isRemoved flag if needed
-    return records;
+    return {
+      records,
+      nextCursor: hasMore ? docs[docs.length - 1].id : null,
+      hasMore,
+    };
   }
 
   /**

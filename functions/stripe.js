@@ -11,6 +11,7 @@ const {
   handleError,
   corsOptions,
   isAllowedOrigin,
+  applySecurityMiddleware,
 } = require("./utils/http");
 
 // Initialize Firebase Admin
@@ -48,6 +49,7 @@ app.use(cors(corsOptions));
 // Middleware setup
 // Note: Firebase Functions pre-parses req.body; for webhooks we use req.rawBody for signature verification
 app.use(express.json());
+applySecurityMiddleware(app);
 app.use(express.urlencoded({extended: true}));
 
 

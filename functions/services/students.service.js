@@ -26,21 +26,45 @@ class StudentsService {
    * @param {string} studioOwnerId - Studio owner document ID
    * @returns {Promise<Array>} Array of students
    */
-  async getStudents(studioOwnerId) {
+  /**
+   * Get students for a studio owner with cursor-based pagination.
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @param {object} options
+   * @param {number} [options.limit=50]  - Max records to return (capped at 100)
+   * @param {string} [options.after]     - Document ID to start after (cursor)
+   * @returns {Promise<{students: Array, nextCursor: string|null, hasMore: boolean}>}
+   */
+  async getStudents(studioOwnerId, {limit = 50, after = null} = {}) {
+    const pageSize = Math.min(Math.max(1, Number(limit) || 50), 100);
     const db = getFirestore();
-    const studentsRef = db.collection("students");
-    const snapshot = await studentsRef
-        .where("studioOwnerId", "==", studioOwnerId)
-        .get();
 
-    const students = [];
-    for (const doc of snapshot.docs) {
-      const data = doc.data();
-      const credits = await creditTrackingService.getAvailableCredits(doc.id, studioOwnerId);
-      students.push({ id: doc.id, ...data, credits });
+    let query = db.collection("students")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .orderBy("__name__")
+        .limit(pageSize + 1); // fetch one extra to detect hasMore
+
+    if (after) {
+      const cursorDoc = await db.collection("students").doc(after).get();
+      if (cursorDoc.exists) {
+        query = query.startAfter(cursorDoc);
+      }
     }
 
-    return students;
+    const snapshot = await query.get();
+    const hasMore = snapshot.docs.length > pageSize;
+    const docs = hasMore ? snapshot.docs.slice(0, pageSize) : snapshot.docs;
+
+    const students = await Promise.all(docs.map(async (doc) => {
+      const data = doc.data();
+      const credits = await creditTrackingService.getAvailableCredits(doc.id, studioOwnerId);
+      return {id: doc.id, ...data, credits};
+    }));
+
+    return {
+      students,
+      nextCursor: hasMore ? docs[docs.length - 1].id : null,
+      hasMore,
+    };
   }
 
   /**

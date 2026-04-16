@@ -11,6 +11,7 @@ const {
   handleError,
   corsOptions,
   isAllowedOrigin,
+  applySecurityMiddleware,
 } = require("./utils/http");
 
 if (!admin.apps.length) {
@@ -41,6 +42,7 @@ app.use((req, res, next) => {
 
 app.use(cors(corsOptions));
 app.use(express.json());
+applySecurityMiddleware(app);
 
 /**
  * Build a privacy-safe fingerprint from IP + User-Agent.

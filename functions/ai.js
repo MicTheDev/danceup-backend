@@ -5,7 +5,8 @@ const aiService = require("./services/ai.service");
 const insightsService = require("./services/insights.service");
 const studentsService = require("./services/students.service");
 const {verifyToken} = require("./utils/auth");
-const {sendJsonResponse, sendErrorResponse, handleError, corsOptions, isAllowedOrigin} = require("./utils/http");
+const {sendJsonResponse, sendErrorResponse, handleError, corsOptions, isAllowedOrigin  applySecurityMiddleware,
+} = require("./utils/http");
 
 const app = express();
 
@@ -26,6 +27,7 @@ app.use((req, res, next) => {
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(express.json());
+applySecurityMiddleware(app);
 
 /**
  * POST /generate-description - Generate a description for a class, workshop, event, or package

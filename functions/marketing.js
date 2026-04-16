@@ -6,7 +6,8 @@ const marketingService = require("./services/marketing.service");
 const sendgridService = require("./services/sendgrid.service");
 const aiService = require("./services/ai.service");
 const {verifyToken} = require("./utils/auth");
-const {sendJsonResponse, sendErrorResponse, handleError, corsOptions, isAllowedOrigin} = require("./utils/http");
+const {sendJsonResponse, sendErrorResponse, handleError, corsOptions, isAllowedOrigin  applySecurityMiddleware,
+} = require("./utils/http");
 
 const app = express();
 
@@ -28,6 +29,7 @@ app.use((req, res, next) => {
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(express.json());
+applySecurityMiddleware(app);
 app.use(express.urlencoded({extended: true}));
 
 function getUnsubscribeBaseUrl(req) {

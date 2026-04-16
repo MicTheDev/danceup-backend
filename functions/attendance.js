@@ -9,6 +9,7 @@ const {
   handleError,
   corsOptions,
   isAllowedOrigin,
+  applySecurityMiddleware,
 } = require("./utils/http");
 
 // Initialize Express app
@@ -32,6 +33,7 @@ app.use((req, res, next) => {
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(express.json());
+applySecurityMiddleware(app);
 app.use(express.urlencoded({extended: true}));
 
 /**
@@ -256,11 +258,20 @@ app.get("/students/:studentId", async (req, res) => {
     }
 
     const {studentId} = req.params;
+    const limit = req.query.limit;
+    const after = req.query.after || null;
 
-    // Get attendance records for the student
-    const records = await attendanceService.getAttendanceRecordsByStudent(studentId, studioOwnerId);
+    // Get paginated attendance records for the student
+    const result = await attendanceService.getAttendanceRecordsByStudent(studentId, studioOwnerId, {limit, after});
 
-    sendJsonResponse(req, res, 200, records);
+    sendJsonResponse(req, res, 200, {
+      data: result.records,
+      pagination: {
+        hasMore: result.hasMore,
+        nextCursor: result.nextCursor,
+        limit: result.records.length,
+      },
+    });
   } catch (error) {
     console.error("Error getting attendance records for student:", error);
     

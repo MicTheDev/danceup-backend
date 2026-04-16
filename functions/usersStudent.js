@@ -24,6 +24,7 @@ const {
   handleError,
   corsOptions,
   isAllowedOrigin,
+  applySecurityMiddleware,
 } = require("./utils/http");
 
 // Initialize Firebase Admin
@@ -52,6 +53,7 @@ app.options("*", (req, res) => {
 app.use(cors(corsOptions));
 
 app.use(express.json());
+applySecurityMiddleware(app);
 app.use(express.urlencoded({extended: true}));
 
 
