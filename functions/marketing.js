@@ -6,7 +6,7 @@ const marketingService = require("./services/marketing.service");
 const sendgridService = require("./services/sendgrid.service");
 const aiService = require("./services/ai.service");
 const {verifyToken} = require("./utils/auth");
-const {sendJsonResponse, sendErrorResponse, handleError, corsOptions, isAllowedOrigin  applySecurityMiddleware,
+const {sendJsonResponse, sendErrorResponse, handleError, corsOptions, isAllowedOrigin, applySecurityMiddleware,
 } = require("./utils/http");
 
 const app = express();

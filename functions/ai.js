@@ -5,7 +5,7 @@ const aiService = require("./services/ai.service");
 const insightsService = require("./services/insights.service");
 const studentsService = require("./services/students.service");
 const {verifyToken} = require("./utils/auth");
-const {sendJsonResponse, sendErrorResponse, handleError, corsOptions, isAllowedOrigin  applySecurityMiddleware,
+const {sendJsonResponse, sendErrorResponse, handleError, corsOptions, isAllowedOrigin, applySecurityMiddleware,
 } = require("./utils/http");
 
 const app = express();
