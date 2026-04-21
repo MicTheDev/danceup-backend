@@ -1,0 +1,30 @@
+import * as admin from "firebase-admin";
+if (!admin.apps.length) { admin.initializeApp(); }
+
+export { ai } from "./routes/ai";
+export { analytics } from "./routes/analytics";
+export { retentionTriggers } from "./routes/retention";
+export { campaigns } from "./routes/campaigns";
+export { attendance } from "./routes/attendance";
+export { auth } from "./routes/auth";
+export { bookings } from "./routes/bookings";
+export { classes } from "./routes/classes";
+export { emailTemplates } from "./routes/email-templates";
+export { events } from "./routes/events";
+export { expireCredits, expireCreditsManual } from "./routes/credit-expiration";
+export { health } from "./routes/health";
+export { instructors } from "./routes/instructors";
+export { marketing } from "./routes/marketing";
+export { notifications } from "./routes/notifications";
+export { packagePurchases } from "./routes/package-purchases";
+export { packages } from "./routes/packages";
+export { profile } from "./routes/profile";
+export { purchases } from "./routes/purchases";
+export { reviews } from "./routes/reviews";
+export { stripe } from "./routes/stripe";
+export { students } from "./routes/students";
+export { studios } from "./routes/studios";
+export { support } from "./routes/support";
+export { updateClassImages } from "./routes/updateClassImages";
+export { usersstudent } from "./routes/usersStudent";
+export { workshops } from "./routes/workshops";
