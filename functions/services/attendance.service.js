@@ -869,6 +869,21 @@ class AttendanceService {
    * @param {string} studioOwnerId - Studio owner document ID
    * @returns {Promise<void>}
    */
+  /**
+   * Get a single attendance record by ID, verifying studio ownership
+   * @param {string} attendanceId - Attendance document ID
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @returns {Promise<Object|null>} Attendance record data or null if not found
+   */
+  async getAttendanceRecordById(attendanceId, studioOwnerId) {
+    const db = getFirestore();
+    const doc = await db.collection("attendance").doc(attendanceId).get();
+    if (!doc.exists) return null;
+    const data = doc.data();
+    if (data.studioOwnerId !== studioOwnerId) return null;
+    return {id: doc.id, ...data};
+  }
+
   async removeAttendanceRecord(attendanceId, studioOwnerId) {
     const db = getFirestore();
     const attendanceRef = db.collection("attendance");
@@ -1116,6 +1131,148 @@ class AttendanceService {
         change: revenueChange,
       },
       attendancePulse,
+    };
+  }
+
+  /**
+   * Build a map of studentId → most recent non-removed classInstanceDate.
+   * Used to annotate student list responses with lastAttendedAt.
+   * @param {string} studioOwnerId
+   * @returns {Promise<Map<string, Date>>}
+   */
+  async getLastAttendedAtMap(studioOwnerId) {
+    const db = getFirestore();
+    const snapshot = await db.collection("attendance")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("isRemoved", "==", false)
+        .get();
+
+    const map = new Map();
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      const date = data.classInstanceDate?.toDate ? data.classInstanceDate.toDate() : null;
+      if (!date || !data.studentId) return;
+      const existing = map.get(data.studentId);
+      if (!existing || date > existing) {
+        map.set(data.studentId, date);
+      }
+    });
+    return map;
+  }
+
+  /**
+   * Compute lost-revenue metrics for the current week.
+   * @param {string} studioOwnerId
+   * @returns {Promise<Object>}
+   */
+  async getLostRevenueStats(studioOwnerId) {
+    const db = getFirestore();
+    const now = new Date();
+
+    // Current week window (Sun–now)
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - now.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+
+    // 14-day window for at-risk detection
+    const fourteenDaysAgo = new Date(now);
+    fourteenDaysAgo.setDate(now.getDate() - 14);
+
+    // --- Fetch active classes ---
+    const classesSnapshot = await db.collection("classes")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("isActive", "==", true)
+        .get();
+
+    const activeClasses = classesSnapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+      maxCapacity: doc.data().maxCapacity ?? 20,
+      cost: doc.data().cost ?? 0,
+    }));
+
+    const avgClassPrice = activeClasses.length > 0
+      ? activeClasses.reduce((sum, c) => sum + c.cost, 0) / activeClasses.length
+      : 0;
+
+    // --- This week's attendance grouped by classId ---
+    const weekAttendanceSnap = await db.collection("attendance")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("classInstanceDate", ">=", weekStart)
+        .where("classInstanceDate", "<=", now)
+        .get();
+
+    const checkInsThisWeek = new Map(); // classId → count
+    weekAttendanceSnap.forEach((doc) => {
+      const data = doc.data();
+      if (data.isRemoved || !data.classId) return;
+      checkInsThisWeek.set(data.classId, (checkInsThisWeek.get(data.classId) || 0) + 1);
+    });
+
+    // Map dayOfWeek names to JS day numbers
+    const DAY_MAP = {Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6};
+
+    let emptySpotValue = 0;
+    for (const cls of activeClasses) {
+      const classDayNum = DAY_MAP[cls.dayOfWeek];
+      if (classDayNum === undefined) continue;
+
+      // Only count classes that had an instance in the current week (day already passed or today)
+      const classDateThisWeek = new Date(weekStart);
+      classDateThisWeek.setDate(weekStart.getDate() + classDayNum);
+      if (classDateThisWeek > now) continue; // hasn't occurred yet this week
+
+      const enrolled = checkInsThisWeek.get(cls.id) || 0;
+      const empty = Math.max(0, cls.maxCapacity - enrolled);
+      emptySpotValue += empty * cls.cost;
+    }
+
+    // --- At-risk students (no check-in in last 14 days) ---
+    const recentAttendanceSnap = await db.collection("attendance")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("classInstanceDate", ">=", fourteenDaysAgo)
+        .where("isRemoved", "==", false)
+        .get();
+
+    const recentStudentIds = new Set();
+    recentAttendanceSnap.forEach((doc) => {
+      recentStudentIds.add(doc.data().studentId);
+    });
+
+    const studentsSnap = await db.collection("students")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .get();
+
+    let atRiskCount = 0;
+    studentsSnap.forEach((doc) => {
+      if (!recentStudentIds.has(doc.id)) atRiskCount++;
+    });
+
+    const atRiskValue = atRiskCount * avgClassPrice;
+
+    // --- Unused (unexpired) credits value ---
+    const nowTimestamp = now;
+    const creditsSnap = await db.collectionGroup("credits")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("expirationDate", ">", nowTimestamp)
+        .get();
+
+    let totalUnusedCredits = 0;
+    creditsSnap.forEach((doc) => {
+      const data = doc.data();
+      totalUnusedCredits += (data.credits ?? 0);
+    });
+
+    const unusedCreditsValue = totalUnusedCredits * avgClassPrice;
+
+    return {
+      emptySpotValue: Math.round(emptySpotValue * 100) / 100,
+      atRiskCount,
+      atRiskValue: Math.round(atRiskValue * 100) / 100,
+      unusedCreditsValue: Math.round(unusedCreditsValue * 100) / 100,
+      totalUnusedCredits,
+      avgClassPrice: Math.round(avgClassPrice * 100) / 100,
+      weekStart: weekStart.toISOString(),
     };
   }
 }

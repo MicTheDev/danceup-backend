@@ -344,6 +344,108 @@ app.delete("/:id", async (req, res) => {
   }
 });
 
+/**
+ * POST /:classId/waitlist
+ * Add a student to the waitlist for a specific class instance
+ */
+app.post("/:classId/waitlist", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studioOwnerId = await classesService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const {classId} = req.params;
+    const {studentId, classInstanceDate} = req.body;
+
+    if (!studentId || !classInstanceDate) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "studentId and classInstanceDate are required");
+    }
+
+    const entryId = await classesService.addToWaitlist(classId, studentId, classInstanceDate, studioOwnerId);
+    sendJsonResponse(req, res, 201, {id: entryId, message: "Added to waitlist successfully"});
+  } catch (error) {
+    console.error("Error adding to waitlist:", error);
+    if (error.message?.includes("already on the waitlist")) {
+      return sendErrorResponse(req, res, 409, "Conflict", error.message);
+    }
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /:classId/waitlist
+ * Get the waitlist for a specific class instance
+ */
+app.get("/:classId/waitlist", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studioOwnerId = await classesService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const {classId} = req.params;
+    const {classInstanceDate} = req.query;
+
+    if (!classInstanceDate) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "classInstanceDate query parameter is required");
+    }
+
+    const waitlist = await classesService.getWaitlist(classId, classInstanceDate);
+    sendJsonResponse(req, res, 200, waitlist);
+  } catch (error) {
+    console.error("Error getting waitlist:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * DELETE /:classId/waitlist/:entryId
+ * Remove a student from the waitlist
+ */
+app.delete("/:classId/waitlist/:entryId", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studioOwnerId = await classesService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const {entryId} = req.params;
+    await classesService.removeFromWaitlist(entryId, studioOwnerId);
+    sendJsonResponse(req, res, 200, {message: "Removed from waitlist successfully"});
+  } catch (error) {
+    console.error("Error removing from waitlist:", error);
+    if (error.message?.includes("not found")) {
+      return sendErrorResponse(req, res, 404, "Not Found", error.message);
+    }
+    if (error.message?.includes("Access denied")) {
+      return sendErrorResponse(req, res, 403, "Access Denied", error.message);
+    }
+    handleError(req, res, error);
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error("Error:", err);

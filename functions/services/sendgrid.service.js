@@ -485,6 +485,162 @@ async function sendConfirmationEmail(to, type, details) {
   });
 }
 
+/**
+ * Send a re-engagement email to a student who hasn't attended recently.
+ * @param {string} to - Recipient email address
+ * @param {string} firstName - Student's first name
+ * @param {string} studioName - Studio name
+ * @returns {Promise<void>}
+ */
+async function sendReEngagementEmail(to, firstName, studioName) {
+  if (!to) {
+    console.warn("[SendGrid] sendReEngagementEmail: no recipient email, skipping");
+    return;
+  }
+  const name = firstName ? firstName.trim() : "there";
+  const studio = studioName ? studioName.trim() : "your studio";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">Hey ${name}, we miss you!</h2>
+        <p style="color:#64748b;margin:0 0 20px">It's been a little while since we've seen you at <strong>${studio}</strong>. We'd love to have you back on the dance floor.</p>
+        <p style="color:#475569;margin:0 0 24px">Whether you're looking to pick up where you left off or try something new, your spot is waiting.</p>
+        <a href="https://danceup.app" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          Browse Classes →
+        </a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because you're enrolled at ${studio} via DanceUp. To stop receiving these emails, contact your studio.</p>
+      </div>
+    </div>`;
+
+  const text = [
+    `Hey ${name}, we miss you!`,
+    ``,
+    `It's been a little while since we've seen you at ${studio}. We'd love to have you back on the dance floor.`,
+    ``,
+    `Whether you're looking to pick up where you left off or try something new, your spot is waiting.`,
+    ``,
+    `Browse classes: https://danceup.app`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: {email: "info@danceup.app", name: "DanceUp"},
+    subject: `We miss you at ${studio}!`,
+    html,
+    text,
+    categories: ["re-engagement"],
+  });
+}
+
+/**
+ * Send a credit expiry warning email to a student.
+ * @param {string} to - Recipient email address
+ * @param {string} firstName - Student's first name
+ * @param {string} studioName - Studio name
+ * @param {number} creditCount - Number of credits expiring
+ * @param {string} expiryDate - Human-readable expiry date
+ * @returns {Promise<void>}
+ */
+async function sendCreditExpiryEmail(to, firstName, studioName, creditCount, expiryDate) {
+  if (!to) {
+    console.warn("[SendGrid] sendCreditExpiryEmail: no recipient email, skipping");
+    return;
+  }
+  const name = firstName ? firstName.trim() : "there";
+  const studio = studioName ? studioName.trim() : "your studio";
+  const credits = creditCount === 1 ? "1 credit" : `${creditCount} credits`;
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">Your credits are expiring soon, ${name}</h2>
+        <p style="color:#64748b;margin:0 0 20px">You have <strong>${credits}</strong> at <strong>${studio}</strong> that will expire on <strong>${expiryDate}</strong>.</p>
+        <p style="color:#475569;margin:0 0 24px">Don't let them go to waste — book a class before they expire!</p>
+        <a href="https://danceup.app" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          Book a Class Now →
+        </a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because you have credits at ${studio} via DanceUp.</p>
+      </div>
+    </div>`;
+
+  const text = [
+    `Your credits are expiring soon, ${name}`,
+    ``,
+    `You have ${credits} at ${studio} that will expire on ${expiryDate}.`,
+    ``,
+    `Don't let them go to waste — book a class before they expire!`,
+    ``,
+    `Book a class: https://danceup.app`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: {email: "info@danceup.app", name: "DanceUp"},
+    subject: `Your credits at ${studio} expire on ${expiryDate}`,
+    html,
+    text,
+    categories: ["credit-expiry"],
+  });
+}
+
+/**
+ * Send a waitlist notification email when a spot opens up in a class.
+ * @param {string} to - Recipient email address
+ * @param {string} firstName - Student's first name
+ * @param {string} className - Class name
+ * @param {string} studioName - Studio name
+ * @param {string} classInstanceDate - ISO date string or human-readable date of the class
+ * @returns {Promise<void>}
+ */
+async function sendWaitlistNotificationEmail(to, firstName, className, studioName, classInstanceDate) {
+  if (!to) {
+    console.warn("[SendGrid] sendWaitlistNotificationEmail: no recipient email, skipping");
+    return;
+  }
+  const name = firstName ? firstName.trim() : "there";
+  const studio = studioName ? studioName.trim() : "the studio";
+  const cls = className ? className.trim() : "your class";
+
+  let dateStr = classInstanceDate;
+  try {
+    const d = new Date(classInstanceDate);
+    if (!isNaN(d.getTime())) {
+      dateStr = d.toLocaleDateString("en-US", {weekday: "long", month: "long", day: "numeric"});
+    }
+  } catch (_) {}
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">A spot opened up, ${name}!</h2>
+        <p style="color:#64748b;margin:0 0 20px">Good news — a spot just became available in <strong>${cls}</strong> at <strong>${studio}</strong> on <strong>${dateStr}</strong>.</p>
+        <p style="color:#475569;margin:0 0 24px">Spots fill up fast. Contact ${studio} to confirm your place.</p>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because you joined the waitlist for this class via DanceUp.</p>
+      </div>
+    </div>`;
+
+  const text = [
+    `A spot opened up, ${name}!`,
+    ``,
+    `Good news — a spot just became available in ${cls} at ${studio} on ${dateStr}.`,
+    ``,
+    `Spots fill up fast. Contact ${studio} to confirm your place.`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: {email: "info@danceup.app", name: "DanceUp"},
+    subject: `A spot opened up in ${cls} at ${studio}!`,
+    html,
+    text,
+    categories: ["waitlist-notification"],
+  });
+}
+
 module.exports = {
   sendEmail,
   getApiKey,
@@ -493,4 +649,7 @@ module.exports = {
   sendConfirmationEmail,
   sendWelcomeEmail,
   sendStudioOwnerWelcomeEmail,
+  sendReEngagementEmail,
+  sendCreditExpiryEmail,
+  sendWaitlistNotificationEmail,
 };

@@ -2,6 +2,7 @@ const functions = require("firebase-functions");
 const express = require("express");
 const cors = require("cors");
 const attendanceService = require("./services/attendance.service");
+const classesService = require("./services/classes.service");
 const {verifyToken} = require("./utils/auth");
 const {
   sendJsonResponse,
@@ -73,6 +74,32 @@ app.get("/dashboard-stats", async (req, res) => {
     sendJsonResponse(req, res, 200, stats);
   } catch (error) {
     console.error("Error getting dashboard stats:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
+ * GET /lost-revenue
+ * Get lost-revenue metrics: empty spots, at-risk students, unused credits
+ */
+app.get("/lost-revenue", async (req, res) => {
+  try {
+    let user;
+    try {
+      user = await verifyToken(req);
+    } catch (authError) {
+      return handleError(req, res, authError);
+    }
+
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const stats = await attendanceService.getLostRevenueStats(studioOwnerId);
+    sendJsonResponse(req, res, 200, stats);
+  } catch (error) {
+    console.error("Error getting lost revenue stats:", error);
     handleError(req, res, error);
   }
 });
@@ -547,8 +574,18 @@ app.delete("/:id", async (req, res) => {
 
     const {id} = req.params;
 
-    // Remove attendance record
+    // Remove attendance record and get the record data for waitlist notification
+    const recordData = await attendanceService.getAttendanceRecordById(id, studioOwnerId);
     await attendanceService.removeAttendanceRecord(id, studioOwnerId);
+
+    // Notify the first student on the waitlist if this was a class check-in
+    if (recordData && recordData.classId) {
+      classesService.notifyFirstWaiting(
+          recordData.classId,
+          recordData.classInstanceDate,
+          studioOwnerId,
+      ).catch((err) => console.error("[Waitlist] notifyFirstWaiting error:", err.message));
+    }
 
     sendJsonResponse(req, res, 200, {
       message: "Attendance record removed successfully",

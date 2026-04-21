@@ -433,6 +433,150 @@ class ClassesService {
   }
 
   /**
+   * Get the number of enrolled (checked-in) students for a specific class instance
+   * @param {string} classId - Class document ID
+   * @param {string} classInstanceDate - ISO date string of the class instance
+   * @returns {Promise<number>} Count of enrolled students
+   */
+  async getEnrolledCount(classId, classInstanceDate) {
+    const db = getFirestore();
+    const snapshot = await db.collection("attendance")
+        .where("classId", "==", classId)
+        .where("classInstanceDate", "==", classInstanceDate)
+        .where("isRemoved", "==", false)
+        .get();
+    return snapshot.size;
+  }
+
+  /**
+   * Check if a class instance is at or over capacity
+   * @param {string} classId - Class document ID
+   * @param {string} classInstanceDate - ISO date string of the class instance
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @returns {Promise<boolean>} True if class is full
+   */
+  async isClassFull(classId, classInstanceDate, studioOwnerId) {
+    const classData = await this.getClassById(classId, studioOwnerId);
+    if (!classData) throw new Error("Class not found");
+    const maxCapacity = classData.maxCapacity ?? 20;
+    const enrolled = await this.getEnrolledCount(classId, classInstanceDate);
+    return enrolled >= maxCapacity;
+  }
+
+  /**
+   * Add a student to the waitlist for a class instance
+   * @param {string} classId - Class document ID
+   * @param {string} studentId - Student document ID
+   * @param {string} classInstanceDate - ISO date string of the class instance
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @returns {Promise<string>} Created waitlist entry document ID
+   */
+  async addToWaitlist(classId, studentId, classInstanceDate, studioOwnerId) {
+    const db = getFirestore();
+    const existing = await db.collection("waitlists")
+        .where("classId", "==", classId)
+        .where("studentId", "==", studentId)
+        .where("classInstanceDate", "==", classInstanceDate)
+        .where("isActive", "==", true)
+        .get();
+    if (!existing.empty) {
+      throw new Error("Student is already on the waitlist for this class instance");
+    }
+    const docRef = await db.collection("waitlists").add({
+      classId,
+      studentId,
+      classInstanceDate,
+      studioOwnerId,
+      isActive: true,
+      notificationSent: false,
+      addedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return docRef.id;
+  }
+
+  /**
+   * Get the active waitlist for a class instance, ordered by time added (FIFO)
+   * @param {string} classId - Class document ID
+   * @param {string} classInstanceDate - ISO date string of the class instance
+   * @returns {Promise<Array>} Ordered array of waitlist entries
+   */
+  async getWaitlist(classId, classInstanceDate) {
+    const db = getFirestore();
+    const snapshot = await db.collection("waitlists")
+        .where("classId", "==", classId)
+        .where("classInstanceDate", "==", classInstanceDate)
+        .where("isActive", "==", true)
+        .orderBy("addedAt", "asc")
+        .get();
+    return snapshot.docs.map((doc) => ({id: doc.id, ...doc.data()}));
+  }
+
+  /**
+   * Remove a student from the waitlist
+   * @param {string} entryId - Waitlist entry document ID
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @returns {Promise<void>}
+   */
+  async removeFromWaitlist(entryId, studioOwnerId) {
+    const db = getFirestore();
+    const doc = await db.collection("waitlists").doc(entryId).get();
+    if (!doc.exists) throw new Error("Waitlist entry not found");
+    if (doc.data().studioOwnerId !== studioOwnerId) {
+      throw new Error("Access denied: Waitlist entry does not belong to this studio owner");
+    }
+    await db.collection("waitlists").doc(entryId).update({isActive: false});
+  }
+
+  /**
+   * Notify the first student on the waitlist that a spot has opened up.
+   * Sends an email if the student has one, then marks the entry as notified.
+   * @param {string} classId - Class document ID
+   * @param {string} classInstanceDate - ISO date string of the class instance
+   * @param {string} studioOwnerId - Studio owner document ID
+   * @returns {Promise<string|null>} Notified student ID, or null if waitlist is empty
+   */
+  async notifyFirstWaiting(classId, classInstanceDate, studioOwnerId) {
+    const waitlist = await this.getWaitlist(classId, classInstanceDate);
+    if (waitlist.length === 0) return null;
+
+    const first = waitlist[0];
+    const db = getFirestore();
+
+    const [studentDoc, classDoc, studioDoc] = await Promise.all([
+      db.collection("students").doc(first.studentId).get(),
+      db.collection("classes").doc(classId).get(),
+      db.collection("users").doc(studioOwnerId).get(),
+    ]);
+
+    if (!studentDoc.exists) return null;
+    const studentData = studentDoc.data();
+    const className = classDoc.exists ? (classDoc.data().name || "your class") : "your class";
+    const studioName = studioDoc.exists ? (studioDoc.data().studioName || "the studio") : "the studio";
+
+    if (studentData.email) {
+      const sendgridService = require("./sendgrid.service");
+      try {
+        await sendgridService.sendWaitlistNotificationEmail(
+            studentData.email,
+            studentData.firstName || studentData.name || "there",
+            className,
+            studioName,
+            classInstanceDate,
+        );
+      } catch (err) {
+        console.error("[Waitlist] Failed to send notification email:", err.message);
+      }
+    }
+
+    await db.collection("waitlists").doc(first.id).update({
+      notificationSent: true,
+      notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return first.studentId;
+  }
+
+  /**
    * Get related classes from the same studio (excluding current class)
    * @param {string} classId - Current class document ID to exclude
    * @param {string} studioOwnerId - Studio owner document ID

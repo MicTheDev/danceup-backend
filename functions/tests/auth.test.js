@@ -84,7 +84,7 @@ describe("Auth Routes", () => {
       city: "New York",
       state: "NY",
       zip: "10001",
-      membership: "basic",
+      membership: "studio_owner",
       facebook: null,
       instagram: null,
       tiktok: null,
@@ -103,7 +103,7 @@ describe("Auth Routes", () => {
       authService.createCustomToken.mockResolvedValue("custom-token");
 
       const response = await request(auth)
-          .post("/auth/register")
+          .post("/register")
           .send(validRegistrationData)
           .expect(201);
 
@@ -121,7 +121,7 @@ describe("Auth Routes", () => {
       };
 
       const response = await request(auth)
-          .post("/auth/register")
+          .post("/register")
           .send(invalidData)
           .expect(400);
 
@@ -149,7 +149,7 @@ describe("Auth Routes", () => {
       storageService.uploadStudioImage.mockResolvedValue("https://storage.googleapis.com/test/image.png");
 
       const response = await request(auth)
-          .post("/auth/register")
+          .post("/register")
           .send(dataWithImage)
           .expect(201);
 
@@ -188,7 +188,7 @@ describe("Auth Routes", () => {
       authService.createCustomToken.mockResolvedValue("custom-token");
 
       const response = await request(auth)
-          .post("/auth/login")
+          .post("/login")
           .send(validLoginData)
           .expect(200);
 
@@ -203,7 +203,7 @@ describe("Auth Routes", () => {
       };
 
       const response = await request(auth)
-          .post("/auth/login")
+          .post("/login")
           .send(invalidData)
           .expect(400);
 
@@ -220,7 +220,7 @@ describe("Auth Routes", () => {
       );
 
       const response = await request(auth)
-          .post("/auth/login")
+          .post("/login")
           .send(validLoginData)
           .expect(401);
 
@@ -250,7 +250,7 @@ describe("Auth Routes", () => {
       authService.hasStudioOwnerRole.mockReturnValue(false);
 
       const response = await request(auth)
-          .post("/auth/login")
+          .post("/login")
           .send(validLoginData)
           .expect(403);
 
@@ -279,7 +279,7 @@ describe("Auth Routes", () => {
           state: "NY",
           zip: "10001",
           studioImageUrl: null,
-          membership: "basic",
+          membership: "studio_owner",
           facebook: null,
           instagram: null,
           tiktok: null,
@@ -292,7 +292,7 @@ describe("Auth Routes", () => {
       authService.getUserDocumentByAuthUid.mockResolvedValue(mockUserDoc);
 
       const response = await request(auth)
-          .get("/auth/me")
+          .get("/me")
           .set("Authorization", "Bearer valid-token")
           .expect(200);
 
@@ -310,7 +310,7 @@ describe("Auth Routes", () => {
       });
 
       const response = await request(auth)
-          .get("/auth/me")
+          .get("/me")
           .expect(401);
 
       expect(response.body).toHaveProperty("error", "Unauthorized");
@@ -328,7 +328,7 @@ describe("Auth Routes", () => {
       verifyToken.mockResolvedValue(mockUser);
 
       const response = await request(auth)
-          .post("/auth/logout")
+          .post("/logout")
           .set("Authorization", "Bearer valid-token")
           .expect(200);
 

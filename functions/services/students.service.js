@@ -2,6 +2,7 @@ const admin = require("firebase-admin");
 const authService = require("./auth.service");
 const {ensureStudiosStructure} = require("../utils/studio-enrollment.utils");
 const creditTrackingService = require("./credit-tracking.service");
+const attendanceService = require("./attendance.service");
 const {getFirestore} = require("../utils/firestore");
 
 /**
@@ -54,10 +55,14 @@ class StudentsService {
     const hasMore = snapshot.docs.length > pageSize;
     const docs = hasMore ? snapshot.docs.slice(0, pageSize) : snapshot.docs;
 
+    // Fetch last-attended dates for all students in one query
+    const lastAttendedMap = await attendanceService.getLastAttendedAtMap(studioOwnerId);
+
     const students = await Promise.all(docs.map(async (doc) => {
       const data = doc.data();
       const credits = await creditTrackingService.getAvailableCredits(doc.id, studioOwnerId);
-      return {id: doc.id, ...data, credits};
+      const lastAttendedAt = lastAttendedMap.get(doc.id) ?? null;
+      return {id: doc.id, ...data, credits, lastAttendedAt: lastAttendedAt ? lastAttendedAt.toISOString() : null};
     }));
 
     return {
@@ -88,10 +93,13 @@ class StudentsService {
     }
 
     const credits = await creditTrackingService.getAvailableCredits(studentId, studioOwnerId);
+    const lastAttendedMap = await attendanceService.getLastAttendedAtMap(studioOwnerId);
+    const lastAttendedAt = lastAttendedMap.get(studentId) ?? null;
     return {
       id: doc.id,
       ...studentData,
       credits,
+      lastAttendedAt: lastAttendedAt ? lastAttendedAt.toISOString() : null,
     };
   }
 
