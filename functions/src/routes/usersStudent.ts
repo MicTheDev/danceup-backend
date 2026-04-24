@@ -17,7 +17,9 @@ import {
   listPaymentMethods,
   detachPaymentMethod,
   updatePaymentMethod,
+  setDefaultPaymentMethod,
   getStripePublishableKey,
+  getStripeClient,
 } from "../services/stripe.service";
 import { sendWelcomeEmail } from "../services/sendgrid.service";
 import { verifyToken } from "../utils/auth";
@@ -900,8 +902,19 @@ app.get("/me/payment-methods", async (req, res) => {
       return sendJsonResponse(req, res, 200, []);
     }
 
-    const paymentMethods = await listPaymentMethods(stripeCustomerId) as unknown as Array<Record<string, unknown>>;
-    const simplified = paymentMethods.map((pm) => {
+    const stripe = await getStripeClient();
+    const [paymentMethods, customer] = await Promise.all([
+      listPaymentMethods(stripeCustomerId) as unknown as Promise<Array<Record<string, unknown>>>,
+      stripe.customers.retrieve(stripeCustomerId),
+    ]);
+
+    const customerData = customer as unknown as Record<string, unknown>;
+    const defaultPmId = customerData["deleted"]
+      ? null
+      : ((customerData["invoice_settings"] as Record<string, unknown> | undefined)
+          ?.["default_payment_method"] as string | null) ?? null;
+
+    const simplified = (paymentMethods as Array<Record<string, unknown>>).map((pm) => {
       const card = (pm["card"] as Record<string, unknown>) || {};
       return {
         id: pm["id"],
@@ -909,6 +922,7 @@ app.get("/me/payment-methods", async (req, res) => {
         last4: card["last4"],
         expMonth: card["exp_month"],
         expYear: card["exp_year"],
+        isDefault: pm["id"] === defaultPmId,
       };
     });
 
@@ -988,6 +1002,37 @@ app.patch("/me/payment-methods/:paymentMethodId", async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating payment method:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.patch("/me/payment-methods/:paymentMethodId/default", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { data: () => Record<string, unknown> } | null;
+    if (!studentDoc) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+    }
+
+    const { stripeCustomerId } = studentDoc.data() as { stripeCustomerId?: string };
+    if (!stripeCustomerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No Stripe customer linked to this account");
+    }
+
+    const paymentMethodId = req.params["paymentMethodId"] as string;
+
+    // Verify the PM belongs to this customer before setting it as default
+    const paymentMethods = await listPaymentMethods(stripeCustomerId) as unknown as Array<Record<string, unknown>>;
+    if (!paymentMethods.some((pm) => pm["id"] === paymentMethodId)) {
+      return sendErrorResponse(req, res, 403, "Forbidden", "Payment method does not belong to this account");
+    }
+
+    await setDefaultPaymentMethod(stripeCustomerId, paymentMethodId);
+    sendJsonResponse(req, res, 200, { success: true });
+  } catch (error) {
+    console.error("Error setting default payment method:", error);
     handleError(req, res, error);
   }
 });

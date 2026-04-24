@@ -23,6 +23,7 @@ export interface StudioOwner {
   youtube: string | null;
   roles: string[];
   stripeCustomerId?: string;
+  stripeConnectedCustomers?: Record<string, string>; // map of connectedAccountId → connectedCustomerId
   stripeSubscriptionId?: string;
   stripeSubscriptionStatus?: string;
   createdAt: Timestamp;

@@ -65,7 +65,7 @@ app.post("/create-payment-link", async (req, res) => {
       return sendErrorResponse(req, res, 400, "Validation Error", "Invalid purchaseType. Must be 'class', 'event', 'workshop', or 'package'");
     }
 
-    let user: { uid: string } | null = null;
+    let user: import("../types/api").DecodedToken | null = null;
     try {
       user = await verifyToken(req);
     } catch (error) {
@@ -99,8 +99,16 @@ app.post("/create-payment-link", async (req, res) => {
     const studioOwnerData = studioOwnerDoc.data() as Record<string, unknown>;
     const connectedAccountId = (studioOwnerData["stripeAccountId"] as string) || null;
 
-    let customerId: string | null = null;
+    // ── Resolve/create platform customer ─────────────────────────────────────
+    let platformCustomerId: string | null = null;
+    let userDocRef: FirebaseFirestore.DocumentReference | null = null;
+    let connectedCustomers: Record<string, string> = {};
+    let userEmail = "";
+
     if (user) {
+      // Use the verified email from the auth token as the authoritative source
+      userEmail = user.email;
+
       const userQuery = await db.collection("users")
         .where("authUid", "==", user.uid)
         .limit(1)
@@ -109,14 +117,19 @@ app.post("/create-payment-link", async (req, res) => {
       if (!userQuery.empty) {
         const userDoc = userQuery.docs[0]!;
         const userData = userDoc.data() as Record<string, unknown>;
+        userDocRef = userDoc.ref;
+        // Prefer Firestore email if present, but token email is always the fallback
+        userEmail = (userData["email"] as string) || user.email;
+        connectedCustomers = (userData["stripeConnectedCustomers"] as Record<string, string>) || {};
+
         if (userData["stripeCustomerId"]) {
-          customerId = userData["stripeCustomerId"] as string;
+          platformCustomerId = userData["stripeCustomerId"] as string;
         } else {
-          const customer = await stripeService.createCustomer(userData["email"] as string, {
+          const customer = await stripeService.createCustomer(userEmail, {
             userId: userDoc.id,
             authUid: user.uid,
           }) as { id: string };
-          customerId = customer.id;
+          platformCustomerId = customer.id;
           await userDoc.ref.update({
             stripeCustomerId: customer.id,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -126,11 +139,47 @@ app.post("/create-payment-link", async (req, res) => {
         const profileDoc = await authService.getStudentProfileByAuthUid(user.uid);
         if (profileDoc) {
           const profileData = profileDoc.data() as Record<string, unknown>;
-          const email = (profileData["email"] as string) || `${user.uid}@temp.com`;
-          const customer = await stripeService.createCustomer(email, { authUid: user.uid }) as { id: string };
-          customerId = customer.id;
+          userEmail = (profileData["email"] as string) || user.email;
         }
+        const customer = await stripeService.createCustomer(userEmail, { authUid: user.uid }) as { id: string };
+        platformCustomerId = customer.id;
       }
+    }
+
+    // ── Require connected account for direct charges ───────────────────────
+    if (!connectedAccountId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "This studio has not completed Stripe Connect setup.");
+    }
+
+    // ── Find or create customer on connected account (dedup-safe) ─────────
+    const studentName = studentDoc
+      ? `${(studentDoc.data()["firstName"] as string) || ""} ${(studentDoc.data()["lastName"] as string) || ""}`.trim()
+      : "";
+    let connectedCustomerId: string;
+    if (platformCustomerId) {
+      const { customer: connectedCustomer, isNew } = await stripeService.findOrCreateConnectedCustomer(
+        userEmail,
+        platformCustomerId,
+        connectedAccountId,
+        studentName || undefined,
+        connectedCustomers[connectedAccountId] ?? null,
+      );
+      connectedCustomerId = connectedCustomer.id;
+      if (isNew && userDocRef) {
+        await userDocRef.update({
+          [`stripeConnectedCustomers.${connectedAccountId}`]: connectedCustomerId,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      } else if (!connectedCustomers[connectedAccountId] && userDocRef) {
+        // Found via Stripe search — backfill Firestore so the next call is instant
+        await userDocRef.update({
+          [`stripeConnectedCustomers.${connectedAccountId}`]: connectedCustomerId,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    } else {
+      // Guest checkout (no platform customer) — connectedCustomerId not needed for one-time charges
+      connectedCustomerId = "";
     }
 
     const isRecurring = purchaseType === "package" && itemDetails.isRecurring === true;
@@ -156,23 +205,29 @@ app.post("/create-payment-link", async (req, res) => {
 
     let checkoutSession: { url: string; id: string };
 
+    // ── Create price on connected account, then open checkout ─────────────
+    const stripe = await stripeService.getStripeClient() as import("stripe").default;
+
     if (isRecurring) {
-      const stripe = await stripeService.getStripeClient() as import("stripe").default;
       const intervalMap: Record<string, string> = { monthly: "month", weekly: "week", daily: "day", yearly: "year" };
       const interval = (intervalMap[itemDetails.billingFrequency as string] || "month") as import("stripe").default.PriceCreateParams.Recurring.Interval;
       const intervalCount = (itemDetails.billingInterval as number) || 1;
 
-      const price = await stripe.prices.create({
-        unit_amount: Math.round(itemDetails.price * 100),
-        currency: "usd",
-        recurring: { interval, interval_count: intervalCount },
-        ...(itemDetails.stripeProductId
-          ? { product: itemDetails.stripeProductId }
-          : { product_data: { name: itemDetails.itemName, metadata: { purchaseType, itemId, studioOwnerId: itemDetails.studioOwnerId, studentId: studentDoc ? studentDoc.id : "guest" } } }
-        ),
-      });
+      const price = await stripe.prices.create(
+        {
+          unit_amount: Math.round(itemDetails.price * 100),
+          currency: "usd",
+          recurring: { interval, interval_count: intervalCount },
+          ...(itemDetails.stripeProductId
+            ? { product: itemDetails.stripeProductId }
+            : { product_data: { name: itemDetails.itemName, metadata: { purchaseType, itemId, studioOwnerId: itemDetails.studioOwnerId } } }
+          ),
+        },
+        { stripeAccount: connectedAccountId },
+      );
 
-      const subscriptionMetadata = {
+      const appFeePercent = stripeService.platformFeePercent(Math.round(itemDetails.price * 100));
+      const subscriptionMetadata: Record<string, string> = {
         ...metadata,
         price: String(itemDetails.price),
         billingFrequency: String(itemDetails.billingFrequency || ""),
@@ -180,34 +235,36 @@ app.post("/create-payment-link", async (req, res) => {
         subscriptionDuration: String(itemDetails.subscriptionDuration || ""),
       };
 
-      checkoutSession = await stripeService.createConnectSubscriptionSession(
+      checkoutSession = await stripeService.createDirectSubscriptionSession(
         price.id,
-        customerId ?? "",
+        connectedCustomerId,
         connectedAccountId,
+        appFeePercent,
         subscriptionMetadata,
         successUrl,
         cancelUrl,
-        applicationFeeAmount,
       ) as unknown as { url: string; id: string };
     } else {
-      const stripe = await stripeService.getStripeClient() as import("stripe").default;
-      const price = await stripe.prices.create({
-        unit_amount: Math.round(itemDetails.price * 100),
-        currency: "usd",
-        ...(itemDetails.stripeProductId
-          ? { product: itemDetails.stripeProductId }
-          : { product_data: { name: itemDetails.itemName, metadata: { purchaseType, itemId, studioOwnerId: itemDetails.studioOwnerId, studentId: studentDoc ? studentDoc.id : "guest" } } }
-        ),
-      });
+      const price = await stripe.prices.create(
+        {
+          unit_amount: Math.round(itemDetails.price * 100),
+          currency: "usd",
+          ...(itemDetails.stripeProductId
+            ? { product: itemDetails.stripeProductId }
+            : { product_data: { name: itemDetails.itemName, metadata: { purchaseType, itemId, studioOwnerId: itemDetails.studioOwnerId } } }
+          ),
+        },
+        { stripeAccount: connectedAccountId },
+      );
 
-      checkoutSession = await stripeService.createConnectCheckoutSession(
+      checkoutSession = await stripeService.createDirectCheckoutSession(
         price.id,
-        customerId ?? "",
+        connectedCustomerId,
         connectedAccountId,
+        applicationFeeAmount,
         metadata,
         successUrl,
         cancelUrl,
-        applicationFeeAmount,
       ) as unknown as { url: string; id: string };
     }
 
@@ -252,30 +309,40 @@ app.post("/charge-saved", async (req, res) => {
     const studentDoc = studentQuery.docs[0]!;
     const studentData = studentDoc.data() as Record<string, unknown>;
 
-    let stripeCustomerId: string | null = null;
+    // ── Resolve user doc and connected customer ────────────────────────────
+    let platformCustomerId: string | null = null;
+    let connectedCustomers: Record<string, string> = {};
+    let userDocRef: FirebaseFirestore.DocumentReference | null = null;
+    // Use verified auth token email as the authoritative source
+    let userEmail = user.email;
+
     const userQuery = await db.collection("users")
       .where("authUid", "==", user.uid)
       .limit(1)
       .get();
 
     if (!userQuery.empty) {
-      const userData = userQuery.docs[0]!.data() as Record<string, unknown>;
-      stripeCustomerId = (userData["stripeCustomerId"] as string) || null;
+      const userDoc = userQuery.docs[0]!;
+      const userData = userDoc.data() as Record<string, unknown>;
+      userDocRef = userDoc.ref;
+      userEmail = (userData["email"] as string) || user.email;
+      platformCustomerId = (userData["stripeCustomerId"] as string) || null;
+      connectedCustomers = (userData["stripeConnectedCustomers"] as Record<string, string>) || {};
     }
 
-    if (!stripeCustomerId) {
+    if (!platformCustomerId) {
       const profileDoc = await authService.getStudentProfileByAuthUid(user.uid);
       if (profileDoc) {
-        const profileData = profileDoc.data() as Record<string, unknown>;
-        stripeCustomerId = (profileData["stripeCustomerId"] as string) || null;
+        platformCustomerId = ((profileDoc.data() as Record<string, unknown>)["stripeCustomerId"] as string) || null;
       }
     }
 
-    if (!stripeCustomerId) {
+    if (!platformCustomerId) {
       return sendErrorResponse(req, res, 400, "Bad Request", "No Stripe customer linked to this account. Please add a payment method first.");
     }
 
-    const savedMethods = await stripeService.listPaymentMethods(stripeCustomerId) as Array<{ id: string }>;
+    // Verify the payment method belongs to the platform customer
+    const savedMethods = await stripeService.listPaymentMethods(platformCustomerId) as Array<{ id: string }>;
     if (!savedMethods.some((pm) => pm.id === paymentMethodId)) {
       return sendErrorResponse(req, res, 403, "Forbidden", "Payment method does not belong to this account");
     }
@@ -286,6 +353,43 @@ app.post("/charge-saved", async (req, res) => {
     const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
     const studioOwnerData = studioOwnerDoc.exists ? (studioOwnerDoc.data() as Record<string, unknown>) : {};
     const connectedAccountId = (studioOwnerData["stripeAccountId"] as string) || null;
+
+    if (!connectedAccountId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "This studio has not completed Stripe Connect setup.");
+    }
+
+    // ── Find or create connected customer (dedup-safe) ───────────────────
+    const studentName = `${(studentData["firstName"] as string) || ""} ${(studentData["lastName"] as string) || ""}`.trim();
+    const { customer: connectedCustomerObj, isNew: isNewCC } = await stripeService.findOrCreateConnectedCustomer(
+      userEmail,
+      platformCustomerId,
+      connectedAccountId,
+      studentName || undefined,
+      connectedCustomers[connectedAccountId] ?? null,
+    );
+    const connectedCustomerId = connectedCustomerObj.id;
+    if ((isNewCC || !connectedCustomers[connectedAccountId]) && userDocRef) {
+      await userDocRef.update({
+        [`stripeConnectedCustomers.${connectedAccountId}`]: connectedCustomerId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    // ── Find or clone payment method on connected account ─────────────────
+    // On first use at this studio the card hasn't been cloned yet — clone it now.
+    let connectedPm = await stripeService.findConnectedPaymentMethod(
+      paymentMethodId,
+      connectedCustomerId,
+      connectedAccountId,
+    );
+    if (!connectedPm) {
+      connectedPm = await stripeService.clonePaymentMethodToConnectedAccount(
+        paymentMethodId,
+        platformCustomerId,
+        connectedCustomerId,
+        connectedAccountId,
+      );
+    }
 
     const isRecurring = purchaseType === "package" && itemDetails.isRecurring === true;
     const metadata: Record<string, string> = {
@@ -311,14 +415,14 @@ app.post("/charge-saved", async (req, res) => {
         recurring: { interval, interval_count: intervalCount },
         ...(itemDetails.stripeProductId
           ? { product: itemDetails.stripeProductId }
-          : { product_data: { name: itemDetails.itemName, metadata: { purchaseType, itemId, studioOwnerId, studentId: studentDoc.id } } }
+          : { product_data: { name: itemDetails.itemName, metadata: { purchaseType, itemId, studioOwnerId } } }
         ),
       };
 
       const subscription = await stripeService.createSubscriptionWithSavedCard(
-        stripeCustomerId!,
+        connectedCustomerId,
         priceParams,
-        paymentMethodId,
+        connectedPm.id,
         { ...metadata, price: String(itemDetails.price), billingFrequency: String(itemDetails.billingFrequency || ""), billingInterval: String(itemDetails.billingInterval || "") },
         connectedAccountId,
       ) as unknown as Record<string, unknown>;
@@ -343,8 +447,8 @@ app.post("/charge-saved", async (req, res) => {
       paymentIntentId = latestInvoicePI?.["id"] as string | undefined;
     } else {
       const paymentIntent = await stripeService.chargePaymentMethodDirectly(
-        stripeCustomerId!,
-        paymentMethodId,
+        connectedCustomerId,
+        connectedPm.id,
         Math.round(itemDetails.price * 100),
         metadata,
         connectedAccountId,
@@ -381,7 +485,7 @@ app.post("/charge-saved", async (req, res) => {
       studioName: itemDetails.studioName,
       price: itemDetails.price,
       stripePaymentIntentId: paymentIntentId || null,
-      stripeCustomerId,
+      stripeCustomerId: platformCustomerId,
       stripeSubscriptionId: subscriptionId,
       isRecurring,
       subscriptionStatus,
@@ -453,6 +557,133 @@ app.post("/charge-saved", async (req, res) => {
   }
 });
 
+// POST /create-payment-intent
+// Self-hosted checkout: creates a PaymentIntent on the connected account.
+// Returns { clientSecret, paymentIntentId, connectedAccountId } for the frontend
+// to mount a Stripe Payment Element without redirecting to stripe.com.
+// Recurring packages are not supported here — use /create-payment-link for those.
+app.post("/create-payment-intent", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) {
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid or expired token");
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const purchaseType = body["purchaseType"] as string | undefined;
+    const itemId = body["itemId"] as string | undefined;
+
+    if (!purchaseType || !itemId) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType and itemId are required");
+    }
+    if (!["class", "event", "workshop", "package"].includes(purchaseType)) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid purchaseType");
+    }
+
+    const db = getFirestore();
+    const itemDetails = await purchaseService.getItemDetails(
+      purchaseType as "class" | "event" | "workshop" | "package", itemId,
+    );
+
+    // Recurring packages require a different flow (subscription) — not supported here
+    if (purchaseType === "package" && itemDetails.isRecurring) {
+      return sendErrorResponse(req, res, 400, "Unsupported", "Recurring packages cannot use the self-hosted checkout. Use /create-payment-link.");
+    }
+
+    const studioOwnerDoc = await db.collection("users").doc(itemDetails.studioOwnerId).get();
+    if (!studioOwnerDoc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
+    }
+    const studioOwnerData = studioOwnerDoc.data() as Record<string, unknown>;
+    const connectedAccountId = (studioOwnerData["stripeAccountId"] as string) || null;
+    if (!connectedAccountId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "This studio has not completed Stripe Connect setup.");
+    }
+
+    // Resolve student doc
+    const studentQuery = await db.collection("students")
+      .where("authUid", "==", user.uid).limit(1).get();
+    const studentDoc = studentQuery.empty ? null : studentQuery.docs[0]!;
+    const studentId = studentDoc ? studentDoc.id : "guest";
+    const studentName = studentDoc
+      ? `${(studentDoc.data()["firstName"] as string) || ""} ${(studentDoc.data()["lastName"] as string) || ""}`.trim()
+      : "";
+
+    // Resolve/create platform customer
+    let platformCustomerId: string | null = null;
+    let userDocRef: FirebaseFirestore.DocumentReference | null = null;
+    let connectedCustomers: Record<string, string> = {};
+    // Use verified auth token email as the authoritative source
+    let userEmail = user.email;
+
+    const userQuery = await db.collection("users")
+      .where("authUid", "==", user.uid).limit(1).get();
+    if (!userQuery.empty) {
+      const userDoc = userQuery.docs[0]!;
+      const userData = userDoc.data() as Record<string, unknown>;
+      userDocRef = userDoc.ref;
+      userEmail = (userData["email"] as string) || user.email;
+      connectedCustomers = (userData["stripeConnectedCustomers"] as Record<string, string>) || {};
+      if (userData["stripeCustomerId"]) {
+        platformCustomerId = userData["stripeCustomerId"] as string;
+      } else {
+        const customer = await stripeService.createCustomer(userEmail, { userId: userDoc.id, authUid: user.uid }) as { id: string };
+        platformCustomerId = customer.id;
+        await userDoc.ref.update({ stripeCustomerId: customer.id, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      }
+    }
+
+    // Find or create connected customer (dedup-safe)
+    if (!platformCustomerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No Stripe customer linked to this account.");
+    }
+    const { customer: connectedCustomer, isNew: isNewConnectedCustomer } = await stripeService.findOrCreateConnectedCustomer(
+      userEmail,
+      platformCustomerId,
+      connectedAccountId,
+      studentName || undefined,
+      connectedCustomers[connectedAccountId] ?? null,
+    );
+    const connectedCustomerId = connectedCustomer.id;
+    if ((isNewConnectedCustomer || !connectedCustomers[connectedAccountId]) && userDocRef) {
+      await userDocRef.update({
+        [`stripeConnectedCustomers.${connectedAccountId}`]: connectedCustomerId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    const amountCents = Math.round(itemDetails.price * 100);
+    const applicationFeeAmount = 25 + Math.round(amountCents * 0.01);
+
+    const metadata: Record<string, string> = {
+      purchaseType,
+      itemId,
+      itemName: itemDetails.itemName || "",
+      studioOwnerId: itemDetails.studioOwnerId,
+      studioName: itemDetails.studioName || "",
+      studentId,
+      authUid: user.uid,
+      connectedCustomerId,
+    };
+
+    const paymentIntent = await stripeService.createDirectPaymentIntent(
+      amountCents,
+      connectedAccountId,
+      applicationFeeAmount,
+      metadata,
+    );
+
+    sendJsonResponse(req, res, 200, {
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+      connectedAccountId,
+    });
+  } catch (error) {
+    console.error("create-payment-intent error:", error);
+    handleError(req, res, error);
+  }
+});
+
 // POST /success
 app.post("/success", async (req, res) => {
   try {
@@ -464,6 +695,8 @@ app.post("/success", async (req, res) => {
     const body = req.body as Record<string, unknown>;
     const paymentIntentIdParam = body["paymentIntentId"] as string | undefined;
     const sessionId = body["sessionId"] as string | undefined;
+    // connectedAccountId is required when confirming a direct-charge PaymentIntent
+    const connectedAccountIdParam = body["connectedAccountId"] as string | undefined;
 
     if (!paymentIntentIdParam && !sessionId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "paymentIntentId or sessionId is required");
@@ -524,7 +757,17 @@ app.post("/success", async (req, res) => {
           console.warn("Error fetching line items:", lineItemsError);
         }
       }
+    } else if (connectedAccountIdParam) {
+      // Direct-charge PaymentIntent lives on the connected account
+      paymentIntent = await stripeService.retrieveConnectedPaymentIntent(
+        paymentIntentIdParam!, connectedAccountIdParam,
+      );
+      if (paymentIntent.status !== "succeeded") {
+        return sendErrorResponse(req, res, 400, "Validation Error", "Payment not completed");
+      }
+      metadata = (paymentIntent.metadata as Record<string, string>) || {};
     } else {
+      // Legacy: platform-account PaymentIntent
       paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentIdParam!);
       if (paymentIntent.status !== "succeeded") {
         return sendErrorResponse(req, res, 400, "Validation Error", "Payment not completed");

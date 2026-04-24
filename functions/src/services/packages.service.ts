@@ -1,7 +1,7 @@
 import * as admin from "firebase-admin";
 import authService from "./auth.service";
 import { getFirestore } from "../utils/firestore";
-import { createStripeProduct } from "./stripe.service";
+import { createConnectedProduct } from "./stripe.service";
 
 export class PackagesService {
   async getStudioOwnerId(authUid: string): Promise<string | null> {
@@ -45,17 +45,19 @@ export class PackagesService {
   async createPackage(packageData: Record<string, unknown>, studioOwnerId: string): Promise<string> {
     const db = getFirestore();
     const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
-    const studioName = studioOwnerDoc.exists
-      ? ((studioOwnerDoc.data() as Record<string, unknown>)["studioName"] as string) || ""
-      : "";
+    const studioOwnerData = studioOwnerDoc.exists ? (studioOwnerDoc.data() as Record<string, unknown>) : {};
+    const studioName = (studioOwnerData["studioName"] as string) || "";
+    const connectedAccountId = (studioOwnerData["stripeAccountId"] as string) || null;
 
     let stripeProductId: string | null = null;
-    try {
-      const stripeProduct = await createStripeProduct(packageData, studioOwnerId, studioName);
-      stripeProductId = stripeProduct.id;
-    } catch (error) {
-      console.error("Failed to create Stripe product for package:", error);
-      throw error;
+    if (connectedAccountId) {
+      try {
+        const stripeProduct = await createConnectedProduct(packageData, studioOwnerId, studioName, connectedAccountId);
+        stripeProductId = stripeProduct.id;
+      } catch (error) {
+        console.error("Failed to create Stripe product on connected account for package:", error);
+        throw error;
+      }
     }
 
     const docRef = await db.collection("packages").add({

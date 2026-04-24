@@ -121,6 +121,7 @@ export async function getProducts(): Promise<Array<Record<string, unknown>>> {
       { tier: "studio_owner_pro_plus", patterns: ["studio_owner_pro_plus", "studio owner pro+", "studio owner pro plus", "pro+"] },
       { tier: "studio_owner", patterns: ["studio_owner", "studio owner"] },
       { tier: "individual_instructor", patterns: ["individual_instructor", "individual instructor", "indivdual instructor"] },
+      { tier: "event_host", patterns: ["event_host", "event host"] },
     ];
 
     const getTierFromProduct = (product: Stripe.Product): string | null => {
@@ -154,24 +155,42 @@ export async function getProducts(): Promise<Array<Record<string, unknown>>> {
       }
     });
 
-    const order: Record<string, number> = { individual_instructor: 1, studio_owner: 2, studio_owner_pro_plus: 3 };
+    const order: Record<string, number> = { event_host: 0, individual_instructor: 1, studio_owner: 2, studio_owner_pro_plus: 3 };
 
     return Array.from(productsByTier.values())
       .map((product) => {
         const tier = getTierFromProduct(product);
         const productPrices = prices.data.filter((price) => price.product === product.id && price.active);
-        const recurringPrice = productPrices.find((p) => p.recurring);
+        const monthlyPrice = productPrices.find((p) => p.recurring?.interval === "month");
+        const yearlyPrice = productPrices.find((p) => p.recurring?.interval === "year");
+        // Fall back to any recurring price for backwards compat
+        const anyRecurring = monthlyPrice ?? yearlyPrice ?? productPrices.find((p) => p.recurring);
         return {
           id: product.id,
           name: product.name,
           description: product.description,
           membershipTier: tier,
-          price: recurringPrice ? {
-            id: recurringPrice.id,
-            amount: recurringPrice.unit_amount,
-            currency: recurringPrice.currency,
-            interval: recurringPrice.recurring?.interval,
-            intervalCount: recurringPrice.recurring?.interval_count,
+          // Legacy single-price field (monthly preferred)
+          price: anyRecurring ? {
+            id: anyRecurring.id,
+            amount: anyRecurring.unit_amount,
+            currency: anyRecurring.currency,
+            interval: anyRecurring.recurring?.interval,
+            intervalCount: anyRecurring.recurring?.interval_count,
+          } : null,
+          // Explicit monthly price
+          monthlyPrice: monthlyPrice ? {
+            id: monthlyPrice.id,
+            amount: monthlyPrice.unit_amount,
+            currency: monthlyPrice.currency,
+            interval: "month",
+          } : null,
+          // Explicit yearly price (total annual amount)
+          yearlyPrice: yearlyPrice ? {
+            id: yearlyPrice.id,
+            amount: yearlyPrice.unit_amount,
+            currency: yearlyPrice.currency,
+            interval: "year",
           } : null,
           images: product.images,
           metadata: product.metadata,
@@ -277,107 +296,286 @@ export async function createPaymentLink(
   }
 }
 
-export async function createConnectCheckoutSession(
+/**
+ * Direct charge: create a one-time checkout session on the connected account.
+ * The price and customer must already exist on the connected account.
+ */
+export async function createDirectCheckoutSession(
   priceId: string,
-  customerId: string,
-  connectedAccountId: string | null,
+  connectedCustomerId: string,
+  connectedAccountId: string,
+  applicationFeeAmount: number,
   metadata: Record<string, string>,
   successUrl: string,
   cancelUrl: string,
-  applicationFeeAmount: number | null = null,
 ): Promise<Stripe.Checkout.Session> {
   const stripe = await getStripeClient();
   try {
-    const sessionParams: Stripe.Checkout.SessionCreateParams = {
-      customer: customerId,
-      mode: "payment",
-      line_items: [{ price: priceId, quantity: 1 }],
-      metadata,
-      payment_intent_data: { metadata },
-      payment_method_types: ["card"],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-    };
-
-    if (connectedAccountId) {
-      const pid = sessionParams.payment_intent_data as Record<string, unknown>;
-      pid["on_behalf_of"] = connectedAccountId;
-      pid["transfer_data"] = { destination: connectedAccountId };
-      if (applicationFeeAmount && applicationFeeAmount > 0) {
-        pid["application_fee_amount"] = applicationFeeAmount;
-      }
-    }
-
-    return await stripe.checkout.sessions.create(sessionParams);
+    return await stripe.checkout.sessions.create(
+      {
+        customer: connectedCustomerId,
+        mode: "payment",
+        line_items: [{ price: priceId, quantity: 1 }],
+        metadata,
+        payment_intent_data: {
+          application_fee_amount: applicationFeeAmount,
+          metadata,
+        },
+        payment_method_types: ["card"],
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+      },
+      { stripeAccount: connectedAccountId },
+    );
   } catch (error) {
-    throw new Error(`Failed to create Checkout Session: ${(error as Error).message}`);
+    throw new Error(`Failed to create direct checkout session: ${(error as Error).message}`);
   }
 }
 
-export async function createConnectSubscriptionSession(
+/**
+ * Direct charge: create a recurring subscription checkout session on the connected account.
+ * The price and customer must already exist on the connected account.
+ */
+export async function createDirectSubscriptionSession(
   priceId: string,
-  customerId: string,
-  connectedAccountId: string | null,
-  metadata: Record<string, unknown>,
+  connectedCustomerId: string,
+  connectedAccountId: string,
+  applicationFeePercent: number,
+  metadata: Record<string, string>,
   successUrl: string,
   cancelUrl: string,
-  _applicationFeeAmount: number | null = null,
 ): Promise<Stripe.Checkout.Session> {
   const stripe = await getStripeClient();
   try {
-    const sessionParams: Stripe.Checkout.SessionCreateParams = {
-      customer: customerId,
-      mode: "subscription",
-      line_items: [{ price: priceId, quantity: 1 }],
-      metadata: metadata as Record<string, string>,
-      subscription_data: { metadata: metadata as Record<string, string> },
-      payment_method_types: ["card"],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-    };
-
-    if (connectedAccountId) {
-      (sessionParams as Record<string, unknown>)["on_behalf_of"] = connectedAccountId;
-      const sub = sessionParams.subscription_data as Record<string, unknown>;
-      sub["transfer_data"] = { destination: connectedAccountId };
-      if (metadata["price"]) {
-        const priceInCents = Math.round((metadata["price"] as number) * 100);
-        sub["application_fee_percent"] = platformFeePercent(priceInCents);
-      }
-    }
-
-    return await stripe.checkout.sessions.create(sessionParams);
+    return await stripe.checkout.sessions.create(
+      {
+        customer: connectedCustomerId,
+        mode: "subscription",
+        line_items: [{ price: priceId, quantity: 1 }],
+        metadata,
+        subscription_data: {
+          application_fee_percent: applicationFeePercent,
+          metadata,
+        },
+        payment_method_types: ["card"],
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+      },
+      { stripeAccount: connectedAccountId },
+    );
   } catch (error) {
-    throw new Error(`Failed to create Subscription Checkout Session: ${(error as Error).message}`);
+    throw new Error(`Failed to create direct subscription session: ${(error as Error).message}`);
   }
 }
 
+/**
+ * Direct charge: create a PaymentIntent on the connected account for self-hosted checkout.
+ * Returns the full PaymentIntent (frontend reads clientSecret from it).
+ */
+export async function createDirectPaymentIntent(
+  amountCents: number,
+  connectedAccountId: string,
+  applicationFeeAmount: number,
+  metadata: Record<string, string>,
+): Promise<Stripe.PaymentIntent> {
+  const stripe = await getStripeClient();
+  try {
+    return await stripe.paymentIntents.create(
+      {
+        amount: amountCents,
+        currency: "usd",
+        application_fee_amount: applicationFeeAmount,
+        automatic_payment_methods: { enabled: true },
+        metadata,
+      },
+      { stripeAccount: connectedAccountId },
+    );
+  } catch (error) {
+    throw new Error(`Failed to create payment intent: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Retrieve a PaymentIntent from a connected account (needed for /success verification).
+ */
+export async function retrieveConnectedPaymentIntent(
+  paymentIntentId: string,
+  connectedAccountId: string,
+): Promise<Stripe.PaymentIntent> {
+  const stripe = await getStripeClient();
+  return stripe.paymentIntents.retrieve(paymentIntentId, {}, { stripeAccount: connectedAccountId });
+}
+
+/**
+ * Create a customer on a connected account.
+ * Stores the platform customer ID in metadata so the relationship is traceable.
+ */
+export async function createConnectedCustomer(
+  email: string,
+  platformCustomerId: string,
+  connectedAccountId: string,
+  name?: string,
+): Promise<Stripe.Customer> {
+  const stripe = await getStripeClient();
+  try {
+    return await stripe.customers.create(
+      { email, name: name || undefined, metadata: { platformCustomerId } },
+      { stripeAccount: connectedAccountId },
+    );
+  } catch (error) {
+    throw new Error(`Failed to create connected customer: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Find an existing customer on a connected account by the platform customer ID
+ * stored in metadata. Returns null if no match is found.
+ * This is the source-of-truth lookup that prevents duplicate connected customers
+ * even when the Firestore stripeConnectedCustomers map is stale or missing.
+ */
+export async function findConnectedCustomerByPlatformId(
+  platformCustomerId: string,
+  connectedAccountId: string,
+): Promise<Stripe.Customer | null> {
+  const stripe = await getStripeClient();
+  try {
+    const results = await stripe.customers.search(
+      { query: `metadata['platformCustomerId']:'${platformCustomerId}'`, limit: 1 },
+      { stripeAccount: connectedAccountId },
+    );
+    return results.data[0] ?? null;
+  } catch {
+    // search API may not be enabled on all accounts — fall through to create
+    return null;
+  }
+}
+
+/**
+ * Find or create a customer on a connected account.
+ * Search order:
+ *   1. Firestore stripeConnectedCustomers map (fast path)
+ *   2. Stripe customer search by metadata.platformCustomerId (dedup guard)
+ *   3. Create new customer (only if neither lookup succeeds)
+ * Returns { customer, isNew } so the caller can persist the ID to Firestore when needed.
+ */
+export async function findOrCreateConnectedCustomer(
+  email: string,
+  platformCustomerId: string,
+  connectedAccountId: string,
+  name?: string,
+  existingConnectedCustomerId?: string | null,
+): Promise<{ customer: Stripe.Customer; isNew: boolean }> {
+  // 1. Firestore fast path
+  if (existingConnectedCustomerId) {
+    const stripe = await getStripeClient();
+    try {
+      const existing = await stripe.customers.retrieve(
+        existingConnectedCustomerId,
+        { stripeAccount: connectedAccountId },
+      );
+      if (existing && !(existing as Stripe.DeletedCustomer).deleted) {
+        return { customer: existing as Stripe.Customer, isNew: false };
+      }
+    } catch {
+      // Customer may have been deleted — fall through
+    }
+  }
+
+  // 2. Stripe metadata search — prevents duplicates when Firestore map is stale
+  const found = await findConnectedCustomerByPlatformId(platformCustomerId, connectedAccountId);
+  if (found) {
+    return { customer: found, isNew: false };
+  }
+
+  // 3. Create
+  const created = await createConnectedCustomer(email, platformCustomerId, connectedAccountId, name);
+  return { customer: created, isNew: true };
+}
+
+/**
+ * Find a payment method on a connected account that matches the fingerprint of a
+ * platform payment method. Returns null if no match is found.
+ */
+export async function findConnectedPaymentMethod(
+  platformPmId: string,
+  connectedCustomerId: string,
+  connectedAccountId: string,
+): Promise<Stripe.PaymentMethod | null> {
+  const stripe = await getStripeClient();
+
+  // Get the fingerprint of the platform payment method
+  const platformPm = await stripe.paymentMethods.retrieve(platformPmId);
+  const fingerprint = platformPm.card?.fingerprint;
+  if (!fingerprint) return null;
+
+  // List payment methods on the connected account customer and match by fingerprint
+  const connectedPMs = await stripe.paymentMethods.list(
+    { customer: connectedCustomerId, type: "card" },
+    { stripeAccount: connectedAccountId },
+  );
+
+  return connectedPMs.data.find((pm) => pm.card?.fingerprint === fingerprint) ?? null;
+}
+
+/**
+ * Clone a platform payment method to a connected account and attach it to the
+ * connected customer. Returns the cloned PaymentMethod on the connected account.
+ * Used when a customer pays at a new studio for the first time with a saved card.
+ */
+export async function clonePaymentMethodToConnectedAccount(
+  platformPmId: string,
+  platformCustomerId: string,
+  connectedCustomerId: string,
+  connectedAccountId: string,
+): Promise<Stripe.PaymentMethod> {
+  const stripe = await getStripeClient();
+
+  // Clone the platform PM onto the connected account
+  const cloned = await stripe.paymentMethods.create(
+    { customer: platformCustomerId, payment_method: platformPmId },
+    { stripeAccount: connectedAccountId },
+  );
+
+  // Attach it to the connected customer so it can be reused and found by fingerprint
+  await stripe.paymentMethods.attach(
+    cloned.id,
+    { customer: connectedCustomerId },
+    { stripeAccount: connectedAccountId },
+  );
+
+  return cloned;
+}
+
+/**
+ * Direct charge: off-session charge on the connected account.
+ * connectedCustomerId and connectedPmId must belong to the connected account.
+ * Throws if connectedAccountId is null (studio/instructor must complete Stripe Connect setup).
+ */
 export async function chargePaymentMethodDirectly(
-  customerId: string,
-  paymentMethodId: string,
+  connectedCustomerId: string,
+  connectedPmId: string,
   amountCents: number,
   metadata: Record<string, string>,
   connectedAccountId: string | null,
 ): Promise<Stripe.PaymentIntent> {
+  if (!connectedAccountId) {
+    throw new Error("Direct charges require a connected Stripe account. Please complete Stripe Connect setup.");
+  }
+
   const stripe = await getStripeClient();
   const params: Stripe.PaymentIntentCreateParams = {
     amount: amountCents,
     currency: "usd",
-    customer: customerId,
-    payment_method: paymentMethodId,
+    customer: connectedCustomerId,
+    payment_method: connectedPmId,
     confirm: true,
     off_session: true,
+    application_fee_amount: platformFeeCents(amountCents),
     metadata,
   };
 
-  if (connectedAccountId) {
-    (params as unknown as Record<string, unknown>)["on_behalf_of"] = connectedAccountId;
-    (params as unknown as Record<string, unknown>)["transfer_data"] = { destination: connectedAccountId };
-    (params as unknown as Record<string, unknown>)["application_fee_amount"] = platformFeeCents(amountCents);
-  }
-
   try {
-    return await stripe.paymentIntents.create(params);
+    return await stripe.paymentIntents.create(params, { stripeAccount: connectedAccountId });
   } catch (error) {
     const err = error as Error & { code?: string; payment_intent?: Stripe.PaymentIntent };
     if (err.code === "authentication_required" && err.payment_intent) {
@@ -387,34 +585,36 @@ export async function chargePaymentMethodDirectly(
   }
 }
 
+/**
+ * Direct charge: create a subscription with a saved card on the connected account.
+ * connectedCustomerId and connectedPmId must belong to the connected account.
+ * priceParams will be used to create the price on the connected account.
+ */
 export async function createSubscriptionWithSavedCard(
-  customerId: string,
+  connectedCustomerId: string,
   priceParams: Stripe.PriceCreateParams,
-  paymentMethodId: string,
+  connectedPmId: string,
   metadata: Record<string, string>,
-  connectedAccountId: string | null,
+  connectedAccountId: string,
 ): Promise<Stripe.Subscription> {
   const stripe = await getStripeClient();
-  const price = await stripe.prices.create(priceParams);
+
+  // Create the price on the connected account
+  const price = await stripe.prices.create(priceParams, { stripeAccount: connectedAccountId });
 
   const subParams: Stripe.SubscriptionCreateParams = {
-    customer: customerId,
+    customer: connectedCustomerId,
     items: [{ price: price.id }],
-    default_payment_method: paymentMethodId,
+    default_payment_method: connectedPmId,
+    application_fee_percent: priceParams.unit_amount && priceParams.unit_amount > 0
+      ? platformFeePercent(priceParams.unit_amount)
+      : undefined,
     metadata,
     expand: ["latest_invoice.payment_intent"],
   };
 
-  if (connectedAccountId) {
-    (subParams as unknown as Record<string, unknown>)["on_behalf_of"] = connectedAccountId;
-    (subParams as unknown as Record<string, unknown>)["transfer_data"] = { destination: connectedAccountId };
-    if (priceParams.unit_amount && priceParams.unit_amount > 0) {
-      (subParams as unknown as Record<string, unknown>)["application_fee_percent"] = platformFeePercent(priceParams.unit_amount);
-    }
-  }
-
   try {
-    return await stripe.subscriptions.create(subParams);
+    return await stripe.subscriptions.create(subParams, { stripeAccount: connectedAccountId });
   } catch (error) {
     throw new Error(`Failed to create subscription: ${(error as Error).message}`);
   }
@@ -549,6 +749,45 @@ export async function createStripeProduct(
     return await stripe.products.create(productParams as Stripe.ProductCreateParams);
   } catch (error) {
     throw new Error(`Failed to create Stripe product: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Create a package product on the studio's connected Stripe account.
+ * No default_price_data — prices are created dynamically at checkout.
+ */
+export async function createConnectedProduct(
+  packageData: Record<string, unknown>,
+  studioOwnerId: string,
+  studioName: string,
+  connectedAccountId: string,
+): Promise<Stripe.Product> {
+  const stripe = await getStripeClient();
+
+  const rawDescriptor = `${studioName} ${packageData["name"] as string}`.replace(/[<>"']/g, "");
+  const productParams: Stripe.ProductCreateParams = {
+    name: packageData["name"] as string,
+    active: packageData["isActive"] !== undefined ? (packageData["isActive"] as boolean) : true,
+    statement_descriptor: rawDescriptor.slice(0, 22).trim(),
+    metadata: {
+      studioId: studioOwnerId,
+      studioName: studioName || "",
+      credits: String(packageData["credits"]),
+      expirationDays: String(packageData["expirationDays"]),
+      classIds: JSON.stringify((packageData["classIds"] as string[]) || []),
+      isRecurring: String(packageData["isRecurring"] || false),
+      ...(packageData["subscriptionDuration"] != null
+        ? { subscriptionDuration: String(packageData["subscriptionDuration"]) }
+        : {}),
+    },
+  };
+
+  if (packageData["description"]) productParams.description = packageData["description"] as string;
+
+  try {
+    return await stripe.products.create(productParams, { stripeAccount: connectedAccountId });
+  } catch (error) {
+    throw new Error(`Failed to create connected product: ${(error as Error).message}`);
   }
 }
 
