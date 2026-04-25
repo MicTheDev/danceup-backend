@@ -1076,7 +1076,12 @@ app.post("/webhook", async (req, res) => {
     try {
       webhookSecret = await getSecret(secretName);
     } catch (error) {
-      console.warn(`Webhook secret not found: ${secretName}. Using default.`);
+      if (isProduction) {
+        // In production, Secret Manager is required — never fall back to env vars
+        console.error(`Failed to load webhook secret from Secret Manager: ${secretName}`, error);
+        return sendErrorResponse(req, res, 500, "Configuration Error", "Webhook secret unavailable");
+      }
+      console.warn(`Webhook secret not found in Secret Manager: ${secretName}. Falling back to env var (dev only).`);
       webhookSecret = process.env["STRIPE_WEBHOOK_SECRET"];
     }
 

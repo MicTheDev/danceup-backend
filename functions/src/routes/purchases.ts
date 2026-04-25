@@ -18,6 +18,18 @@ import {
   isAllowedOrigin,
   applySecurityMiddleware,
 } from "../utils/http";
+import rateLimit from "express-rate-limit";
+
+// Limit payment-creation endpoints to 20 requests per 15 minutes per IP
+const paymentCreationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, res) => {
+    res.status(429).json({ error: "Too many payment requests. Please wait and try again." });
+  },
+});
 
 const app = express();
 
@@ -49,7 +61,7 @@ applySecurityMiddleware(app);
 app.use(express.urlencoded({ extended: true }));
 
 // POST /create-payment-link
-app.post("/create-payment-link", async (req, res) => {
+app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
     const purchaseType = body["purchaseType"] as string | undefined;
@@ -279,7 +291,7 @@ app.post("/create-payment-link", async (req, res) => {
 });
 
 // POST /charge-saved
-app.post("/charge-saved", async (req, res) => {
+app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
   try {
     let user;
     try { user = await verifyToken(req); } catch (authError) {
@@ -409,6 +421,8 @@ app.post("/charge-saved", async (req, res) => {
     const metadata: Record<string, string> = {
       purchaseType,
       itemId,
+      itemName: String(itemDetails.itemName ?? ""),
+      price: String(itemDetails.price ?? ""),
       studioOwnerId,
       studentId: studentDoc.id,
       authUid: user.uid,
@@ -581,7 +595,7 @@ app.post("/charge-saved", async (req, res) => {
 // Returns { clientSecret, paymentIntentId, connectedAccountId } for the frontend
 // to mount a Stripe Payment Element without redirecting to stripe.com.
 // Recurring packages are not supported here — use /create-payment-link for those.
-app.post("/create-payment-intent", async (req, res) => {
+app.post("/create-payment-intent", paymentCreationLimiter, async (req, res) => {
   try {
     let user;
     try { user = await verifyToken(req); } catch (authError) {
