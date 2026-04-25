@@ -250,7 +250,10 @@ app.get("/me", async (req, res) => {
 
 app.post("/logout", async (req, res) => {
   try {
-    try { await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+    // Revoke all refresh tokens so stolen tokens cannot be used after logout
+    await admin.auth().revokeRefreshTokens(user.uid);
     sendJsonResponse(req, res, 200, { message: "Logged out successfully" });
   } catch (error) {
     console.error("Logout error:", error);

@@ -557,6 +557,7 @@ export async function chargePaymentMethodDirectly(
   amountCents: number,
   metadata: Record<string, string>,
   connectedAccountId: string | null,
+  idempotencyKey?: string,
 ): Promise<Stripe.PaymentIntent> {
   if (!connectedAccountId) {
     throw new Error("Direct charges require a connected Stripe account. Please complete Stripe Connect setup.");
@@ -574,8 +575,11 @@ export async function chargePaymentMethodDirectly(
     metadata,
   };
 
+  const requestOptions: Stripe.RequestOptions = { stripeAccount: connectedAccountId };
+  if (idempotencyKey) requestOptions.idempotencyKey = idempotencyKey;
+
   try {
-    return await stripe.paymentIntents.create(params, { stripeAccount: connectedAccountId });
+    return await stripe.paymentIntents.create(params, requestOptions);
   } catch (error) {
     const err = error as Error & { code?: string; payment_intent?: Stripe.PaymentIntent };
     if (err.code === "authentication_required" && err.payment_intent) {
@@ -596,6 +600,7 @@ export async function createSubscriptionWithSavedCard(
   connectedPmId: string,
   metadata: Record<string, string>,
   connectedAccountId: string,
+  idempotencyKey?: string,
 ): Promise<Stripe.Subscription> {
   const stripe = await getStripeClient();
 
@@ -613,8 +618,11 @@ export async function createSubscriptionWithSavedCard(
     expand: ["latest_invoice.payment_intent"],
   };
 
+  const requestOptions: Stripe.RequestOptions = { stripeAccount: connectedAccountId };
+  if (idempotencyKey) requestOptions.idempotencyKey = idempotencyKey;
+
   try {
-    return await stripe.subscriptions.create(subParams, { stripeAccount: connectedAccountId });
+    return await stripe.subscriptions.create(subParams, requestOptions);
   } catch (error) {
     throw new Error(`Failed to create subscription: ${(error as Error).message}`);
   }

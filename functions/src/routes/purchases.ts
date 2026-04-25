@@ -294,6 +294,15 @@ app.post("/charge-saved", async (req, res) => {
     if (!purchaseType || !itemId || !paymentMethodId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType, itemId, and paymentMethodId are required");
     }
+    if (!["class", "event", "workshop", "package"].includes(purchaseType)) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid purchaseType. Must be 'class', 'event', 'workshop', or 'package'");
+    }
+    if (typeof itemId !== "string" || itemId.trim().length === 0 || itemId.length > 128) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid itemId");
+    }
+    if (typeof paymentMethodId !== "string" || !paymentMethodId.startsWith("pm_")) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid paymentMethodId format");
+    }
 
     const db = getFirestore();
 
@@ -350,6 +359,11 @@ app.post("/charge-saved", async (req, res) => {
     const itemDetails = await purchaseService.getItemDetails(purchaseType as "class" | "event" | "workshop" | "package", itemId);
     const studioOwnerId = itemDetails.studioOwnerId;
 
+    // Verify the student is enrolled in the studio that owns this item
+    if ((studentData["studioOwnerId"] as string) !== studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Forbidden", "You are not enrolled in this studio.");
+    }
+
     const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
     const studioOwnerData = studioOwnerDoc.exists ? (studioOwnerDoc.data() as Record<string, unknown>) : {};
     const connectedAccountId = (studioOwnerData["stripeAccountId"] as string) || null;
@@ -399,6 +413,9 @@ app.post("/charge-saved", async (req, res) => {
       studentId: studentDoc.id,
       authUid: user.uid,
     };
+    // Stable idempotency key: same user + item combination always maps to the same key,
+    // so network retries don't produce duplicate charges.
+    const idempotencyKey = `charge:${user.uid}:${purchaseType}:${itemId}`;
 
     let paymentIntentId: string | null | undefined;
     let subscriptionId: string | null = null;
@@ -425,6 +442,7 @@ app.post("/charge-saved", async (req, res) => {
         connectedPm.id,
         { ...metadata, price: String(itemDetails.price), billingFrequency: String(itemDetails.billingFrequency || ""), billingInterval: String(itemDetails.billingInterval || "") },
         connectedAccountId,
+        idempotencyKey,
       ) as unknown as Record<string, unknown>;
 
       const latestInvoice = subscription["latest_invoice"] as Record<string, unknown> | null;
@@ -452,6 +470,7 @@ app.post("/charge-saved", async (req, res) => {
         Math.round(itemDetails.price * 100),
         metadata,
         connectedAccountId,
+        idempotencyKey,
       ) as unknown as Record<string, unknown>;
 
       if (paymentIntent["status"] === "requires_action") {
@@ -775,6 +794,9 @@ app.post("/success", async (req, res) => {
       if (pendingDoc.exists) {
         const pendingData = pendingDoc.data() as Record<string, string>;
         const serverConnectedAccountId = pendingData["connectedAccountId"];
+        if (!serverConnectedAccountId) {
+          return sendErrorResponse(req, res, 500, "Internal Error", "Payment record is missing connected account reference");
+        }
         paymentIntent = await stripeService.retrieveConnectedPaymentIntent(
           paymentIntentIdParam!, serverConnectedAccountId,
         );
