@@ -182,53 +182,6 @@ app.get("/account/:accountId", async (req, res) => {
   }
 });
 
-// GET /complete-setup
-app.get("/complete-setup", async (req, res) => {
-  try {
-    const account_id = req.query["account_id"] as string | undefined;
-
-    if (!account_id) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "Account ID is required");
-    }
-
-    const db = getFirestore();
-    const userQuery = await db.collection("users")
-      .where("stripeAccountId", "==", account_id)
-      .limit(1)
-      .get();
-
-    if (userQuery.empty) {
-      return sendErrorResponse(req, res, 404, "Not Found", "Account not found");
-    }
-
-    const userDoc = userQuery.docs[0]!;
-
-    const account = await stripeService.getAccount(account_id) as unknown as Record<string, unknown>;
-
-    const updateData: Record<string, unknown> = {
-      stripeAccountStatus: account["charges_enabled"] && account["payouts_enabled"] ? "active" : "pending",
-      stripeSetupCompleted: account["details_submitted"],
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
-
-    if (account["details_submitted"]) {
-      updateData["stripeSetupCompletedAt"] = admin.firestore.FieldValue.serverTimestamp();
-    }
-
-    await userDoc.ref.update(updateData);
-
-    sendJsonResponse(req, res, 200, {
-      message: "Stripe setup completed successfully",
-      accountId: account["id"],
-      status: updateData["stripeAccountStatus"],
-      detailsSubmitted: account["details_submitted"],
-    });
-  } catch (error) {
-    console.error("Complete Stripe setup error:", error);
-    handleError(req, res, error);
-  }
-});
-
 // POST /complete-setup
 app.post("/complete-setup", async (req, res) => {
   try {

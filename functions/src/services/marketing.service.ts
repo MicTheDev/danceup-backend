@@ -29,8 +29,10 @@ interface StudioContent {
 async function getUnsubscribeSecret(): Promise<string> {
   if (process.env["NODE_ENV"] === "development" || process.env["FUNCTIONS_EMULATOR"] === "true") {
     const envSecret = process.env["MARKETING_UNSUBSCRIBE_SECRET"];
-    if (envSecret) return envSecret;
-    return "dev-unsubscribe-secret-do-not-use-in-prod";
+    if (!envSecret) {
+      throw new Error("MARKETING_UNSUBSCRIBE_SECRET environment variable must be set in development.");
+    }
+    return envSecret;
   }
   const sendgridKey = await getApiKey();
   return crypto.createHash("sha256").update(sendgridKey + "|marketing-unsubscribe").digest("hex");

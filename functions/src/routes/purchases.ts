@@ -673,6 +673,15 @@ app.post("/create-payment-intent", async (req, res) => {
       metadata,
     );
 
+    // Store the mapping so /success can look up the connected account server-side
+    // without relying on a client-supplied connectedAccountId.
+    await db.collection("pendingPaymentIntents").doc(paymentIntent.id).set({
+      connectedAccountId,
+      studioOwnerId: itemDetails.studioOwnerId,
+      authUid: user.uid,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
     sendJsonResponse(req, res, 200, {
       clientSecret: paymentIntent.client_secret,
       paymentIntentId: paymentIntent.id,
@@ -695,8 +704,6 @@ app.post("/success", async (req, res) => {
     const body = req.body as Record<string, unknown>;
     const paymentIntentIdParam = body["paymentIntentId"] as string | undefined;
     const sessionId = body["sessionId"] as string | undefined;
-    // connectedAccountId is required when confirming a direct-charge PaymentIntent
-    const connectedAccountIdParam = body["connectedAccountId"] as string | undefined;
 
     if (!paymentIntentIdParam && !sessionId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "paymentIntentId or sessionId is required");
@@ -757,22 +764,34 @@ app.post("/success", async (req, res) => {
           console.warn("Error fetching line items:", lineItemsError);
         }
       }
-    } else if (connectedAccountIdParam) {
-      // Direct-charge PaymentIntent lives on the connected account
-      paymentIntent = await stripeService.retrieveConnectedPaymentIntent(
-        paymentIntentIdParam!, connectedAccountIdParam,
-      );
-      if (paymentIntent.status !== "succeeded") {
-        return sendErrorResponse(req, res, 400, "Validation Error", "Payment not completed");
-      }
-      metadata = (paymentIntent.metadata as Record<string, string>) || {};
     } else {
-      // Legacy: platform-account PaymentIntent
-      paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentIdParam!);
-      if (paymentIntent.status !== "succeeded") {
-        return sendErrorResponse(req, res, 400, "Validation Error", "Payment not completed");
+      // Direct-charge PaymentIntent: look up the connected account from Firestore
+      // (stored by /create-payment-intent) — never trust a client-supplied account ID.
+      const pendingDoc = await getFirestore()
+        .collection("pendingPaymentIntents")
+        .doc(paymentIntentIdParam!)
+        .get();
+
+      if (pendingDoc.exists) {
+        const pendingData = pendingDoc.data() as Record<string, string>;
+        const serverConnectedAccountId = pendingData["connectedAccountId"];
+        paymentIntent = await stripeService.retrieveConnectedPaymentIntent(
+          paymentIntentIdParam!, serverConnectedAccountId,
+        );
+        if (paymentIntent.status !== "succeeded") {
+          return sendErrorResponse(req, res, 400, "Validation Error", "Payment not completed");
+        }
+        metadata = (paymentIntent.metadata as Record<string, string>) || {};
+        // Clean up the pending record now that payment is confirmed
+        await pendingDoc.ref.delete();
+      } else {
+        // Legacy: platform-account PaymentIntent (e.g., Checkout sessions before direct charge)
+        paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentIdParam!);
+        if (paymentIntent.status !== "succeeded") {
+          return sendErrorResponse(req, res, 400, "Validation Error", "Payment not completed");
+        }
+        metadata = (paymentIntent.metadata as Record<string, string>) || {};
       }
-      metadata = (paymentIntent.metadata as Record<string, string>) || {};
     }
 
     console.log("[Purchase Success] Initial metadata:", {
