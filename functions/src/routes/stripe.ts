@@ -1198,6 +1198,57 @@ app.post("/webhook", async (req, res) => {
         } catch (err) {
           console.error("[webhook] Error sending purchase confirmation email:", err);
         }
+
+        // Create a purchase record for guest checkouts — authenticated purchases
+        // are recorded via /success after the redirect; guests have no way to call that.
+        if (sessionMeta["authUid"] === "guest") {
+          try {
+            const customerDetails = session["customer_details"] as Record<string, unknown> | undefined;
+            const guestEmail = (customerDetails?.["email"] as string | undefined) || null;
+            const itemId = sessionMeta["itemId"];
+            const studioOwnerId = sessionMeta["studioOwnerId"];
+            const paymentIntentId = session["payment_intent"] as string | null | undefined;
+            const stripeCustomerId = session["customer"] as string | null | undefined;
+
+            if (itemId && studioOwnerId && guestEmail) {
+              // Idempotency: skip if a record already exists for this session
+              const existingQuery = await db.collection("purchases")
+                .where("stripePaymentIntentId", "==", paymentIntentId || (session["id"] as string))
+                .limit(1)
+                .get();
+
+              if (existingQuery.empty) {
+                const itemDetails = await purchaseService.getItemDetails(
+                  purchaseType as "class" | "event" | "workshop" | "package",
+                  itemId,
+                );
+                await purchaseService.createPurchaseRecord({
+                  studentId: "guest",
+                  authUid: "guest",
+                  guestEmail,
+                  purchaseType,
+                  itemId,
+                  studioOwnerId,
+                  itemName: itemDetails.itemName,
+                  studioName: itemDetails.studioName,
+                  price: itemDetails.price,
+                  stripePaymentIntentId: paymentIntentId || (session["id"] as string),
+                  stripeCustomerId: stripeCustomerId ?? null,
+                  status: "completed",
+                  creditGranted: false,
+                  creditsGranted: 0,
+                  creditIds: [],
+                  classId: purchaseType === "class" ? itemId : null,
+                  metadata: itemDetails.metadata,
+                });
+                console.log(`[webhook] Created guest purchase record for ${guestEmail} (${purchaseType}/${itemId})`);
+              }
+            }
+          } catch (guestPurchaseErr) {
+            console.error("[webhook] Error creating guest purchase record:", guestPurchaseErr);
+          }
+        }
+
         break;
       }
 

@@ -73,8 +73,12 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
       return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType and itemId are required");
     }
 
-    if (!["class", "event", "workshop", "package"].includes(purchaseType)) {
+    if (typeof purchaseType !== "string" || !["class", "event", "workshop", "package"].includes(purchaseType)) {
       return sendErrorResponse(req, res, 400, "Validation Error", "Invalid purchaseType. Must be 'class', 'event', 'workshop', or 'package'");
+    }
+
+    if (typeof itemId !== "string" || itemId.trim().length === 0 || itemId.length > 128) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid itemId");
     }
 
     let user: import("../types/api").DecodedToken | null = null;
@@ -609,8 +613,11 @@ app.post("/create-payment-intent", paymentCreationLimiter, async (req, res) => {
     if (!purchaseType || !itemId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType and itemId are required");
     }
-    if (!["class", "event", "workshop", "package"].includes(purchaseType)) {
+    if (typeof purchaseType !== "string" || !["class", "event", "workshop", "package"].includes(purchaseType)) {
       return sendErrorResponse(req, res, 400, "Validation Error", "Invalid purchaseType");
+    }
+    if (typeof itemId !== "string" || itemId.trim().length === 0 || itemId.length > 128) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid itemId");
     }
 
     const db = getFirestore();

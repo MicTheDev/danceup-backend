@@ -47,6 +47,7 @@ interface PurchaseRecordData {
   classId?: string | null;
   metadata?: Record<string, unknown>;
   studentName?: string;
+  guestEmail?: string | null;
 }
 
 function stripUndefined(obj: unknown): unknown {
@@ -232,6 +233,7 @@ export class PurchaseService {
       creditIds: purchaseData.creditIds ?? [],
       classId: purchaseData.classId ?? null,
       metadata: stripUndefined(purchaseData.metadata ?? {}),
+      ...(purchaseData.guestEmail ? { guestEmail: purchaseData.guestEmail.toLowerCase() } : {}),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });

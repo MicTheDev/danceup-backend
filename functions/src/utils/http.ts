@@ -18,8 +18,10 @@ const ALLOWED_ORIGINS = new Set([
 
 export function isAllowedOrigin(origin: string): boolean {
   if (!origin) return false;
-  if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
-    return true;
+  if (process.env["NODE_ENV"] !== "production") {
+    if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+      return true;
+    }
   }
   return ALLOWED_ORIGINS.has(origin);
 }
@@ -91,11 +93,8 @@ export function sendErrorResponse(
 
 export function handleError(req: Request, res: Response, error: unknown): void {
   const err = error as AppError;
-  console.error("Unhandled error:", err instanceof Error ? err.message : String(err));
-
-  if (err.status) {
-    return sendErrorResponse(req, res, err.status, err.error ?? "Error", err.message ?? "An error occurred");
-  }
+  // Always log full details server-side (including stack) — never expose them to clients
+  console.error("Unhandled error:", err instanceof Error ? (err.stack ?? err.message) : String(err));
 
   if (err.name === "ValidationError" || err.message?.includes("Validation")) {
     return sendErrorResponse(req, res, 400, "Validation Error", err.message ?? "Invalid input", {
@@ -103,9 +102,13 @@ export function handleError(req: Request, res: Response, error: unknown): void {
     });
   }
 
-  sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred", {
-    stack: err.stack,
-  });
+  // 4xx client errors from our own code — safe to surface the message
+  if (err.status && err.status >= 400 && err.status < 500) {
+    return sendErrorResponse(req, res, err.status, err.error ?? "Error", err.message ?? "An error occurred");
+  }
+
+  // 5xx or unknown — never expose internal error messages or stack traces
+  sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred");
 }
 
 export function extractPathParams(url: string, pattern: string): Record<string, string> | null {

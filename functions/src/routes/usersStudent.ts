@@ -131,6 +131,29 @@ app.post("/register", async (req, res) => {
         console.error("Error creating Stripe customer during registration:", stripeError);
       }
 
+      // Attribute any prior guest purchases (same email, no authUid) to this new account
+      try {
+        const db = getFirestore();
+        const guestPurchases = await db.collection("purchases")
+          .where("guestEmail", "==", userRecord.email.toLowerCase())
+          .where("authUid", "==", "guest")
+          .get();
+        if (!guestPurchases.empty) {
+          const batch = db.batch();
+          for (const doc of guestPurchases.docs) {
+            batch.update(doc.ref, {
+              authUid: userRecord.uid,
+              studentId: studentProfileId,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+          }
+          await batch.commit();
+        }
+      } catch (attributionError) {
+        // Non-critical — log and continue
+        console.error("Error attributing guest purchases:", attributionError);
+      }
+
       try {
         await sendWelcomeEmail(userRecord.email, firstName);
       } catch (emailError) {
