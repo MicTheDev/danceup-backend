@@ -47,6 +47,52 @@ function parseDate(dateString: string | undefined): Date | null {
   }
 }
 
+async function notifyKioskSession(params: {
+  kioskSessionId: string;
+  attendanceId: string;
+  studentId: string;
+  classId: string;
+  studioOwnerId: string;
+}): Promise<void> {
+  const db = getFirestore();
+  const sessionRef = db.collection("kioskSessions").doc(params.kioskSessionId);
+  const sessionDoc = await sessionRef.get();
+  if (!sessionDoc.exists) return;
+
+  const sessionData = sessionDoc.data() as Record<string, unknown>;
+  if (!sessionData["active"] || sessionData["studioOwnerId"] !== params.studioOwnerId) return;
+
+  // Fetch student and class names for the notification payload
+  const [studentDoc, classDoc] = await Promise.all([
+    db.collection("students").doc(params.studentId).get(),
+    db.collection("classes").doc(params.classId).get(),
+  ]);
+
+  const student = studentDoc.data() as Record<string, unknown> | undefined;
+  const cls = classDoc.data() as Record<string, unknown> | undefined;
+
+  const firstName = (student?.["firstName"] as string) || "";
+  const lastName = (student?.["lastName"] as string) || "";
+  const initials = `${firstName[0] ?? ""}${lastName[0] ?? ""}`.toUpperCase();
+  const className = (cls?.["name"] as string) || "Unknown class";
+
+  const checkInEvent = {
+    attendanceId: params.attendanceId,
+    studentId: params.studentId,
+    studentFirstName: firstName,
+    studentLastName: lastName,
+    studentInitials: initials,
+    classId: params.classId,
+    className,
+    checkedInAt: new Date().toISOString(),
+  };
+
+  await sessionRef.update({
+    lastCheckIn: checkInEvent,
+    checkIns: admin.firestore.FieldValue.arrayUnion(checkInEvent),
+  });
+}
+
 app.get("/lost-revenue", async (req, res) => {
   try {
     let user;
@@ -350,6 +396,19 @@ app.post("/", async (req, res) => {
     };
 
     const attendanceId = await attendanceService.createAttendanceRecord(attendanceData, studioOwnerId as string);
+
+    // Fire-and-forget: push check-in event to any paired kiosk watch session
+    const kioskSessionId = body["kioskSessionId"] as string | undefined;
+    if (kioskSessionId && body["classId"]) {
+      notifyKioskSession({
+        kioskSessionId,
+        attendanceId,
+        studentId: studentId as string,
+        classId: body["classId"] as string,
+        studioOwnerId: studioOwnerId as string,
+      }).catch((err: Error) => console.error("[KioskSession] notify error:", err.message));
+    }
+
     sendJsonResponse(req, res, 201, { id: attendanceId, message: "Attendance record created successfully" });
   } catch (error) {
     console.error("Error creating attendance record:", error);

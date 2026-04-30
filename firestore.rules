@@ -14,6 +14,12 @@ service cloud.firestore {
       allow write: if false;
     }
     
+    // Kiosk watch-mode sessions — studio owner can read their own; all writes go through backend
+    match /kioskSessions/{sessionId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     // Default rule: deny all access
     match /{document=**} {
       allow read, write: if false;

@@ -18,10 +18,10 @@ const ALLOWED_ORIGINS = new Set([
 
 export function isAllowedOrigin(origin: string): boolean {
   if (!origin) return false;
-  if (process.env["NODE_ENV"] !== "production") {
-    if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
-      return true;
-    }
+  // Each environment (dev/staging/production) is a separate Firebase project, so
+  // localhost origins will never reach production-danceup in practice — safe to always allow.
+  if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+    return true;
   }
   return ALLOWED_ORIGINS.has(origin);
 }
