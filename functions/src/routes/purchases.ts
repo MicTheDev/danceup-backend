@@ -1584,7 +1584,7 @@ app.post("/:purchaseId/refund", async (req, res) => {
 
     const db = getFirestore();
 
-    const studioOwnerSnapshot = await db.collection("studioOwners")
+    const studioOwnerSnapshot = await db.collection("users")
       .where("authUid", "==", authUid)
       .limit(1)
       .get();

@@ -907,6 +907,21 @@ app.post("/subscription-payment-success", async (req, res) => {
       return sendErrorResponse(req, res, 400, "Validation Error", "paymentIntentId is required");
     }
 
+    const db = getFirestore();
+
+    // Idempotency: return early if this payment intent was already processed
+    const processedRef = db.collection("processedStripeEvents").doc(`pi_${paymentIntentId}`);
+    const processedDoc = await processedRef.get();
+    if (processedDoc.exists) {
+      const data = processedDoc.data() as Record<string, unknown>;
+      return sendJsonResponse(req, res, 200, {
+        message: "Subscription activated successfully",
+        customToken: null,
+        userId: data["authUid"],
+        membership: data["membership"],
+      });
+    }
+
     const stripe = await stripeService.getStripeClient() as import("stripe").default;
     const pi = await stripe.paymentIntents.retrieve(paymentIntentId, {
       expand: ["invoice.subscription"],
@@ -929,7 +944,6 @@ app.post("/subscription-payment-success", async (req, res) => {
       return sendErrorResponse(req, res, 400, "Validation Error", "User ID not found in subscription metadata");
     }
 
-    const db = getFirestore();
     const userDoc = await db.collection("users").doc(userId).get();
     if (!userDoc.exists) {
       return sendErrorResponse(req, res, 404, "Not Found", "User not found");
@@ -959,6 +973,14 @@ app.post("/subscription-payment-success", async (req, res) => {
 
     await userDoc.ref.update(updateData);
 
+    // Mark as processed to prevent replay
+    await processedRef.set({
+      type: "subscription-payment-success",
+      authUid: userData["authUid"],
+      membership: membership || userData["membership"],
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
     const customToken = await admin.auth().createCustomToken(userData["authUid"] as string);
 
     sendJsonResponse(req, res, 200, {
@@ -983,13 +1005,27 @@ app.post("/checkout-success", async (req, res) => {
       return sendErrorResponse(req, res, 400, "Validation Error", "Session ID is required");
     }
 
+    const db = getFirestore();
+
+    // Idempotency: return early if this session was already processed
+    const processedRef = db.collection("processedStripeEvents").doc(`cs_${sessionId}`);
+    const processedDoc = await processedRef.get();
+    if (processedDoc.exists) {
+      const data = processedDoc.data() as Record<string, unknown>;
+      return sendJsonResponse(req, res, 200, {
+        message: "Checkout completed successfully",
+        customToken: null,
+        userId: data["authUid"],
+        membership: data["membership"],
+      });
+    }
+
     const session = await stripeService.getCheckoutSession(sessionId) as unknown as Record<string, unknown>;
 
     if (session["payment_status"] !== "paid") {
       return sendErrorResponse(req, res, 400, "Validation Error", "Payment not completed");
     }
 
-    const db = getFirestore();
     const sessionMeta = (session["metadata"] as Record<string, string>) || {};
     let userId = sessionMeta["userId"];
 
@@ -1042,6 +1078,14 @@ app.post("/checkout-success", async (req, res) => {
     }
 
     await userDoc.ref.update(updateData);
+
+    // Mark as processed to prevent replay
+    await processedRef.set({
+      type: "checkout-success",
+      authUid: userData["authUid"],
+      membership,
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
 
     const customToken = await admin.auth().createCustomToken(userData["authUid"] as string);
 

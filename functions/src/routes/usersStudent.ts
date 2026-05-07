@@ -826,8 +826,14 @@ app.post("/forgot-password", async (req, res) => {
 
     const { email } = req.body as { email: string };
 
+    const passwordResetUrl = process.env["PASSWORD_RESET_URL"];
+    if (!passwordResetUrl) {
+      console.error("PASSWORD_RESET_URL environment variable is not set");
+      return sendErrorResponse(req, res, 503, "Configuration Error", "Password reset is not configured. Please contact support.");
+    }
+
     const actionCodeSettings = {
-      url: process.env["PASSWORD_RESET_URL"] || `${req.headers.origin || "https://your-app.com"}/reset-password`,
+      url: passwordResetUrl,
       handleCodeInApp: false,
     };
 
