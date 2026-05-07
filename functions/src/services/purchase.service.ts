@@ -13,11 +13,13 @@ interface ItemDetails {
   itemId: string;
   itemName: string;
   price: number;
+  priceTiers: Array<{ name: string; price: number }> | null;
   studioOwnerId: string;
   studioName: string;
   metadata: Record<string, unknown>;
   purchaseType: PurchaseType;
   isRecurring: boolean;
+  passFees: boolean;
   billingFrequency?: unknown;
   billingInterval?: unknown;
   subscriptionDuration?: unknown;
@@ -97,6 +99,13 @@ export class PurchaseService {
         itemName = eventItem["name"] as string;
         metadata = { eventId: itemId, startTime: eventItem["startTime"], endTime: eventItem["endTime"] };
         resolvedStudioOwnerId = eventStudioOwnerId;
+        itemData = {
+          passFees: (eventItem["passFees"] as boolean) ?? false,
+          priceTiers: (priceTiers as Array<{ name?: string; price?: number }>).map((t) => ({
+            name: String(t.name ?? ""),
+            price: t.price ?? 0,
+          })),
+        } as Record<string, unknown>;
         break;
       }
       case "workshop": {
@@ -112,6 +121,13 @@ export class PurchaseService {
         itemName = workshopItem["name"] as string;
         metadata = { workshopId: itemId, startTime: workshopItem["startTime"], endTime: workshopItem["endTime"] };
         resolvedStudioOwnerId = workshopStudioOwnerId;
+        itemData = {
+          passFees: (workshopItem["passFees"] as boolean) ?? false,
+          priceTiers: (priceTiers as Array<{ name?: string; price?: number }>).map((t) => ({
+            name: String(t.name ?? ""),
+            price: t.price ?? 0,
+          })),
+        } as Record<string, unknown>;
         break;
       }
       case "package": {
@@ -156,11 +172,13 @@ export class PurchaseService {
       itemId,
       itemName,
       price,
+      priceTiers: (itemData?.["priceTiers"] as Array<{ name: string; price: number }> | null) ?? null,
       studioOwnerId: resolvedStudioOwnerId,
       studioName,
       metadata,
       purchaseType,
       isRecurring,
+      passFees: (itemData?.["passFees"] as boolean) ?? false,
       billingFrequency: purchaseType === "package" ? itemData?.["billingFrequency"] : undefined,
       billingInterval: purchaseType === "package" ? itemData?.["billingInterval"] : undefined,
       subscriptionDuration: purchaseType === "package" ? itemData?.["subscriptionDuration"] : undefined,

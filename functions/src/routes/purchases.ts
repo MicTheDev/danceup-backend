@@ -20,6 +20,27 @@ import {
 } from "../utils/http";
 import rateLimit from "express-rate-limit";
 
+// Validate and sum the tiers the user selected against backend-stored tier prices.
+// Returns total in dollars, or null if no tiers are provided / applicable.
+function computeTotalFromSelectedTiers(
+  selectedTiers: unknown,
+  backendTiers: Array<{ name: string; price: number }> | null,
+): number | null {
+  if (!Array.isArray(selectedTiers) || selectedTiers.length === 0) return null;
+  if (!backendTiers || backendTiers.length === 0) return null;
+
+  const tierMap = new Map(backendTiers.map((t) => [t.name.toLowerCase(), t.price]));
+  let total = 0;
+  for (const s of selectedTiers as Array<Record<string, unknown>>) {
+    const name = (s["tierName"] as string | undefined)?.toLowerCase() ?? "";
+    const qty = typeof s["quantity"] === "number" ? Math.max(1, Math.floor(s["quantity"])) : 1;
+    const unitPrice = tierMap.get(name);
+    if (unitPrice === undefined) throw new Error(`Unknown tier "${s["tierName"] as string}"`);
+    total += unitPrice * qty;
+  }
+  return total;
+}
+
 // Limit payment-creation endpoints to 20 requests per 15 minutes per IP
 const paymentCreationLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -217,7 +238,16 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
       authUid: user ? user.uid : "guest",
     };
 
-    const applicationFeeAmount = 25 + Math.round(itemDetails.price * 100 * 0.01);
+    // For events/workshops, compute the actual total from the tiers the user selected.
+    // The backend-stored prices are already grossed-up when passFees=true, so we
+    // validate selected tier names against our own data and never trust client prices.
+    let chargePrice = itemDetails.price;
+    if ((purchaseType === "event" || purchaseType === "workshop") && itemDetails.priceTiers) {
+      const tiersTotal = computeTotalFromSelectedTiers(selectedTiers, itemDetails.priceTiers);
+      if (tiersTotal !== null) chargePrice = tiersTotal;
+    }
+
+    const applicationFeeAmount = 25 + Math.round(chargePrice * 100 * 0.01);
 
     let checkoutSession: { url: string; id: string };
 
@@ -231,7 +261,7 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
 
       const price = await stripe.prices.create(
         {
-          unit_amount: Math.round(itemDetails.price * 100),
+          unit_amount: Math.round(chargePrice * 100),
           currency: "usd",
           recurring: { interval, interval_count: intervalCount },
           ...(itemDetails.stripeProductId
@@ -242,7 +272,7 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
         { stripeAccount: connectedAccountId },
       );
 
-      const appFeePercent = stripeService.platformFeePercent(Math.round(itemDetails.price * 100));
+      const appFeePercent = stripeService.platformFeePercent(Math.round(chargePrice * 100));
       const subscriptionMetadata: Record<string, string> = {
         ...metadata,
         price: String(itemDetails.price),
@@ -263,7 +293,7 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
     } else {
       const price = await stripe.prices.create(
         {
-          unit_amount: Math.round(itemDetails.price * 100),
+          unit_amount: Math.round(chargePrice * 100),
           currency: "usd",
           ...(itemDetails.stripeProductId
             ? { product: itemDetails.stripeProductId }
@@ -284,7 +314,6 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
       ) as unknown as { url: string; id: string };
     }
 
-    void selectedTiers;
     void guestInfo;
 
     sendJsonResponse(req, res, 200, { url: checkoutSession.url, id: checkoutSession.id });
@@ -306,6 +335,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
     const purchaseType = body["purchaseType"] as string | undefined;
     const itemId = body["itemId"] as string | undefined;
     const paymentMethodId = body["paymentMethodId"] as string | undefined;
+    const selectedTiers = body["selectedTiers"];
 
     if (!purchaseType || !itemId || !paymentMethodId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType, itemId, and paymentMethodId are required");
@@ -322,23 +352,10 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
 
     const db = getFirestore();
 
-    const studentQuery = await db.collection("students")
-      .where("authUid", "==", user.uid)
-      .limit(1)
-      .get();
-
-    if (studentQuery.empty) {
-      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found. Please enroll in a studio first.");
-    }
-
-    const studentDoc = studentQuery.docs[0]!;
-    const studentData = studentDoc.data() as Record<string, unknown>;
-
-    // ── Resolve user doc and connected customer ────────────────────────────
+    // ── Resolve user doc → platformCustomerId ────────────────────────────
     let platformCustomerId: string | null = null;
     let connectedCustomers: Record<string, string> = {};
     let userDocRef: FirebaseFirestore.DocumentReference | null = null;
-    // Use verified auth token email as the authoritative source
     let userEmail = user.email;
 
     const userQuery = await db.collection("users")
@@ -372,13 +389,37 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
       return sendErrorResponse(req, res, 403, "Forbidden", "Payment method does not belong to this account");
     }
 
-    const itemDetails = await purchaseService.getItemDetails(purchaseType as "class" | "event" | "workshop" | "package", itemId);
+    // ── Fetch item details early so we know studioOwnerId ────────────────
+    console.log("[charge-saved] fetching item details", { purchaseType, itemId });
+    let itemDetails: Awaited<ReturnType<typeof purchaseService.getItemDetails>>;
+    try {
+      itemDetails = await purchaseService.getItemDetails(purchaseType as "class" | "event" | "workshop" | "package", itemId);
+    } catch (itemErr) {
+      const msg = (itemErr as Error).message || "";
+      if (msg.toLowerCase().includes("not found") || msg.toLowerCase().includes("does not exist")) {
+        return sendErrorResponse(req, res, 404, "Not Found", msg);
+      }
+      if (msg.toLowerCase().includes("not active") || msg.toLowerCase().includes("inactive")) {
+        return sendErrorResponse(req, res, 400, "Bad Request", msg);
+      }
+      return sendErrorResponse(req, res, 400, "Bad Request", msg || "Could not load item details");
+    }
     const studioOwnerId = itemDetails.studioOwnerId;
 
-    // Verify the student is enrolled in the studio that owns this item
-    if ((studentData["studioOwnerId"] as string) !== studioOwnerId) {
+    // ── Verify enrollment: query for the student in THIS specific studio ──
+    // Using authUid + studioOwnerId ensures multi-studio users get the correct doc.
+    const studentQuery = await db.collection("students")
+      .where("authUid", "==", user.uid)
+      .where("studioOwnerId", "==", studioOwnerId)
+      .limit(1)
+      .get();
+
+    if (studentQuery.empty) {
       return sendErrorResponse(req, res, 403, "Forbidden", "You are not enrolled in this studio.");
     }
+
+    const studentDoc = studentQuery.docs[0]!;
+    const studentData = studentDoc.data() as Record<string, unknown>;
 
     const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
     const studioOwnerData = studioOwnerDoc.exists ? (studioOwnerDoc.data() as Record<string, unknown>) : {};
@@ -390,6 +431,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
 
     // ── Find or create connected customer (dedup-safe) ───────────────────
     const studentName = `${(studentData["firstName"] as string) || ""} ${(studentData["lastName"] as string) || ""}`.trim();
+    console.log("[charge-saved] resolving connected customer", { platformCustomerId, connectedAccountId });
     const { customer: connectedCustomerObj, isNew: isNewCC } = await stripeService.findOrCreateConnectedCustomer(
       userEmail,
       platformCustomerId,
@@ -406,13 +448,14 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
     }
 
     // ── Find or clone payment method on connected account ─────────────────
-    // On first use at this studio the card hasn't been cloned yet — clone it now.
+    console.log("[charge-saved] resolving connected payment method", { paymentMethodId, connectedCustomerId, connectedAccountId });
     let connectedPm = await stripeService.findConnectedPaymentMethod(
       paymentMethodId,
       connectedCustomerId,
       connectedAccountId,
     );
     if (!connectedPm) {
+      console.log("[charge-saved] cloning payment method to connected account");
       connectedPm = await stripeService.clonePaymentMethodToConnectedAccount(
         paymentMethodId,
         platformCustomerId,
@@ -420,20 +463,48 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
         connectedAccountId,
       );
     }
+    console.log("[charge-saved] using connected PM", { connectedPmId: connectedPm.id });
+
+    // Compute the actual charge amount from selected tiers (event/workshop only).
+    let chargePrice = itemDetails.price;
+    let tierBreakdown: Array<{ tierName: string; quantity: number; unitPrice: number; total: number }> | null = null;
+    if ((purchaseType === "event" || purchaseType === "workshop") && itemDetails.priceTiers && Array.isArray(selectedTiers) && selectedTiers.length > 0) {
+      const tierPriceMap = new Map(itemDetails.priceTiers.map((t) => [t.name.toLowerCase(), t.price]));
+      tierBreakdown = (selectedTiers as Array<Record<string, unknown>>).map((s) => {
+        const name = (s["tierName"] as string) || "";
+        const qty = typeof s["quantity"] === "number" ? Math.max(1, Math.floor(s["quantity"])) : 1;
+        const unitPrice = tierPriceMap.get(name.toLowerCase()) ?? 0;
+        return { tierName: name, quantity: qty, unitPrice, total: unitPrice * qty };
+      });
+      chargePrice = tierBreakdown.reduce((sum, t) => sum + t.total, 0);
+    }
+
+    const purchaseMetadata: Record<string, unknown> = {
+      ...itemDetails.metadata,
+      ...(tierBreakdown ? { tierBreakdown } : {}),
+    };
 
     const isRecurring = purchaseType === "package" && itemDetails.isRecurring === true;
     const metadata: Record<string, string> = {
       purchaseType,
       itemId,
       itemName: String(itemDetails.itemName ?? ""),
-      price: String(itemDetails.price ?? ""),
+      price: String(chargePrice ?? ""),
       studioOwnerId,
       studentId: studentDoc.id,
       authUid: user.uid,
     };
-    // Stable idempotency key: same user + item combination always maps to the same key,
-    // so network retries don't produce duplicate charges.
-    const idempotencyKey = `charge:${user.uid}:${purchaseType}:${itemId}`;
+    // Non-recurring packages must NOT use a stable idempotency key. A stable key causes
+    // Stripe to return the cached PI from the first purchase on every subsequent attempt,
+    // so no new transaction is created even though the backend grants credits. Users
+    // legitimately repurchase the same package (e.g. a 10-class pack twice), so each
+    // attempt must always produce a new PaymentIntent.
+    //
+    // Recurring subscriptions keep a stable key (scoped to the dynamic price ID via
+    // createSubscriptionWithSavedCard) to prevent accidental duplicate subscriptions.
+    const idempotencyKey = isRecurring
+      ? `charge:${user.uid}:${purchaseType}:${itemId}:${connectedPm.id}`
+      : undefined;
 
     let paymentIntentId: string | null | undefined;
     let subscriptionId: string | null = null;
@@ -444,14 +515,13 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
       const interval = (intervalMap[itemDetails.billingFrequency as string] || "month") as import("stripe").default.PriceCreateParams.Recurring.Interval;
       const intervalCount = (itemDetails.billingInterval as number) || 1;
 
+      // Always use product_data on connected accounts — the stripeProductId (if any)
+      // was created on the platform account and is not accessible on connected accounts.
       const priceParams: import("stripe").default.PriceCreateParams = {
-        unit_amount: Math.round(itemDetails.price * 100),
+        unit_amount: Math.round(chargePrice * 100),
         currency: "usd",
         recurring: { interval, interval_count: intervalCount },
-        ...(itemDetails.stripeProductId
-          ? { product: itemDetails.stripeProductId }
-          : { product_data: { name: itemDetails.itemName, metadata: { purchaseType, itemId, studioOwnerId } } }
-        ),
+        product_data: { name: itemDetails.itemName, metadata: { purchaseType, itemId, studioOwnerId } },
       };
 
       const subscription = await stripeService.createSubscriptionWithSavedCard(
@@ -485,7 +555,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
       const paymentIntent = await stripeService.chargePaymentMethodDirectly(
         connectedCustomerId,
         connectedPm.id,
-        Math.round(itemDetails.price * 100),
+        Math.round(chargePrice * 100),
         metadata,
         connectedAccountId,
         idempotencyKey,
@@ -520,7 +590,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
       studioOwnerId,
       itemName: itemDetails.itemName,
       studioName: itemDetails.studioName,
-      price: itemDetails.price,
+      price: chargePrice,
       stripePaymentIntentId: paymentIntentId || null,
       stripeCustomerId: platformCustomerId,
       stripeSubscriptionId: subscriptionId,
@@ -531,7 +601,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
       creditsGranted: creditResult.creditsGranted,
       creditIds: creditResult.creditIds,
       classId: purchaseType === "class" ? itemId : null,
-      metadata: itemDetails.metadata,
+      metadata: purchaseMetadata,
     });
 
     try {
@@ -541,7 +611,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
         authUid: user.uid,
         itemId,
         studioName: itemDetails.studioName,
-        price: itemDetails.price,
+        price: chargePrice,
         studentName: `${(studentData["firstName"] as string) || ""} ${(studentData["lastName"] as string) || ""}`.trim() || (studentData["email"] as string),
         purchaseType,
         itemName: itemDetails.itemName,
@@ -560,7 +630,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
           const emailDetails: Record<string, unknown> = {
             itemName: itemDetails.itemName,
             studioName: itemDetails.studioName,
-            amountPaid: itemDetails.price?.toFixed(2),
+            amountPaid: chargePrice?.toFixed(2),
           };
 
           if (purchaseType === "package") {

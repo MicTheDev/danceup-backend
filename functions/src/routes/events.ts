@@ -193,7 +193,90 @@ app.get("/:id/attendees", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "Event not found");
     }
 
-    sendJsonResponse(req, res, 200, []);
+    const db = getFirestore();
+    const purchasesSnapshot = await db.collection("purchases")
+      .where("purchaseType", "==", "event")
+      .where("itemId", "==", id)
+      .where("studioOwnerId", "==", studioOwnerId)
+      .where("status", "==", "completed")
+      .get();
+
+    const rawTiers = ((eventData as Record<string, unknown>)["priceTiers"] as Array<Record<string, unknown>>) ?? [];
+    const priceToTierName = new Map<number, string>();
+    for (const tier of rawTiers) {
+      priceToTierName.set(tier["price"] as number, (tier["name"] as string) || "");
+    }
+
+    const attendees: Record<string, unknown>[] = [];
+    for (const doc of purchasesSnapshot.docs) {
+      const purchase = doc.data() as Record<string, unknown>;
+      let firstName = "";
+      let lastName = "";
+      let email = "";
+      let city: string | null = null;
+      let state: string | null = null;
+      let zip: string | null = null;
+      const isGuest = !purchase["studentId"] || purchase["studentId"] === "guest";
+
+      if (purchase["studentId"] && purchase["studentId"] !== "guest") {
+        try {
+          const studentDoc = await db.collection("students").doc(purchase["studentId"] as string).get();
+          if (studentDoc.exists) {
+            const s = studentDoc.data() as Record<string, unknown>;
+            firstName = (s["firstName"] as string) || "";
+            lastName = (s["lastName"] as string) || "";
+            email = (s["email"] as string) || "";
+            city = (s["city"] as string) || null;
+            state = (s["state"] as string) || null;
+            zip = (s["zip"] as string) || null;
+          }
+        } catch (err) {
+          console.error(`Error fetching student ${purchase["studentId"]}:`, err);
+        }
+      }
+
+      if (!firstName && !email && purchase["authUid"] && purchase["authUid"] !== "guest") {
+        try {
+          const userSnapshot = await db.collection("users").where("authUid", "==", purchase["authUid"]).limit(1).get();
+          if (!userSnapshot.empty) {
+            const firstDoc = userSnapshot.docs[0];
+            if (firstDoc) {
+              const u = firstDoc.data() as Record<string, unknown>;
+              firstName = firstName || (u["firstName"] as string) || "";
+              lastName = lastName || (u["lastName"] as string) || "";
+              email = email || (u["email"] as string) || "";
+            }
+          }
+        } catch (err) {
+          console.error(`Error fetching user profile ${purchase["authUid"]}:`, err);
+        }
+      }
+
+      const meta = (purchase["metadata"] as Record<string, unknown>) ?? {};
+      const tierBreakdown = (meta["tierBreakdown"] as Array<{ tierName: string; quantity: number; unitPrice: number; total: number }> | undefined) ?? null;
+      const priceTierName = tierBreakdown && tierBreakdown.length > 0
+        ? (tierBreakdown[0]?.tierName ?? null)
+        : (priceToTierName.get(purchase["price"] as number) ?? null);
+
+      attendees.push({
+        id: doc.id,
+        purchaseId: doc.id,
+        firstName, lastName, email, city, state, zip,
+        priceTierName,
+        priceTierPrice: purchase["price"] || null,
+        price: purchase["price"] || 0,
+        tierBreakdown,
+        purchaseDate: purchase["createdAt"] || null,
+        checkedIn: purchase["checkedIn"] || false,
+        checkedInAt: purchase["checkedInAt"] || null,
+        checkedInBy: purchase["checkedInBy"] || null,
+        eventCode: null,
+        stripePaymentIntentId: purchase["stripePaymentIntentId"] || null,
+        isGuest,
+      });
+    }
+
+    sendJsonResponse(req, res, 200, attendees);
   } catch (error) {
     console.error("Error getting event attendees:", error);
     handleError(req, res, error);
@@ -216,20 +299,71 @@ app.get("/:id/report", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "Event not found");
     }
 
+    const db = getFirestore();
+    const purchasesSnapshot = await db.collection("purchases")
+      .where("purchaseType", "==", "event")
+      .where("itemId", "==", id)
+      .where("studioOwnerId", "==", studioOwnerId)
+      .where("status", "==", "completed")
+      .get();
+
+    const purchases = purchasesSnapshot.docs.map((d) => d.data() as Record<string, unknown>);
+    const totalRevenue = purchases.reduce((sum, p) => sum + ((p["price"] as number) || 0), 0);
+    const checkedInCount = purchases.filter((p) => p["checkedIn"] === true).length;
+
     const priceTiers = (eventData["priceTiers"] as Array<Record<string, unknown>>) || [];
-    const ticketSalesByTier = priceTiers.map((t) => ({
-      tierName: (t["name"] as string) || "Tier",
-      quantity: 0,
-      revenue: 0,
-    }));
+    const tierMap = new Map<string, { tierName: string; quantity: number; revenue: number }>();
+    for (const tier of priceTiers) {
+      const name = ((tier["name"] as string) || "Tier").toLowerCase();
+      tierMap.set(name, { tierName: (tier["name"] as string) || "Tier", quantity: 0, revenue: 0 });
+    }
+
+    const fallback = { tierName: "Other", quantity: 0, revenue: 0 };
+    let totalTickets = 0;
+
+    for (const purchase of purchases) {
+      const meta = (purchase["metadata"] as Record<string, unknown>) || {};
+      const breakdown = meta["tierBreakdown"] as Array<{ tierName: string; quantity: number; unitPrice: number; total: number }> | undefined;
+
+      if (breakdown && breakdown.length > 0) {
+        for (const line of breakdown) {
+          totalTickets += line.quantity;
+          const entry = tierMap.get(line.tierName.toLowerCase());
+          if (entry) {
+            entry.quantity += line.quantity;
+            entry.revenue += line.total;
+          } else {
+            fallback.quantity += line.quantity;
+            fallback.revenue += line.total;
+          }
+        }
+      } else {
+        totalTickets += 1;
+        const price = (purchase["price"] as number) || 0;
+        const matched = [...tierMap.values()].find(
+          (e) => Math.abs((priceTiers.find((t) => t["name"] === e.tierName)?.["price"] as number ?? 0) - price) < 0.01,
+        );
+        if (matched) {
+          matched.quantity += 1;
+          matched.revenue += price;
+        } else {
+          fallback.quantity += 1;
+          fallback.revenue += price;
+        }
+      }
+    }
+
+    const ticketSalesByTier = [...tierMap.values()];
+    if (fallback.quantity > 0) ticketSalesByTier.push(fallback);
 
     sendJsonResponse(req, res, 200, {
       eventId: id,
       name: (eventData["name"] as string) || "Event",
-      attendeesCount: 0,
+      attendeesCount: totalTickets,
+      checkedInCount,
       ticketSalesByTier,
-      totalTickets: 0,
-      totalRevenue: 0,
+      totalTickets,
+      totalRevenue,
     });
   } catch (error) {
     console.error("Error getting event report:", error);

@@ -752,12 +752,67 @@ app.get("/my-events", async (req, res) => {
 });
 
 app.get("/event-passes", async (req, res) => {
+  let user;
   try {
-    await verifyToken(req);
+    user = await verifyToken(req);
   } catch (authError) {
     return handleError(req, res, authError);
   }
-  sendJsonResponse(req, res, 200, []);
+
+  try {
+    const db = getFirestore();
+
+    const purchasesSnap = await db.collection("purchases")
+      .where("authUid", "==", user.uid)
+      .where("status", "==", "completed")
+      .get();
+
+    const relevantPurchases = purchasesSnap.docs.filter((doc) => {
+      const t = doc.data()["purchaseType"] as string;
+      return t === "event" || t === "workshop";
+    });
+
+    // Batch-fetch item docs for startTime/endTime
+    const itemFetches = relevantPurchases.map(async (doc) => {
+      const data = doc.data() as Record<string, unknown>;
+      const purchaseType = data["purchaseType"] as string;
+      const itemId = data["itemId"] as string;
+      const collection = purchaseType === "event" ? "events" : "workshops";
+
+      let startTime = "";
+      let endTime = "";
+      try {
+        const itemDoc = await db.collection(collection).doc(itemId).get();
+        if (itemDoc.exists) {
+          const itemData = itemDoc.data() as Record<string, unknown>;
+          const startRaw = itemData["startTime"] as { toDate?: () => Date } | string | null;
+          const endRaw = itemData["endTime"] as { toDate?: () => Date } | string | null;
+          startTime = startRaw && typeof startRaw === "object" && startRaw.toDate
+            ? startRaw.toDate().toISOString()
+            : (typeof startRaw === "string" ? startRaw : "");
+          endTime = endRaw && typeof endRaw === "object" && endRaw.toDate
+            ? endRaw.toDate().toISOString()
+            : (typeof endRaw === "string" ? endRaw : "");
+        }
+      } catch (_) { /* item may have been deleted */ }
+
+      return {
+        name: (data["itemName"] as string) || "",
+        studioName: (data["studioName"] as string) || "",
+        startTime,
+        endTime,
+        eventCode: doc.id,
+        eventId: purchaseType === "event" ? itemId : undefined,
+        workshopId: purchaseType === "workshop" ? itemId : undefined,
+      };
+    });
+
+    const passes = await Promise.all(itemFetches);
+    sendJsonResponse(req, res, 200, passes);
+  } catch (error) {
+    console.error("Error fetching event passes:", error);
+    handleError(req, res, error);
+  }
 });
 
 app.post("/forgot-password", async (req, res) => {

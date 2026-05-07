@@ -23,6 +23,21 @@ interface PriceTier {
   price?: number;
 }
 
+// When passFees=true the studio nets the face price; the customer pays the gross.
+// Stripe: 2.9% + $0.30, platform: 1% + $0.25 → gross = ceil((face_cents + 55) / 0.961)
+function grossUpPrice(facePrice: number): number {
+  const faceCents = Math.round(facePrice * 100);
+  const grossCents = Math.ceil((faceCents + 55) / 0.961);
+  return grossCents / 100;
+}
+
+function applyPassFees(priceTiers: unknown): unknown {
+  if (!Array.isArray(priceTiers)) return priceTiers;
+  return (priceTiers as Array<Record<string, unknown>>).map((tier) =>
+    typeof tier["price"] === "number" ? { ...tier, price: grossUpPrice(tier["price"]) } : tier,
+  );
+}
+
 function parseTimestamp(val: unknown): Date {
   if (val && typeof val === "object" && "toDate" in val) {
     return (val as { toDate(): Date }).toDate();
@@ -194,10 +209,12 @@ export class EventsService {
         continue;
       }
 
+      const passFees = eventData["passFees"] === true;
       enrichedEvents.push({
         ...eventData,
         startTime: startTime.toISOString(),
         endTime: endTime ? endTime.toISOString() : null,
+        priceTiers: passFees ? applyPassFees(eventData["priceTiers"]) : eventData["priceTiers"],
         studio: {
           id: eventData["studioOwnerId"],
           name: (studioOwner["studioName"] as string) || "",
@@ -243,11 +260,13 @@ export class EventsService {
     const endTimeRaw = eventData["endTime"];
     const endTime = endTimeRaw ? parseTimestamp(endTimeRaw) : null;
 
+    const passFees = eventData["passFees"] === true;
     return {
       id: doc.id,
       ...eventData,
       startTime: startTime.toISOString(),
       endTime: endTime ? endTime.toISOString() : null,
+      priceTiers: passFees ? applyPassFees(eventData["priceTiers"]) : eventData["priceTiers"],
       studio: {
         id: eventData["studioOwnerId"],
         name: (sd["studioName"] as string) || "",

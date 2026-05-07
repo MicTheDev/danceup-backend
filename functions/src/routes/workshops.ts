@@ -201,6 +201,12 @@ app.get("/:id/attendees", async (req, res) => {
       .where("status", "==", "completed")
       .get();
 
+    const rawTiers = ((workshopData as Record<string, unknown>)["priceTiers"] as Array<Record<string, unknown>>) ?? [];
+    const priceToTierName = new Map<number, string>();
+    for (const tier of rawTiers) {
+      priceToTierName.set(tier["price"] as number, (tier["name"] as string) || "");
+    }
+
     const attendees: Record<string, unknown>[] = [];
     for (const doc of purchasesSnapshot.docs) {
       const purchase = doc.data() as Record<string, unknown>;
@@ -246,13 +252,20 @@ app.get("/:id/attendees", async (req, res) => {
         }
       }
 
+      const meta = (purchase["metadata"] as Record<string, unknown>) ?? {};
+      const tierBreakdown = (meta["tierBreakdown"] as Array<{ tierName: string; quantity: number; unitPrice: number; total: number }> | undefined) ?? null;
+      const priceTierName = tierBreakdown && tierBreakdown.length > 0
+        ? (tierBreakdown[0]?.tierName ?? null)
+        : (priceToTierName.get(purchase["price"] as number) ?? null);
+
       attendees.push({
         id: doc.id,
         purchaseId: doc.id,
         firstName, lastName, email, city, state, zip,
-        priceTierName: null,
+        priceTierName,
         priceTierPrice: purchase["price"] || null,
         price: purchase["price"] || 0,
+        tierBreakdown,
         purchaseDate: purchase["createdAt"] || null,
         checkedIn: purchase["checkedIn"] || false,
         checkedInAt: purchase["checkedInAt"] || null,
@@ -296,30 +309,50 @@ app.get("/:id/report", async (req, res) => {
       .get();
 
     const purchases = purchasesSnapshot.docs.map((d) => d.data() as Record<string, unknown>);
-    const totalTickets = purchases.length;
     const totalRevenue = purchases.reduce((sum, p) => sum + ((p["price"] as number) || 0), 0);
     const checkedInCount = purchases.filter((p) => p["checkedIn"] === true).length;
 
     const priceTiers = (workshopData["priceTiers"] as Array<Record<string, unknown>>) || [];
-    const tierMap = new Map<number, { tierName: string; quantity: number; revenue: number }>();
+    const tierMap = new Map<string, { tierName: string; quantity: number; revenue: number }>();
     for (const tier of priceTiers) {
-      tierMap.set(tier["price"] as number, {
-        tierName: (tier["name"] as string) || "Tier",
-        quantity: 0,
-        revenue: 0,
-      });
+      const name = ((tier["name"] as string) || "Tier").toLowerCase();
+      tierMap.set(name, { tierName: (tier["name"] as string) || "Tier", quantity: 0, revenue: 0 });
     }
 
-    const fallback = { tierName: "General", quantity: 0, revenue: 0 };
+    const fallback = { tierName: "Other", quantity: 0, revenue: 0 };
+    let totalTickets = 0;
+
     for (const purchase of purchases) {
-      const price = (purchase["price"] as number) || 0;
-      const entry = tierMap.get(price);
-      if (entry) {
-        entry.quantity += 1;
-        entry.revenue += price;
+      const meta = (purchase["metadata"] as Record<string, unknown>) || {};
+      const breakdown = meta["tierBreakdown"] as Array<{ tierName: string; quantity: number; unitPrice: number; total: number }> | undefined;
+
+      if (breakdown && breakdown.length > 0) {
+        for (const line of breakdown) {
+          totalTickets += line.quantity;
+          const entry = tierMap.get(line.tierName.toLowerCase());
+          if (entry) {
+            entry.quantity += line.quantity;
+            entry.revenue += line.total;
+          } else {
+            fallback.quantity += line.quantity;
+            fallback.revenue += line.total;
+          }
+        }
       } else {
-        fallback.quantity += 1;
-        fallback.revenue += price;
+        // Legacy purchase with no breakdown — count as one ticket
+        totalTickets += 1;
+        const price = (purchase["price"] as number) || 0;
+        // Try to match by price against face price (legacy behavior)
+        const matched = [...tierMap.values()].find(
+          (e) => Math.abs((priceTiers.find((t) => t["name"] === e.tierName)?.["price"] as number ?? 0) - price) < 0.01,
+        );
+        if (matched) {
+          matched.quantity += 1;
+          matched.revenue += price;
+        } else {
+          fallback.quantity += 1;
+          fallback.revenue += price;
+        }
       }
     }
 

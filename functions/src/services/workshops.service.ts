@@ -23,6 +23,19 @@ interface PriceTier {
   price?: number;
 }
 
+function grossUpPrice(facePrice: number): number {
+  const faceCents = Math.round(facePrice * 100);
+  const grossCents = Math.ceil((faceCents + 55) / 0.961);
+  return grossCents / 100;
+}
+
+function applyPassFees(priceTiers: unknown): unknown {
+  if (!Array.isArray(priceTiers)) return priceTiers;
+  return (priceTiers as Array<Record<string, unknown>>).map((tier) =>
+    typeof tier["price"] === "number" ? { ...tier, price: grossUpPrice(tier["price"]) } : tier,
+  );
+}
+
 function parseTimestamp(val: unknown): Date {
   if (val && typeof val === "object" && "toDate" in val) {
     return (val as { toDate(): Date }).toDate();
@@ -189,10 +202,12 @@ export class WorkshopsService {
         continue;
       }
 
+      const passFees = workshopData["passFees"] === true;
       enrichedWorkshops.push({
         ...workshopData,
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),
+        priceTiers: passFees ? applyPassFees(workshopData["priceTiers"]) : workshopData["priceTiers"],
         studio: {
           id: workshopData["studioOwnerId"],
           name: (studioOwner["studioName"] as string) || "",
@@ -237,11 +252,13 @@ export class WorkshopsService {
     const startTime = parseTimestamp(workshopData["startTime"]);
     const endTime = parseTimestamp(workshopData["endTime"]);
 
+    const passFees = workshopData["passFees"] === true;
     return {
       id: doc.id,
       ...workshopData,
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
+      priceTiers: passFees ? applyPassFees(workshopData["priceTiers"]) : workshopData["priceTiers"],
       studio: {
         id: workshopData["studioOwnerId"],
         name: (sd["studioName"] as string) || "",

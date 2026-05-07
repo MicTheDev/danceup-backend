@@ -423,6 +423,18 @@ export async function createConnectedCustomer(
       { stripeAccount: connectedAccountId },
     );
   } catch (error) {
+    if (
+      error instanceof Stripe.errors.StripeAuthenticationError ||
+      error instanceof Stripe.errors.StripePermissionError ||
+      (error as Stripe.errors.StripeError).message?.includes("does not have access to account")
+    ) {
+      const appError = new Error(
+        "This studio's Stripe account is no longer accessible. The studio owner needs to reconnect their Stripe account.",
+      ) as Error & { status?: number; error?: string };
+      appError.status = 400;
+      appError.error = "Studio Payment Setup Error";
+      throw appError;
+    }
     throw new Error(`Failed to create connected customer: ${(error as Error).message}`);
   }
 }
@@ -444,8 +456,17 @@ export async function findConnectedCustomerByPlatformId(
       { stripeAccount: connectedAccountId },
     );
     return results.data[0] ?? null;
-  } catch {
-    // search API may not be enabled on all accounts — fall through to create
+  } catch (error) {
+    // Re-throw auth/permission errors — silently swallowing them causes a second
+    // identical failure in createConnectedCustomer.
+    if (
+      error instanceof Stripe.errors.StripeAuthenticationError ||
+      error instanceof Stripe.errors.StripePermissionError ||
+      (error as Stripe.errors.StripeError).message?.includes("does not have access to account")
+    ) {
+      throw error;
+    }
+    // search API may not be available on all accounts — fall through to create
     return null;
   }
 }
@@ -476,7 +497,20 @@ export async function findOrCreateConnectedCustomer(
       if (existing && !(existing as Stripe.DeletedCustomer).deleted) {
         return { customer: existing as Stripe.Customer, isNew: false };
       }
-    } catch {
+    } catch (error) {
+      // Re-throw auth errors — the connected account is inaccessible
+      if (
+        error instanceof Stripe.errors.StripeAuthenticationError ||
+        error instanceof Stripe.errors.StripePermissionError ||
+        (error as Stripe.errors.StripeError).message?.includes("does not have access to account")
+      ) {
+        const appError = new Error(
+          "This studio's Stripe account is no longer accessible. The studio owner needs to reconnect their Stripe account.",
+        ) as Error & { status?: number; error?: string };
+        appError.status = 400;
+        appError.error = "Studio Payment Setup Error";
+        throw appError;
+      }
       // Customer may have been deleted — fall through
     }
   }
@@ -514,7 +548,31 @@ export async function findConnectedPaymentMethod(
     { stripeAccount: connectedAccountId },
   );
 
-  return connectedPMs.data.find((pm) => pm.card?.fingerprint === fingerprint) ?? null;
+  const platformCard = platformPm.card;
+  const allMatches = connectedPMs.data.filter((pm) => pm.card?.fingerprint === fingerprint);
+  if (allMatches.length === 0) return null;
+
+  // Separate clones whose expiry matches the current platform PM from stale ones.
+  // A stale clone has a different exp_month/exp_year (e.g. card was re-saved after expiry
+  // and re-cloned, but the old clone is still attached). Charging a stale clone produces
+  // "Your card has expired." even when the platform card is valid.
+  const freshClones = allMatches.filter(
+    (pm) => pm.card?.exp_year === platformCard?.exp_year && pm.card?.exp_month === platformCard?.exp_month,
+  );
+  const staleClones = allMatches.filter(
+    (pm) => pm.card?.exp_year !== platformCard?.exp_year || pm.card?.exp_month !== platformCard?.exp_month,
+  );
+
+  // Detach all stale clones so they can't be accidentally used in future requests.
+  if (staleClones.length > 0) {
+    await Promise.allSettled(
+      staleClones.map((pm) =>
+        stripe.paymentMethods.detach(pm.id, {}, { stripeAccount: connectedAccountId }),
+      ),
+    );
+  }
+
+  return freshClones[0] ?? null;
 }
 
 /**
@@ -530,18 +588,31 @@ export async function clonePaymentMethodToConnectedAccount(
 ): Promise<Stripe.PaymentMethod> {
   const stripe = await getStripeClient();
 
-  // Clone the platform PM onto the connected account
-  const cloned = await stripe.paymentMethods.create(
-    { customer: platformCustomerId, payment_method: platformPmId },
-    { stripeAccount: connectedAccountId },
-  );
+  let cloned: Stripe.PaymentMethod;
+  try {
+    // Clone the platform PM onto the connected account
+    cloned = await stripe.paymentMethods.create(
+      { customer: platformCustomerId, payment_method: platformPmId },
+      { stripeAccount: connectedAccountId },
+    );
+  } catch (error) {
+    const err = error as Stripe.errors.StripeError;
+    console.error("[clonePaymentMethod] create failed:", { platformPmId, connectedAccountId, type: err.type, code: err.code, message: err.message });
+    throw new Error(`Failed to clone payment method to connected account: ${err.message}`);
+  }
 
-  // Attach it to the connected customer so it can be reused and found by fingerprint
-  await stripe.paymentMethods.attach(
-    cloned.id,
-    { customer: connectedCustomerId },
-    { stripeAccount: connectedAccountId },
-  );
+  try {
+    // Attach it to the connected customer so it can be reused and found by fingerprint
+    await stripe.paymentMethods.attach(
+      cloned.id,
+      { customer: connectedCustomerId },
+      { stripeAccount: connectedAccountId },
+    );
+  } catch (error) {
+    const err = error as Stripe.errors.StripeError;
+    console.error("[clonePaymentMethod] attach failed:", { clonedId: cloned.id, connectedCustomerId, connectedAccountId, type: err.type, code: err.code, message: err.message });
+    throw new Error(`Failed to attach cloned payment method: ${err.message}`);
+  }
 
   return cloned;
 }
@@ -581,9 +652,17 @@ export async function chargePaymentMethodDirectly(
   try {
     return await stripe.paymentIntents.create(params, requestOptions);
   } catch (error) {
-    const err = error as Error & { code?: string; payment_intent?: Stripe.PaymentIntent };
+    const err = error as Stripe.errors.StripeError & { payment_intent?: Stripe.PaymentIntent };
+    console.error("[chargePaymentMethodDirectly] Stripe error:", { type: err.type, code: err.code, message: err.message, connectedAccountId });
     if (err.code === "authentication_required" && err.payment_intent) {
       return err.payment_intent;
+    }
+    // Card errors (declined, insufficient funds, etc.) and invalid request errors should be 402/400, not 500
+    if (error instanceof Stripe.errors.StripeCardError || error instanceof Stripe.errors.StripeInvalidRequestError) {
+      const appError = new Error(err.message || "Payment could not be completed") as Error & { status?: number; error?: string };
+      appError.status = error instanceof Stripe.errors.StripeCardError ? 402 : 400;
+      appError.error = error instanceof Stripe.errors.StripeCardError ? "Payment Failed" : "Bad Request";
+      throw appError;
     }
     throw new Error(`Failed to charge payment method: ${err.message}`);
   }
@@ -619,7 +698,11 @@ export async function createSubscriptionWithSavedCard(
   };
 
   const requestOptions: Stripe.RequestOptions = { stripeAccount: connectedAccountId };
-  if (idempotencyKey) requestOptions.idempotencyKey = idempotencyKey;
+  // Append the dynamic price ID so each new price generates a unique key.
+  // A network retry of the exact same call reuses the same price → same key → idempotent.
+  // A fresh retry that creates a new price gets a different key, preventing the
+  // "same key, different params" collision that Stripe throws when price IDs differ.
+  if (idempotencyKey) requestOptions.idempotencyKey = `${idempotencyKey}:${price.id}`;
 
   try {
     return await stripe.subscriptions.create(subParams, requestOptions);
