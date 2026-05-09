@@ -340,38 +340,96 @@ app.post("/", async (req, res) => {
     }
 
     let studentId = body["studentId"] as string | undefined;
-    if (!studentId && body["studentAuthUid"]) {
-      const resolved = await attendanceService.getStudentIdByAuthUid(body["studentAuthUid"] as string);
-      if (!resolved) {
-        return sendErrorResponse(req, res, 404, "Not Found", "Student not found for the provided authUid");
-      }
-      studentId = resolved;
-    }
-
     let studioOwnerId: string | null;
+
     if (body["checkedInBy"] === "student") {
+      // For student self-check-in, resolve studioOwnerId from the class/workshop/event
+      // first, then find the student doc matching BOTH authUid AND that studioOwnerId.
+      // This handles students enrolled in multiple studios correctly.
       const db = getFirestore();
+      let classStudioOwnerId: string | null = null;
+      const rawClassId = body["classId"] as string | undefined;
+      const rawWorkshopId = body["workshopId"] as string | undefined;
+      const rawEventId = body["eventId"] as string | undefined;
+
+      try {
+        if (rawClassId) {
+          const doc = await db.collection("classes").doc(rawClassId).get();
+          if (!doc.exists) return sendErrorResponse(req, res, 404, "Not Found", "Class not found");
+          classStudioOwnerId = ((doc.data() as Record<string, unknown>)["studioOwnerId"] as string) ?? null;
+        } else if (rawWorkshopId) {
+          const doc = await db.collection("workshops").doc(rawWorkshopId).get();
+          if (!doc.exists) return sendErrorResponse(req, res, 404, "Not Found", "Workshop not found");
+          classStudioOwnerId = ((doc.data() as Record<string, unknown>)["studioOwnerId"] as string) ?? null;
+        } else if (rawEventId) {
+          const doc = await db.collection("events").doc(rawEventId).get();
+          if (!doc.exists) return sendErrorResponse(req, res, 404, "Not Found", "Event not found");
+          classStudioOwnerId = ((doc.data() as Record<string, unknown>)["studioOwnerId"] as string) ?? null;
+        }
+      } catch (error) {
+        console.error("Check-in — class/event lookup failed:", (error as Error).message, error);
+        return sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred");
+      }
+
+      if (!classStudioOwnerId) {
+        return sendErrorResponse(req, res, 400, "Validation Error", "Could not determine studio for check-in");
+      }
+      studioOwnerId = classStudioOwnerId;
+
+      // Find the student doc scoped to this specific studio
+      if (!studentId && body["studentAuthUid"]) {
+        let resolved: string | null;
+        try {
+          resolved = await attendanceService.getStudentIdByAuthUidAndStudio(
+            body["studentAuthUid"] as string, studioOwnerId,
+          );
+        } catch (error) {
+          console.error("Check-in — student lookup by authUid+studio failed:", (error as Error).message, error);
+          return sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred");
+        }
+        if (!resolved) {
+          return sendErrorResponse(req, res, 404, "Not Found", "Student not enrolled in this studio");
+        }
+        studentId = resolved;
+      }
+
+      // Verify the student doc's authUid matches the caller's token
       const studentRef = db.collection("students").doc(studentId as string);
-      const studentDoc = await studentRef.get();
+      let studentDoc: FirebaseFirestore.DocumentSnapshot;
+      try {
+        studentDoc = await studentRef.get();
+      } catch (error) {
+        console.error("Check-in — student doc fetch failed:", (error as Error).message, error);
+        return sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred");
+      }
 
       if (!studentDoc.exists) {
         return sendErrorResponse(req, res, 404, "Not Found", "Student not found");
       }
 
       const studentData = studentDoc.data() as Record<string, unknown>;
-      studioOwnerId = studentData["studioOwnerId"] as string;
-
-      if (!studioOwnerId) {
-        return sendErrorResponse(req, res, 400, "Validation Error", "Student record does not have a studio owner ID");
-      }
-
       if (studentData["authUid"] !== user.uid) {
         return sendErrorResponse(req, res, 403, "Access Denied", "You can only check in as yourself");
       }
     } else {
+      // Studio-side check-in: studioOwnerId comes from the authenticated studio owner
       studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
       if (!studioOwnerId) {
         return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+      }
+
+      if (!studentId && body["studentAuthUid"]) {
+        let resolved: string | null;
+        try {
+          resolved = await attendanceService.getStudentIdByAuthUid(body["studentAuthUid"] as string);
+        } catch (error) {
+          console.error("Check-in — student lookup by authUid failed:", (error as Error).message, error);
+          return sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred");
+        }
+        if (!resolved) {
+          return sendErrorResponse(req, res, 404, "Not Found", "Student not found for the provided authUid");
+        }
+        studentId = resolved;
       }
     }
 
@@ -395,7 +453,25 @@ app.post("/", async (req, res) => {
       checkedInAt: body["checkedInAt"] as admin.firestore.FieldValue | admin.firestore.Timestamp | undefined,
     };
 
-    const attendanceId = await attendanceService.createAttendanceRecord(attendanceData, studioOwnerId as string);
+    let attendanceId: string;
+    try {
+      attendanceId = await attendanceService.createAttendanceRecord(attendanceData, studioOwnerId as string);
+    } catch (error) {
+      console.error("Check-in — createAttendanceRecord failed:", (error as Error).message, error);
+      const msg = (error as Error).message;
+      if (msg?.includes("not found")) return sendErrorResponse(req, res, 404, "Not Found", msg);
+      if (msg?.includes("does not belong") || msg?.includes("Access denied")) {
+        return sendErrorResponse(req, res, 403, "Access Denied", msg);
+      }
+      if (msg?.includes("required") || msg?.includes("must be")) {
+        return sendErrorResponse(req, res, 400, "Validation Error", msg);
+      }
+      if (msg?.includes("already checked in")) return sendErrorResponse(req, res, 409, "Conflict", msg);
+      if (msg?.includes("Insufficient credits") || msg?.includes("No available credits")) {
+        return sendErrorResponse(req, res, 402, "Payment Required", "Insufficient credits for check-in");
+      }
+      return sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred");
+    }
 
     // Fire-and-forget: push check-in event to any paired kiosk watch session
     const kioskSessionId = body["kioskSessionId"] as string | undefined;
@@ -411,19 +487,7 @@ app.post("/", async (req, res) => {
 
     sendJsonResponse(req, res, 201, { id: attendanceId, message: "Attendance record created successfully" });
   } catch (error) {
-    console.error("Error creating attendance record:", error);
-    const msg = (error as Error).message;
-    if (msg?.includes("not found")) return sendErrorResponse(req, res, 404, "Not Found", msg);
-    if (msg?.includes("does not belong") || msg?.includes("Access denied")) {
-      return sendErrorResponse(req, res, 403, "Access Denied", msg);
-    }
-    if (msg?.includes("required") || msg?.includes("must be")) {
-      return sendErrorResponse(req, res, 400, "Validation Error", msg);
-    }
-    if (msg?.includes("already checked in")) return sendErrorResponse(req, res, 409, "Conflict", msg);
-    if (msg?.includes("Insufficient credits") || msg?.includes("No available credits")) {
-      return sendErrorResponse(req, res, 402, "Payment Required", msg);
-    }
+    console.error("Check-in — unhandled error:", (error as Error).message, error);
     handleError(req, res, error);
   }
 });

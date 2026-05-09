@@ -51,6 +51,18 @@ export class AttendanceService {
     return firstDoc ? firstDoc.id : null;
   }
 
+  async getStudentIdByAuthUidAndStudio(authUid: string, studioOwnerId: string): Promise<string | null> {
+    const db = getFirestore();
+    const snapshot = await db.collection("students")
+      .where("authUid", "==", authUid)
+      .where("studioOwnerId", "==", studioOwnerId)
+      .limit(1)
+      .get();
+    if (snapshot.empty) return null;
+    const firstDoc = snapshot.docs[0];
+    return firstDoc ? firstDoc.id : null;
+  }
+
   async getAttendanceRecordsByStudent(
     studentId: string,
     studioOwnerId: string,

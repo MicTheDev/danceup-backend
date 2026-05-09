@@ -309,15 +309,27 @@ app.post("/login", async (req, res) => {
       return sendErrorResponse(req, res, 401, "Authentication Failed", "User not found");
     }
 
-    const studentDoc = await authService.getStudentProfileByAuthUid(userRecord.uid) as { id: string } | null;
+    let studentDoc: { id: string } | null;
+    try {
+      studentDoc = await authService.getStudentProfileByAuthUid(userRecord.uid) as { id: string } | null;
+    } catch (error) {
+      console.error("Student login — Firestore profile lookup failed:", (error as Error).message, error);
+      return sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred");
+    }
     if (!studentDoc) {
       return sendErrorResponse(req, res, 401, "Authentication Failed", "Student profile not found");
     }
 
-    const customToken = await authService.createCustomToken(userRecord.uid) as string;
-    const tokenResponse = await authService.exchangeCustomTokenForIdToken(customToken, apiKey) as {
-      idToken: string; refreshToken: string; expiresIn: string;
-    };
+    let tokenResponse: { idToken: string; refreshToken: string; expiresIn: string };
+    try {
+      const customToken = await authService.createCustomToken(userRecord.uid);
+      tokenResponse = await authService.exchangeCustomTokenForIdToken(customToken, apiKey) as {
+        idToken: string; refreshToken: string; expiresIn: string;
+      };
+    } catch (error) {
+      console.error("Student login — token creation failed:", (error as Error).message, error);
+      return sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred");
+    }
 
     sendJsonResponse(req, res, 200, {
       idToken: tokenResponse.idToken,
@@ -367,6 +379,7 @@ app.get("/me", async (req, res) => {
         role: studentData["role"] || "student",
         studios: studiosWithLiveCredits,
         studioIds: Object.keys(studiosWithLiveCredits),
+        deletionStatus: studentData["deletionStatus"] || null,
       },
     });
   } catch (error) {
@@ -1117,6 +1130,97 @@ app.patch("/me/payment-methods/:paymentMethodId/default", async (req, res) => {
     sendJsonResponse(req, res, 200, { success: true });
   } catch (error) {
     console.error("Error setting default payment method:", error);
+    handleError(req, res, error);
+  }
+});
+
+// POST /me/request-deletion — begin 90-day pending deletion window for a student account
+app.post("/me/request-deletion", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const db = getFirestore();
+    const profileSnap = await db.collection("usersStudentProfiles")
+      .where("authUid", "==", user.uid)
+      .limit(1)
+      .get();
+
+    if (profileSnap.empty) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+    }
+
+    const profileDoc = profileSnap.docs[0]!;
+    const profileData = profileDoc.data() as Record<string, unknown>;
+
+    if (profileData["deletionStatus"] === "pending") {
+      return sendErrorResponse(req, res, 400, "Bad Request", "Account deletion already requested");
+    }
+
+    // Cancel any active Stripe subscriptions
+    if (profileData["stripeCustomerId"]) {
+      try {
+        const stripe = await getStripeClient();
+        const subscriptions = await stripe.subscriptions.list({
+          customer: profileData["stripeCustomerId"] as string,
+          status: "active",
+        });
+        for (const sub of subscriptions.data) {
+          await stripe.subscriptions.update(sub.id, { cancel_at_period_end: true });
+        }
+      } catch (stripeError) {
+        console.error("Error cancelling student subscriptions during deletion request:", stripeError);
+      }
+    }
+
+    await profileDoc.ref.update({
+      deletionStatus: "pending",
+      deletionRequestedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, {
+      message: "Account deletion scheduled. Your account and personal data will be permanently deleted after 90 days.",
+      deletionWindowDays: 90,
+    });
+  } catch (error) {
+    console.error("Student request-deletion error:", error);
+    handleError(req, res, error);
+  }
+});
+
+// DELETE /me/cancel-deletion — cancel a pending deletion within the 90-day window
+app.delete("/me/cancel-deletion", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const db = getFirestore();
+    const profileSnap = await db.collection("usersStudentProfiles")
+      .where("authUid", "==", user.uid)
+      .limit(1)
+      .get();
+
+    if (profileSnap.empty) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+    }
+
+    const profileDoc = profileSnap.docs[0]!;
+    const profileData = profileDoc.data() as Record<string, unknown>;
+
+    if (profileData["deletionStatus"] !== "pending") {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No pending deletion to cancel");
+    }
+
+    await profileDoc.ref.update({
+      deletionStatus: admin.firestore.FieldValue.delete(),
+      deletionRequestedAt: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, { message: "Account deletion cancelled." });
+  } catch (error) {
+    console.error("Student cancel-deletion error:", error);
     handleError(req, res, error);
   }
 });

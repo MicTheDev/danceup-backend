@@ -4,6 +4,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import authService from "../services/auth.service";
 import storageService from "../services/storage.service";
+import { getStripeClient } from "../services/stripe.service";
 import { verifyToken } from "../utils/auth";
 import { validateUpdateProfilePayload } from "../utils/validation";
 import { getFirestore } from "../utils/firestore";
@@ -78,6 +79,7 @@ app.get("/", async (req, res) => {
       stripeSubscriptionId: userData["stripeSubscriptionId"] || null,
       stripeSubscriptionStatus: userData["stripeSubscriptionStatus"] || null,
       subscriptionActive: userData["subscriptionActive"] !== false,
+      deletionStatus: userData["deletionStatus"] || null,
     });
   } catch (error) {
     console.error("Get profile error:", error);
@@ -192,6 +194,128 @@ app.put("/", async (req, res) => {
     });
   } catch (error) {
     console.error("Update profile error:", error);
+    handleError(req, res, error);
+  }
+});
+
+// POST /request-deletion — begin 90-day pending deletion window
+app.post("/request-deletion", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
+    if (!userDoc) return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
+    if (!authService.hasStudioOwnerRole(userDoc)) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner access required");
+    }
+
+    const userData = userDoc.data() as Record<string, unknown>;
+
+    // Cancel Stripe subscription at period end so they aren't charged again
+    if (userData["stripeSubscriptionId"]) {
+      try {
+        const stripe = await getStripeClient();
+        await stripe.subscriptions.update(userData["stripeSubscriptionId"] as string, {
+          cancel_at_period_end: true,
+        });
+      } catch (stripeError) {
+        console.error("Error cancelling Stripe subscription during deletion request:", stripeError);
+      }
+    }
+
+    const db = getFirestore();
+    await db.collection("users").doc(userDoc.id).update({
+      deletionStatus: "pending",
+      deletionRequestedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, {
+      message: "Account deletion scheduled. Your account and all associated data will be permanently deleted after 90 days.",
+      deletionWindowDays: 90,
+    });
+  } catch (error) {
+    console.error("Studio owner request-deletion error:", error);
+    handleError(req, res, error);
+  }
+});
+
+// DELETE /cancel-deletion — cancel a pending deletion within the 90-day window
+app.delete("/cancel-deletion", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
+    if (!userDoc) return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
+    if (!authService.hasStudioOwnerRole(userDoc)) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner access required");
+    }
+
+    const userData = userDoc.data() as Record<string, unknown>;
+    if (userData["deletionStatus"] !== "pending") {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No pending deletion to cancel");
+    }
+
+    const db = getFirestore();
+    await db.collection("users").doc(userDoc.id).update({
+      deletionStatus: admin.firestore.FieldValue.delete(),
+      deletionRequestedAt: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, { message: "Account deletion cancelled." });
+  } catch (error) {
+    console.error("Studio owner cancel-deletion error:", error);
+    handleError(req, res, error);
+  }
+});
+
+// GET /export-data — download all studio data as JSON
+app.get("/export-data", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
+    if (!userDoc) return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
+    if (!authService.hasStudioOwnerRole(userDoc)) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner access required");
+    }
+
+    const db = getFirestore();
+    const studioOwnerId = userDoc.id;
+    const userData = userDoc.data() as Record<string, unknown>;
+
+    const [classesSnap, workshopsSnap, eventsSnap, packagesSnap, studentsSnap, instructorsSnap, attendanceSnap, purchasesSnap] =
+      await Promise.all([
+        db.collection("classes").where("studioOwnerId", "==", studioOwnerId).get(),
+        db.collection("workshops").where("studioOwnerId", "==", studioOwnerId).get(),
+        db.collection("events").where("studioOwnerId", "==", studioOwnerId).get(),
+        db.collection("packages").where("studioOwnerId", "==", studioOwnerId).get(),
+        db.collection("students").where("studioOwnerId", "==", studioOwnerId).get(),
+        db.collection("instructors").where("studioOwnerId", "==", studioOwnerId).get(),
+        db.collection("attendance").where("studioOwnerId", "==", studioOwnerId).get(),
+        db.collection("purchases").where("studioOwnerId", "==", studioOwnerId).get(),
+      ]);
+
+    const exportData = {
+      exportedAt: new Date().toISOString(),
+      profile: { id: studioOwnerId, ...userData },
+      classes: classesSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      workshops: workshopsSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      events: eventsSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      packages: packagesSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      students: studentsSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      instructors: instructorsSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      attendance: attendanceSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+      purchases: purchasesSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+    };
+
+    sendJsonResponse(req, res, 200, exportData);
+  } catch (error) {
+    console.error("Studio owner export-data error:", error);
     handleError(req, res, error);
   }
 });
