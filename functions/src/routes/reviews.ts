@@ -1,4 +1,5 @@
 import * as functions from "firebase-functions";
+import * as admin from "firebase-admin";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import reviewsService from "../services/reviews.service";
@@ -304,6 +305,37 @@ app.put("/:id/response", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", msg);
     }
     if (msg?.includes("Access denied")) return sendErrorResponse(req, res, 403, "Access Denied", msg);
+    handleError(req, res, error);
+  }
+});
+
+// POST /:id/flag — student reports a review as inappropriate
+app.post("/:id/flag", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const reviewId = req.params["id"] as string;
+    const { reason } = req.body as { reason?: string };
+
+    const reviewRef = admin.firestore().collection("reviews").doc(reviewId);
+    const reviewDoc = await reviewRef.get();
+    if (!reviewDoc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Review not found");
+    }
+
+    await reviewRef.update({
+      flagCount: admin.firestore.FieldValue.increment(1),
+      flags: admin.firestore.FieldValue.arrayUnion({
+        reportedBy: user.uid,
+        reason: reason?.trim() || null,
+        reportedAt: new Date().toISOString(),
+      }),
+    });
+
+    sendJsonResponse(req, res, 200, { message: "Review reported successfully." });
+  } catch (error) {
+    console.error("Error flagging review:", error);
     handleError(req, res, error);
   }
 });
