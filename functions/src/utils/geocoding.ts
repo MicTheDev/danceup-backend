@@ -1,61 +1,56 @@
 import * as https from "https";
+import { getSecret } from "./secret-manager";
 
-const NOMINATIM_BASE_URL = "https://nominatim.openstreetmap.org";
-const RATE_LIMIT_MS = 1100; // Nominatim requires max 1 req/sec
+const GOOGLE_GEOCODE_BASE = "https://maps.googleapis.com/maps/api/geocode/json";
 
-let lastRequestTime = 0;
-
-interface NominatimResult {
-  lat: string;
-  lon: string;
-  display_name?: string;
+interface GoogleGeocodeResult {
+  results: Array<{
+    geometry: {
+      location: { lat: number; lng: number };
+    };
+  }>;
+  status: string;
 }
 
-interface NominatimReverseResult {
-  address?: {
-    city?: string;
-    town?: string;
-    village?: string;
-    county?: string;
-    state?: string;
-    "ISO3166-2-lvl4"?: string;
-  };
-}
-
-async function rateLimit(): Promise<void> {
-  const now = Date.now();
-  const elapsed = now - lastRequestTime;
-  if (elapsed < RATE_LIMIT_MS) {
-    await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_MS - elapsed));
-  }
-  lastRequestTime = Date.now();
+interface GoogleReverseGeocodeResult {
+  results: Array<{
+    address_components: Array<{
+      long_name: string;
+      short_name: string;
+      types: string[];
+    }>;
+  }>;
+  status: string;
 }
 
 function fetchJson<T>(url: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    const options = {
-      headers: {
-        "User-Agent": "THELDC-DanceUp/1.0",
-        "Accept": "application/json",
-      },
-    };
-    https.get(url, options, (res) => {
+    https.get(url, (res) => {
       let data = "";
       res.on("data", (chunk: Buffer) => (data += chunk));
       res.on("end", () => {
         try {
           resolve(JSON.parse(data) as T);
         } catch (_e) {
-          reject(new Error("Failed to parse Nominatim response"));
+          reject(new Error("Failed to parse geocoding response"));
         }
       });
     }).on("error", reject);
   });
 }
 
+async function getApiKey(): Promise<string> {
+  try {
+    return await getSecret("google-maps-api-key");
+  } catch {
+    const envKey = process.env.GOOGLE_MAPS_API_KEY;
+    if (!envKey) throw new Error("No Google Maps API key available");
+    return envKey;
+  }
+}
+
 /**
- * Geocodes an address to lat/lng coordinates using Nominatim (OpenStreetMap).
- * Falls back to city+state+zip if the full address yields no results.
+ * Geocodes an address to lat/lng using the Google Maps Geocoding API.
  */
 export async function geocodeAddress(
   addressLine: string,
@@ -64,31 +59,18 @@ export async function geocodeAddress(
   zip: string,
 ): Promise<{ lat: number; lng: number } | null> {
   try {
-    await rateLimit();
+    const apiKey = await getApiKey();
+    const address = encodeURIComponent(`${addressLine}, ${city}, ${state} ${zip}, USA`);
+    const url = `${GOOGLE_GEOCODE_BASE}?address=${address}&key=${apiKey}`;
 
-    const query = encodeURIComponent(`${addressLine}, ${city}, ${state} ${zip}, USA`);
-    const url = `${NOMINATIM_BASE_URL}/search?q=${query}&format=json&limit=1&countrycodes=us`;
+    const result = await fetchJson<GoogleGeocodeResult>(url);
 
-    const results = await fetchJson<NominatimResult[]>(url);
-
-    if (results && results.length > 0) {
-      const first = results[0];
-      if (!first) return null;
-      return { lat: parseFloat(first.lat), lng: parseFloat(first.lon) };
+    if (result.status === "OK" && result.results.length > 0 && result.results[0]) {
+      const loc = result.results[0].geometry.location;
+      return { lat: loc.lat, lng: loc.lng };
     }
 
-    // Fallback: city + state + zip only
-    await rateLimit();
-    const fallbackQuery = encodeURIComponent(`${city}, ${state} ${zip}, USA`);
-    const fallbackUrl = `${NOMINATIM_BASE_URL}/search?q=${fallbackQuery}&format=json&limit=1&countrycodes=us`;
-    const fallbackResults = await fetchJson<NominatimResult[]>(fallbackUrl);
-
-    if (fallbackResults && fallbackResults.length > 0) {
-      const first = fallbackResults[0];
-      if (!first) return null;
-      return { lat: parseFloat(first.lat), lng: parseFloat(first.lon) };
-    }
-
+    console.warn(`Geocoding returned status ${result.status} for: ${addressLine}, ${city}, ${state} ${zip}`);
     return null;
   } catch (error) {
     console.error("Geocoding error:", (error as Error).message);
@@ -97,24 +79,24 @@ export async function geocodeAddress(
 }
 
 /**
- * Reverse geocodes coordinates to city and state using Nominatim.
+ * Reverse geocodes coordinates to city and state using the Google Maps Geocoding API.
  */
 export async function reverseGeocode(lat: number, lng: number): Promise<{ city: string; state: string } | null> {
   try {
-    await rateLimit();
+    const apiKey = await getApiKey();
+    const url = `${GOOGLE_GEOCODE_BASE}?latlng=${lat},${lng}&key=${apiKey}`;
 
-    const url = `${NOMINATIM_BASE_URL}/reverse?lat=${lat}&lon=${lng}&format=json`;
-    const result = await fetchJson<NominatimReverseResult>(url);
+    const result = await fetchJson<GoogleReverseGeocodeResult>(url);
 
-    if (!result || !result.address) {
-      return null;
+    if (result.status !== "OK" || !result.results.length || !result.results[0]) return null;
+
+    let city = "";
+    let stateCode = "";
+
+    for (const component of result.results[0].address_components) {
+      if (component.types.includes("locality")) city = component.long_name;
+      if (component.types.includes("administrative_area_level_1")) stateCode = component.short_name;
     }
-
-    const addr = result.address;
-    const city = addr.city ?? addr.town ?? addr.village ?? addr.county ?? "";
-    const stateCode = addr["ISO3166-2-lvl4"]
-      ? addr["ISO3166-2-lvl4"].split("-")[1] ?? ""
-      : addr.state ?? "";
 
     return { city, state: stateCode };
   } catch (error) {

@@ -30,3 +30,4 @@ export { usersstudent } from "./routes/usersStudent";
 export { workshops } from "./routes/workshops";
 export { kioskSessions } from "./routes/kiosk-sessions";
 export { processAccountDeletions } from "./routes/account-deletion-scheduler";
+export { autoCheckIn } from "./routes/auto-checkin";

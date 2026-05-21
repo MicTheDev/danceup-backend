@@ -172,7 +172,7 @@ app.post("/charge-card-for-student", async (req, res) => {
     const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
     const connectedAccountId = studioOwnerDoc.exists ? ((studioOwnerDoc.data() as Record<string, unknown>)["stripeAccountId"] as string) || null : null;
 
-    const paymentIntent = await stripeService.chargePaymentMethodDirectly(
+    const paymentIntent = await stripeService.chargePlatformCardForConnectedAccount(
       stripeCustomerId,
       paymentMethodId,
       Math.round((packageData["price"] as number) * 100),

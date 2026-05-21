@@ -8,6 +8,7 @@ import studioEnrollmentService from "../services/studio-enrollment.service";
 import creditTrackingService from "../services/credit-tracking.service";
 import studentsService from "../services/students.service";
 import classesService from "../services/classes.service";
+import attendanceService from "../services/attendance.service";
 import studiosService from "../services/studios.service";
 import workshopsService from "../services/workshops.service";
 import eventsService from "../services/events.service";
@@ -129,29 +130,6 @@ app.post("/register", async (req, res) => {
         });
       } catch (stripeError) {
         console.error("Error creating Stripe customer during registration:", stripeError);
-      }
-
-      // Attribute any prior guest purchases (same email, no authUid) to this new account
-      try {
-        const db = getFirestore();
-        const guestPurchases = await db.collection("purchases")
-          .where("guestEmail", "==", userRecord.email.toLowerCase())
-          .where("authUid", "==", "guest")
-          .get();
-        if (!guestPurchases.empty) {
-          const batch = db.batch();
-          for (const doc of guestPurchases.docs) {
-            batch.update(doc.ref, {
-              authUid: userRecord.uid,
-              studentId: studentProfileId,
-              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            });
-          }
-          await batch.commit();
-        }
-      } catch (attributionError) {
-        // Non-critical — log and continue
-        console.error("Error attributing guest purchases:", attributionError);
       }
 
       try {
@@ -366,6 +344,7 @@ app.get("/me", async (req, res) => {
       uid: user.uid,
       email: user.email,
       studentProfileId: studentDoc.id,
+      autoCheckInClassIds: (studentData["autoCheckInClassIds"] as string[]) || [],
       profile: {
         firstName: studentData["firstName"],
         lastName: studentData["lastName"],
@@ -522,6 +501,65 @@ app.delete("/me/avatar", async (req, res) => {
   }
 });
 
+app.patch("/auto-checkin-prefs", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const { autoCheckInClassIds } = req.body as { autoCheckInClassIds?: unknown };
+    if (!Array.isArray(autoCheckInClassIds) || autoCheckInClassIds.some((id) => typeof id !== "string")) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "autoCheckInClassIds must be an array of strings");
+    }
+    if (autoCheckInClassIds.length > 50) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "autoCheckInClassIds cannot exceed 50 items");
+    }
+
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string } | null;
+    if (!studentDoc) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+    }
+
+    const db = getFirestore();
+    await db.collection("usersStudentProfiles").doc(studentDoc.id).update({
+      autoCheckInClassIds,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, { autoCheckInClassIds });
+  } catch (error) {
+    console.error("Error updating auto check-in prefs:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.patch("/me/fcm-token", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const { fcmToken } = req.body as { fcmToken?: string };
+    if (!fcmToken || typeof fcmToken !== "string") {
+      return sendErrorResponse(req, res, 400, "Validation Error", "fcmToken is required");
+    }
+
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string } | null;
+    if (!studentDoc) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+    }
+
+    const db = getFirestore();
+    await db.collection("usersStudentProfiles").doc(studentDoc.id).update({
+      fcmToken,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, { success: true });
+  } catch (error) {
+    console.error("Error updating FCM token:", error);
+    handleError(req, res, error);
+  }
+});
+
 app.get("/my-classes", async (req, res) => {
   try {
     let user;
@@ -571,7 +609,7 @@ app.get("/my-classes", async (req, res) => {
             room: classData["room"],
             danceGenre: classData["danceGenre"],
             instanceDate: nextInstance.toISOString(),
-            studio: { id: studio["id"], name: studio["studioName"], city: studio["city"], state: studio["state"] },
+            studio: { id: studio["id"], name: studio["studioName"], city: studio["city"], state: studio["state"], lat: studio["studioLat"] ?? null, lng: studio["studioLng"] ?? null },
           });
         }
 
@@ -595,7 +633,7 @@ app.get("/my-classes", async (req, res) => {
             room: classData["room"],
             danceGenre: classData["danceGenre"],
             instanceDate: instanceDate.toISOString(),
-            studio: { id: studio["id"], name: studio["studioName"], city: studio["city"], state: studio["state"] },
+            studio: { id: studio["id"], name: studio["studioName"], city: studio["city"], state: studio["state"], lat: studio["studioLat"] ?? null, lng: studio["studioLng"] ?? null },
           });
         }
       } catch (error) {
@@ -1221,6 +1259,53 @@ app.delete("/me/cancel-deletion", async (req, res) => {
     sendJsonResponse(req, res, 200, { message: "Account deletion cancelled." });
   } catch (error) {
     console.error("Student cancel-deletion error:", error);
+    handleError(req, res, error);
+  }
+});
+
+// POST /checkin — self check-in for mobile students; uses auth token, no studentId required
+app.post("/checkin", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const { classId, classInstanceDate } = req.body as { classId?: string; classInstanceDate?: string };
+    if (!classId) return sendErrorResponse(req, res, 400, "Validation Error", "classId is required");
+    if (!classInstanceDate) return sendErrorResponse(req, res, 400, "Validation Error", "classInstanceDate is required");
+
+    const db = getFirestore();
+
+    // Get studioOwnerId from the class document
+    const classDoc = await db.collection("classes").doc(classId).get();
+    if (!classDoc.exists) return sendErrorResponse(req, res, 404, "Not Found", "Class not found");
+    const classData = classDoc.data() as Record<string, unknown>;
+    const studioOwnerId = classData["studioOwnerId"] as string | undefined;
+    if (!studioOwnerId) return sendErrorResponse(req, res, 400, "Bad Request", "Class has no studio owner");
+
+    // Find the student record in the old students collection using authUid + studioOwnerId
+    const studentId = await attendanceService.getStudentIdByAuthUidAndStudio(user.uid, studioOwnerId);
+    if (!studentId) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student enrollment not found for this studio. Please contact your studio.");
+    }
+
+    // Delegate to attendance service (handles duplicate check, credits, record creation)
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const jsAttendanceService = require("../../services/attendance.service");
+    await jsAttendanceService.createAttendanceRecord(
+      { studentId, classId, classInstanceDate, checkedInBy: "student" },
+      studioOwnerId,
+    );
+
+    sendJsonResponse(req, res, 201, { message: "Checked in successfully", studentId, classId });
+  } catch (error) {
+    const msg = (error as Error).message ?? "";
+    if (msg.toLowerCase().includes("already checked in") || msg.toLowerCase().includes("already checked")) {
+      return sendErrorResponse(req, res, 409, "Conflict", "Already checked in");
+    }
+    if (msg.toLowerCase().includes("insufficient credits") || msg.toLowerCase().includes("no credits")) {
+      return sendErrorResponse(req, res, 402, "Payment Required", "Insufficient credits");
+    }
+    console.error("Student checkin error:", error);
     handleError(req, res, error);
   }
 });

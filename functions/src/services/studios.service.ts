@@ -28,6 +28,8 @@ interface StudioDetail extends StudioListItem {
   tiktok: string | null;
   youtube: string | null;
   membership: string | null;
+  studioLat: number | null;
+  studioLng: number | null;
   instructors: Array<{
     id: string;
     firstName: string;
@@ -113,6 +115,8 @@ export class StudiosService {
       tiktok: (d["tiktok"] as string | null) ?? null,
       youtube: (d["youtube"] as string | null) ?? null,
       membership: (d["membership"] as string | null) ?? null,
+      studioLat: (d["lat"] as number | null) ?? null,
+      studioLng: (d["lng"] as number | null) ?? null,
       instructors: instructors.map((instructor) => ({
         id: instructor["id"] as string,
         firstName: (instructor["firstName"] as string) || "",

@@ -216,9 +216,7 @@ app.get("/:id/attendees", async (req, res) => {
       let city: string | null = null;
       let state: string | null = null;
       let zip: string | null = null;
-      const isGuest = !purchase["studentId"] || purchase["studentId"] === "guest";
-
-      if (purchase["studentId"] && purchase["studentId"] !== "guest") {
+      if (purchase["studentId"]) {
         try {
           const studentDoc = await db.collection("students").doc(purchase["studentId"] as string).get();
           if (studentDoc.exists) {
@@ -235,7 +233,7 @@ app.get("/:id/attendees", async (req, res) => {
         }
       }
 
-      if (!firstName && !email && purchase["authUid"] && purchase["authUid"] !== "guest") {
+      if (!firstName && !email && purchase["authUid"]) {
         try {
           const userSnapshot = await db.collection("users").where("authUid", "==", purchase["authUid"]).limit(1).get();
           if (!userSnapshot.empty) {
@@ -272,7 +270,6 @@ app.get("/:id/attendees", async (req, res) => {
         checkedInBy: purchase["checkedInBy"] || null,
         eventCode: null,
         stripePaymentIntentId: purchase["stripePaymentIntentId"] || null,
-        isGuest,
       });
     }
 

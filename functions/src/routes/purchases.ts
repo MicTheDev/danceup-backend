@@ -88,8 +88,6 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
     const purchaseType = body["purchaseType"] as string | undefined;
     const itemId = body["itemId"] as string | undefined;
     const selectedTiers = body["selectedTiers"];
-    const guestInfo = body["guestInfo"];
-
     if (!purchaseType || !itemId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType and itemId are required");
     }
@@ -102,13 +100,11 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
       return sendErrorResponse(req, res, 400, "Validation Error", "Invalid itemId");
     }
 
-    let user: import("../types/api").DecodedToken | null = null;
+    let user: import("../types/api").DecodedToken;
     try {
       user = await verifyToken(req);
     } catch (error) {
-      if (purchaseType === "package") {
-        return sendErrorResponse(req, res, 401, "Authentication Failed", "Login required to purchase packages.");
-      }
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Login required to make purchases.");
     }
 
     const db = getFirestore();
@@ -192,7 +188,7 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
     const studentName = studentDoc
       ? `${(studentDoc.data()["firstName"] as string) || ""} ${(studentDoc.data()["lastName"] as string) || ""}`.trim()
       : "";
-    let connectedCustomerId: string;
+    let connectedCustomerId = "";
     if (platformCustomerId) {
       const { customer: connectedCustomer, isNew } = await stripeService.findOrCreateConnectedCustomer(
         userEmail,
@@ -214,9 +210,6 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
       }
-    } else {
-      // Guest checkout (no platform customer) — connectedCustomerId not needed for one-time charges
-      connectedCustomerId = "";
     }
 
     const isRecurring = purchaseType === "package" && itemDetails.isRecurring === true;
@@ -234,8 +227,8 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
       itemName: itemDetails.itemName || "",
       studioOwnerId: itemDetails.studioOwnerId,
       studioName: itemDetails.studioName || "",
-      studentId: studentDoc ? studentDoc.id : "guest",
-      authUid: user ? user.uid : "guest",
+      studentId: studentDoc ? studentDoc.id : "",
+      authUid: user.uid,
     };
 
     // For events/workshops, compute the actual total from the tiers the user selected.
@@ -313,8 +306,6 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
         cancelUrl,
       ) as unknown as { url: string; id: string };
     }
-
-    void guestInfo;
 
     sendJsonResponse(req, res, 200, { url: checkoutSession.url, id: checkoutSession.id });
   } catch (error) {

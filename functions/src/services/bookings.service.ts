@@ -308,8 +308,8 @@ export class BookingsService {
 
     const customerDetails = session["customer_details"] as Record<string, unknown> | undefined;
     const docRef = await bookingsRef.add({
-      studentId: meta["studentId"] || "guest",
-      authUid: meta["authUid"] || "guest",
+      studentId: meta["studentId"] || "",
+      authUid: meta["authUid"] || "",
       instructorId: meta["instructorId"],
       studioId: meta["studioId"],
       date: meta["date"],

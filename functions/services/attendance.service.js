@@ -730,8 +730,8 @@ class AttendanceService {
     }
 
     // Validate checkedInBy
-    if (!attendanceData.checkedInBy || !["studio", "student"].includes(attendanceData.checkedInBy)) {
-      throw new Error("checkedInBy must be 'studio' or 'student'");
+    if (!attendanceData.checkedInBy || !["studio", "student", "auto"].includes(attendanceData.checkedInBy)) {
+      throw new Error("checkedInBy must be 'studio', 'student', or 'auto'");
     }
 
     // Verify student belongs to studio owner

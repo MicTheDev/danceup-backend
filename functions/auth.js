@@ -6,6 +6,7 @@ const rateLimit = require("express-rate-limit");
 const authService = require("./services/auth.service");
 const storageService = require("./services/storage.service");
 const {sendStudioOwnerWelcomeEmail} = require("./services/sendgrid.service");
+const {geocodeAddress} = require("./utils/geocoding");
 const {verifyToken} = require("./utils/auth");
 const {getFirestore} = require("./utils/firestore");
 const {getFirebaseApiKey} = require("./utils/firebase-api-key");
@@ -187,6 +188,18 @@ app.post("/register", registerLimiter, async (req, res) => {
       sendStudioOwnerWelcomeEmail(userRecord.email, firstName, studioName).catch((err) => {
         console.error("Failed to send studio owner welcome email:", err);
       });
+
+      // Geocode studio address (non-blocking — don't fail registration if geocoding fails)
+      geocodeAddress(studioAddressLine1.trim(), city.trim(), state.trim().toUpperCase(), zip.trim())
+          .then(async (coords) => {
+            if (coords) {
+              const db = getFirestore();
+              await db.collection("users").doc(userRecord.uid).update({lat: coords.lat, lng: coords.lng});
+            }
+          })
+          .catch((err) => {
+            console.error("Failed to geocode studio address during registration:", err);
+          });
     } catch (error) {
       // Cleanup: delete Firebase Auth user if Firestore creation failed
       if (userRecord) {
