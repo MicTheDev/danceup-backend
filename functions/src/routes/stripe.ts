@@ -1217,8 +1217,8 @@ app.post("/webhook", async (req, res) => {
               sessionMeta["studioId"] || "",
               null,
               "private_lesson_booking",
-              "New Private Lesson Booked & Paid",
-              `A private lesson with ${sessionMeta["instructorName"]} on ${sessionMeta["date"]} was paid and confirmed.`,
+              "New Private Lesson Request",
+              `${sessionMeta["instructorName"]} has a new private lesson request for ${sessionMeta["date"]}. Payment received — confirm or cancel the booking.`,
             );
           } catch (err) {
             console.error("[webhook] Error handling private_lesson checkout:", err);

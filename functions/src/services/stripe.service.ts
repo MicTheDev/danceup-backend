@@ -946,10 +946,8 @@ export async function createAccountSession(accountId: string): Promise<Stripe.Ac
         enabled: true,
         features: { refund_management: true, dispute_management: true, capture_payments: true },
       },
-      payouts: { enabled: true, features: { instant_payouts: true } },
-      // 'balances' was added to the AccountSession API after stripe@14 — cast until SDK is upgraded
-      ...({ balances: { enabled: true } } as Record<string, unknown>),
-    } as Stripe.AccountSessionCreateParams["components"],
+      payouts: { enabled: true, features: { instant_payouts: true, standard_payouts: true } },
+    },
   });
 }
 

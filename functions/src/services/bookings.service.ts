@@ -163,6 +163,90 @@ export class BookingsService {
     return { id: updatedDoc.id, ...(updatedDoc.data() as Record<string, unknown>) };
   }
 
+  async cancelBookingAsStudio(bookingId: string, studioOwnerId: string): Promise<void> {
+    const db = getFirestore();
+    const ref = db.collection("privateLessonBookings").doc(bookingId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new Error("Booking not found");
+    const bookingData = doc.data() as Record<string, unknown>;
+    if (bookingData["studioId"] !== studioOwnerId) {
+      throw new Error("Access denied: Booking does not belong to this studio");
+    }
+    if (bookingData["status"] === "cancelled") throw new Error("Booking is already cancelled");
+
+    // Issue refund if the student already paid
+    const paymentIntentId = bookingData["stripePaymentIntentId"] as string | undefined;
+    if (paymentIntentId && bookingData["paymentStatus"] === "paid") {
+      const stripeService = await import("./stripe.service");
+      try {
+        await stripeService.createRefund(paymentIntentId, "Studio cancelled the booking");
+      } catch (refundErr) {
+        console.error("[cancelBookingAsStudio] Refund failed:", refundErr);
+        // Don't block the cancellation if refund fails — log and continue
+      }
+    }
+
+    await ref.update({ status: "cancelled", updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+  }
+
+  async getBookingsByStudio(
+    studioOwnerId: string, status?: string,
+  ): Promise<Array<Record<string, unknown> & { id: string }>> {
+    const db = getFirestore();
+    let query = db.collection("privateLessonBookings")
+      .where("studioId", "==", studioOwnerId)
+      .orderBy("date", "desc") as FirebaseFirestore.Query;
+    if (status) {
+      query = query.where("status", "==", status);
+    }
+    const snapshot = await query.get();
+
+    const bookings = await Promise.all(snapshot.docs.map(async (doc) => {
+      const data = doc.data() as Record<string, unknown>;
+
+      let studentInfo: StudentInfo | null = null;
+      if (data["studentId"]) {
+        const sid = data["studentId"] as string;
+        const usersDoc = await db.collection("usersStudentProfiles").doc(sid).get();
+        if (usersDoc.exists) {
+          const sd = usersDoc.data() as Record<string, unknown>;
+          studentInfo = {
+            id: usersDoc.id,
+            firstName: (sd["firstName"] as string) || "",
+            lastName: (sd["lastName"] as string) || "",
+            email: (sd["email"] as string | null) ?? null,
+            phone: (sd["phone"] as string | null) ?? null,
+          };
+        } else {
+          const studentsDoc = await db.collection("students").doc(sid).get();
+          if (studentsDoc.exists) {
+            const sd = studentsDoc.data() as Record<string, unknown>;
+            studentInfo = {
+              id: studentsDoc.id,
+              firstName: (sd["firstName"] as string) || "",
+              lastName: (sd["lastName"] as string) || "",
+              email: (sd["email"] as string | null) ?? null,
+              phone: (sd["phone"] as string | null) ?? null,
+            };
+          }
+        }
+      }
+
+      let instructorInfo: Record<string, unknown> | null = null;
+      if (data["instructorId"]) {
+        try {
+          instructorInfo = await instructorsService.getInstructorById(
+            data["instructorId"] as string, studioOwnerId,
+          );
+        } catch (_) { /* instructor may have been removed */ }
+      }
+
+      return { id: doc.id, ...data, student: studentInfo, instructor: instructorInfo };
+    }));
+
+    return bookings;
+  }
+
   async getBookingByIdForStudio(
     bookingId: string, studioOwnerId: string,
   ): Promise<Record<string, unknown> | null> {
@@ -314,9 +398,10 @@ export class BookingsService {
       studioId: meta["studioId"],
       date: meta["date"],
       timeSlot: { startTime: meta["timeSlotStart"], endTime: meta["timeSlotEnd"] },
-      status: "confirmed",
+      status: "pending",
       paymentStatus: "paid",
       stripeSessionId: session["id"],
+      stripePaymentIntentId: (session["payment_intent"] as string) || null,
       notes: meta["notes"] || null,
       contactInfo: {
         email: meta["contactEmail"] || (customerDetails?.["email"] as string | null) || null,

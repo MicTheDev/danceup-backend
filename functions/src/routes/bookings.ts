@@ -217,7 +217,7 @@ app.post("/charge-saved", async (req, res) => {
       amountPaid: String(instructor["privateRate"]),
     };
 
-    const paymentIntent = await stripeService.chargePaymentMethodDirectly(
+    const paymentIntent = await stripeService.chargePlatformCardForConnectedAccount(
       stripeCustomerId,
       paymentMethodId as string,
       amountCents,
@@ -241,7 +241,7 @@ app.post("/charge-saved", async (req, res) => {
       studioId,
       date,
       timeSlot: { startTime: ts["startTime"], endTime: ts["endTime"] },
-      status: "confirmed",
+      status: "pending",
       paymentStatus: "paid",
       stripePaymentIntentId: piData["id"],
       notes: (notes as string) || null,
@@ -269,8 +269,8 @@ app.post("/charge-saved", async (req, res) => {
         studioId as string,
         bookingRef.id,
         "private_lesson_booking",
-        "New Private Lesson Booked & Paid",
-        `A private lesson with ${instructorName} on ${date} was paid and confirmed.`,
+        "New Private Lesson Request",
+        `${instructorName} has a new private lesson request for ${date}. Payment received — confirm or cancel the booking.`,
       );
     } catch (notifyErr) { console.error("[charge-saved booking] Notification error:", notifyErr); }
 
@@ -309,6 +309,49 @@ app.get("/instructor/:instructorId", async (req, res) => {
     sendJsonResponse(req, res, 200, bookings);
   } catch (error) {
     console.error("Error getting instructor bookings:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.get("/studio", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
+    if (!userDoc) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const status = req.query["status"] as string | undefined;
+    const bookings = await bookingsService.getBookingsByStudio(userDoc.id, status);
+    sendJsonResponse(req, res, 200, bookings);
+  } catch (error) {
+    console.error("Error listing studio bookings:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.patch("/studio/:bookingId/cancel", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
+    if (!userDoc) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    await bookingsService.cancelBookingAsStudio(req.params["bookingId"] as string, userDoc.id);
+    const booking = await bookingsService.getBookingByIdForStudio(req.params["bookingId"] as string, userDoc.id);
+    sendJsonResponse(req, res, 200, booking);
+  } catch (error) {
+    console.error("Error cancelling booking as studio:", error);
+    const msg = (error as Error).message;
+    if (msg === "Booking not found") return sendErrorResponse(req, res, 404, "Not Found", msg);
+    if (msg?.includes("Access denied") || msg?.includes("already cancelled")) {
+      return sendErrorResponse(req, res, 400, "Bad Request", msg);
+    }
     handleError(req, res, error);
   }
 });

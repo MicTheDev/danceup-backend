@@ -1407,6 +1407,40 @@ app.get("/cash", async (req, res) => {
   }
 });
 
+// DELETE /cash/:id
+app.delete("/cash/:id", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const db = getFirestore();
+    const userQuery = await db.collection("users")
+      .where("authUid", "==", user.uid)
+      .limit(1)
+      .get();
+    if (userQuery.empty) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found");
+    }
+    const studioOwnerId = userQuery.docs[0]!.id;
+
+    const docRef = db.collection("cashPurchases").doc(req.params["id"] as string);
+    const doc = await docRef.get();
+    if (!doc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Transaction not found");
+    }
+    const data = doc.data() as Record<string, unknown>;
+    if (data["studioOwnerId"] !== studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Transaction does not belong to this studio");
+    }
+
+    await docRef.delete();
+    sendJsonResponse(req, res, 200, { message: "Transaction deleted" });
+  } catch (error) {
+    console.error("Error deleting cash transaction:", error);
+    handleError(req, res, error);
+  }
+});
+
 // POST /cash
 app.post("/cash", async (req, res) => {
   try {
