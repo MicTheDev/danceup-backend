@@ -129,7 +129,20 @@ export class BookingsService {
       .orderBy("date", "desc")
       .orderBy("timeSlot.startTime", "desc")
       .get();
-    return snapshot.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) }));
+
+    return await Promise.all(snapshot.docs.map(async (doc) => {
+      const data = doc.data() as Record<string, unknown>;
+      let instructorName: string | null = null;
+      if (data["instructorId"]) {
+        try {
+          const instructor = await instructorsService.getPublicInstructorById(data["instructorId"] as string);
+          if (instructor) {
+            instructorName = [instructor.firstName, instructor.lastName].filter(Boolean).join(" ") || null;
+          }
+        } catch (_) { /* instructor may have been removed */ }
+      }
+      return { id: doc.id, ...data, instructorName };
+    }));
   }
 
   async cancelBooking(bookingId: string, studentId: string): Promise<void> {
@@ -178,8 +191,11 @@ export class BookingsService {
     const paymentIntentId = bookingData["stripePaymentIntentId"] as string | undefined;
     if (paymentIntentId && bookingData["paymentStatus"] === "paid") {
       const stripeService = await import("./stripe.service");
+      // Direct-charge bookings store stripeConnectedAccountId; destination-charge
+      // (legacy) bookings do not — omitting the account ID refunds on the platform.
+      const connectedAccountId = bookingData["stripeConnectedAccountId"] as string | undefined;
       try {
-        await stripeService.createRefund(paymentIntentId, "Studio cancelled the booking");
+        await stripeService.createRefund(paymentIntentId, "Studio cancelled the booking", connectedAccountId);
       } catch (refundErr) {
         console.error("[cancelBookingAsStudio] Refund failed:", refundErr);
         // Don't block the cancellation if refund fails — log and continue
@@ -347,6 +363,7 @@ export class BookingsService {
       amountPaid: String(privateRate),
     };
 
+    if (connectedAccountId) metadata["stripeConnectedAccountId"] = connectedAccountId;
     if (bookingData.contactInfo?.email) metadata["contactEmail"] = bookingData.contactInfo.email;
     if (bookingData.contactInfo?.phone) metadata["contactPhone"] = bookingData.contactInfo.phone;
 
@@ -402,6 +419,7 @@ export class BookingsService {
       paymentStatus: "paid",
       stripeSessionId: session["id"],
       stripePaymentIntentId: (session["payment_intent"] as string) || null,
+      stripeConnectedAccountId: meta["stripeConnectedAccountId"] || null,
       notes: meta["notes"] || null,
       contactInfo: {
         email: meta["contactEmail"] || (customerDetails?.["email"] as string | null) || null,

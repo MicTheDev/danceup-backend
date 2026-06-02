@@ -947,6 +947,7 @@ export async function createAccountSession(accountId: string): Promise<Stripe.Ac
         features: { refund_management: true, dispute_management: true, capture_payments: true },
       },
       payouts: { enabled: true, features: { instant_payouts: true, standard_payouts: true } },
+      balances: { enabled: true, features: { instant_payouts: true, standard_payouts: true } },
     },
   });
 }
@@ -988,15 +989,18 @@ export async function createPrivateLessonCheckoutSession(opts: PrivateLessonChec
 
   if (customerEmail) sessionParams.customer_email = customerEmail;
 
+  const requestOptions: Stripe.RequestOptions = {};
+
   if (connectedAccountId) {
     const pid = sessionParams.payment_intent_data as Record<string, unknown>;
-    pid["on_behalf_of"] = connectedAccountId;
-    pid["transfer_data"] = { destination: connectedAccountId };
     const fee = applicationFeeAmount ?? platformFeeCents(amountCents);
     if (fee > 0) pid["application_fee_amount"] = fee;
+    // Direct charge on the connected account — charges appear in the studio's
+    // Payments dashboard and balance, consistent with package/subscription charges.
+    requestOptions.stripeAccount = connectedAccountId;
   }
 
-  return await stripe.checkout.sessions.create(sessionParams);
+  return await stripe.checkout.sessions.create(sessionParams, requestOptions);
 }
 
 export async function createSubscriptionCheckout(
@@ -1032,11 +1036,19 @@ export async function createSubscriptionCheckout(
   }
 }
 
-export async function createRefund(paymentIntentId: string, reason: string): Promise<Stripe.Refund> {
+export async function createRefund(
+  paymentIntentId: string,
+  reason: string,
+  connectedAccountId?: string,
+): Promise<Stripe.Refund> {
   const stripe = await getStripeClient();
-  return await stripe.refunds.create({
-    payment_intent: paymentIntentId,
-    reason: "requested_by_customer",
-    metadata: { reason: reason || "" },
-  });
+  const requestOptions: Stripe.RequestOptions = connectedAccountId ? { stripeAccount: connectedAccountId } : {};
+  return await stripe.refunds.create(
+    {
+      payment_intent: paymentIntentId,
+      reason: "requested_by_customer",
+      metadata: { reason: reason || "" },
+    },
+    requestOptions,
+  );
 }

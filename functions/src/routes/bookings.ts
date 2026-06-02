@@ -175,13 +175,25 @@ app.post("/charge-saved", async (req, res) => {
 
     const db = getFirestore();
     const profileDoc = await authService.getStudentProfileByAuthUid(user.uid);
-    let stripeCustomerId: string | null = profileDoc ? ((profileDoc.data() as Record<string, unknown>)["stripeCustomerId"] as string) || null : null;
+    const profileData = profileDoc ? (profileDoc.data() as Record<string, unknown>) : null;
+    let stripeCustomerId: string | null = (profileData?.["stripeCustomerId"] as string) || null;
+    let studentDocRef: FirebaseFirestore.DocumentReference | null =
+      profileDoc ? db.collection("usersStudentProfiles").doc(profileDoc.id) : null;
+    let studentConnectedCustomers: Record<string, string> =
+      (profileData?.["stripeConnectedCustomers"] as Record<string, string>) || {};
+    const studentEmail: string = (profileData?.["email"] as string) || user.email || "";
 
     if (!stripeCustomerId) {
       const userQuery = await db.collection("users").where("authUid", "==", user.uid).limit(1).get();
       if (!userQuery.empty) {
         const firstDoc = userQuery.docs[0];
-        if (firstDoc) stripeCustomerId = ((firstDoc.data() as Record<string, unknown>)["stripeCustomerId"] as string) || null;
+        if (firstDoc) {
+          const userData = firstDoc.data() as Record<string, unknown>;
+          stripeCustomerId = (userData["stripeCustomerId"] as string) || null;
+          studentDocRef = studentDocRef ?? db.collection("users").doc(firstDoc.id);
+          studentConnectedCustomers =
+            (userData["stripeConnectedCustomers"] as Record<string, string>) || {};
+        }
       }
     }
 
@@ -199,8 +211,43 @@ app.post("/charge-saved", async (req, res) => {
     const connectedAccountId = (studioOwnerData["stripeAccountId"] as string) || null;
     const studioName = (studioOwnerData["studioName"] as string) || "Studio";
 
+    if (!connectedAccountId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "This studio has not completed Stripe setup.");
+    }
+
     const amountCents = Math.round((instructor["privateRate"] as number) * 100);
     const studentId = await bookingsService.getStudentId(user.uid);
+
+    // Find or create the student as a customer on the studio's connected Stripe account
+    const existingConnectedCustomerId = studentConnectedCustomers[connectedAccountId] ?? null;
+    const { customer: connectedCustomer, isNew } = await stripeService.findOrCreateConnectedCustomer(
+      studentEmail,
+      stripeCustomerId,
+      connectedAccountId,
+      undefined,
+      existingConnectedCustomerId,
+    );
+    const connectedCustomerId = connectedCustomer.id;
+    if ((isNew || !existingConnectedCustomerId) && studentDocRef) {
+      await studentDocRef.update({
+        [`stripeConnectedCustomers.${connectedAccountId}`]: connectedCustomerId,
+      });
+    }
+
+    // Find the cloned PM on the connected account (by fingerprint) or clone it now
+    let connectedPm = await stripeService.findConnectedPaymentMethod(
+      paymentMethodId as string,
+      connectedCustomerId,
+      connectedAccountId,
+    );
+    if (!connectedPm) {
+      connectedPm = await stripeService.clonePaymentMethodToConnectedAccount(
+        paymentMethodId as string,
+        stripeCustomerId,
+        connectedCustomerId,
+        connectedAccountId,
+      );
+    }
 
     const metadata = {
       purchaseType: "private_lesson",
@@ -217,9 +264,11 @@ app.post("/charge-saved", async (req, res) => {
       amountPaid: String(instructor["privateRate"]),
     };
 
-    const paymentIntent = await stripeService.chargePlatformCardForConnectedAccount(
-      stripeCustomerId,
-      paymentMethodId as string,
+    // Direct charge on the studio's connected account — consistent with package and
+    // subscription charges so all revenue appears in the studio's Stripe dashboard.
+    const paymentIntent = await stripeService.chargePaymentMethodDirectly(
+      connectedCustomerId,
+      connectedPm.id,
       amountCents,
       metadata,
       connectedAccountId,
@@ -244,6 +293,7 @@ app.post("/charge-saved", async (req, res) => {
       status: "pending",
       paymentStatus: "paid",
       stripePaymentIntentId: piData["id"],
+      stripeConnectedAccountId: connectedAccountId,
       notes: (notes as string) || null,
       amountPaid: instructor["privateRate"],
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
