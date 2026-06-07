@@ -168,6 +168,19 @@ export const autoCheckIn = onSchedule(
               await sendFcmNotification(fcmToken, "Checked in ✓", `${className} at ${studioName}`)
                 .catch((e) => console.warn("[AutoCheckIn] FCM failed:", (e as Error).message));
             }
+
+            try {
+              await db.collection("studentNotifications").add({
+                authUid,
+                type: "auto_checkin",
+                title: "Checked In ✓",
+                body: `${className} at ${studioName}`,
+                read: false,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+            } catch (e) {
+              console.warn("[AutoCheckIn] Student notification write failed:", (e as Error).message);
+            }
           } catch (e) {
             const msg = ((e as Error).message ?? "").toLowerCase();
             if (msg.includes("already checked") || msg.includes("duplicate")) {

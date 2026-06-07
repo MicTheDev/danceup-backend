@@ -4,6 +4,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
+import { sendStudentPush } from "../utils/push-notifications";
 import * as stripeService from "../services/stripe.service";
 import purchaseService from "../services/purchase.service";
 import creditTrackingService from "../services/credit-tracking.service";
@@ -594,6 +595,30 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
       classId: purchaseType === "class" ? itemId : null,
       metadata: purchaseMetadata,
     });
+
+    try {
+      const typeLabels: Record<string, string> = {
+        package: "Package",
+        event: "Event Ticket",
+        workshop: "Workshop",
+        class: "Class",
+      };
+      const typeLabel = typeLabels[purchaseType] ?? "Purchase";
+      const pushTitle = `${typeLabel} Purchase Confirmed`;
+      const pushBody = `${itemDetails.itemName} at ${itemDetails.studioName} — $${chargePrice.toFixed(2)}`;
+      await db.collection("studentNotifications").add({
+        authUid: user.uid,
+        type: "payment",
+        title: pushTitle,
+        body: pushBody,
+        purchaseId,
+        read: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      await sendStudentPush(user.uid, pushTitle, pushBody);
+    } catch (notifErr) {
+      console.error("[charge-saved] Student notification error:", notifErr);
+    }
 
     try {
       await purchaseService.createPurchaseNotification({

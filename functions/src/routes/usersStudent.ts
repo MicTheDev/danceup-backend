@@ -979,6 +979,77 @@ app.post("/change-email", async (req, res) => {
   }
 });
 
+app.get("/notifications/unread-count", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+    const db = getFirestore();
+    const snapshot = await db.collection("studentNotifications")
+      .where("authUid", "==", user.uid)
+      .where("read", "==", false)
+      .get();
+    sendJsonResponse(req, res, 200, { count: snapshot.size });
+  } catch (error) {
+    console.error("Error fetching unread notification count:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.get("/notifications", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const db = getFirestore();
+    const snapshot = await db.collection("studentNotifications")
+      .where("authUid", "==", user.uid)
+      .orderBy("createdAt", "desc")
+      .limit(30)
+      .get();
+
+    const notifications = snapshot.docs.map((doc) => {
+      const data = doc.data() as Record<string, unknown>;
+      const ts = data["createdAt"] as admin.firestore.Timestamp | null;
+      return {
+        id: doc.id,
+        type: data["type"] ?? "general",
+        title: data["title"] ?? "",
+        body: data["body"] ?? "",
+        read: data["read"] ?? false,
+        createdAt: ts ? ts.toDate().toISOString() : new Date().toISOString(),
+      };
+    });
+
+    sendJsonResponse(req, res, 200, notifications);
+  } catch (error) {
+    console.error("Error fetching student notifications:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.patch("/notifications/read-all", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const db = getFirestore();
+    const snapshot = await db.collection("studentNotifications")
+      .where("authUid", "==", user.uid)
+      .where("read", "==", false)
+      .limit(50)
+      .get();
+
+    const batch = db.batch();
+    snapshot.docs.forEach((doc) => batch.update(doc.ref, { read: true }));
+    await batch.commit();
+
+    sendJsonResponse(req, res, 200, { updated: snapshot.size });
+  } catch (error) {
+    console.error("Error marking notifications as read:", error);
+    handleError(req, res, error);
+  }
+});
+
 app.post("/logout", async (req, res) => {
   try {
     try { await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
@@ -1009,9 +1080,20 @@ app.post("/me/payment-methods/setup", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
     }
 
-    const { stripeCustomerId } = studentDoc.data() as { stripeCustomerId?: string };
+    const profileData = studentDoc.data() as { stripeCustomerId?: string; email?: string; firstName?: string; lastName?: string; studentProfileId?: string };
+    let { stripeCustomerId } = profileData;
+
     if (!stripeCustomerId) {
-      return sendErrorResponse(req, res, 400, "Bad Request", "No Stripe customer linked to this account");
+      const email = profileData.email || user.email || "";
+      const name = [profileData.firstName, profileData.lastName].filter(Boolean).join(" ");
+      const stripeCustomer = await createCustomer(email, { uid: user.uid, name }) as { id: string; email: string };
+      const db = getFirestore();
+      const docId = (studentDoc as unknown as { id: string }).id;
+      await db.collection("usersStudentProfiles").doc(docId).update({
+        stripeCustomerId: stripeCustomer.id,
+        stripeEmail: stripeCustomer.email,
+      });
+      stripeCustomerId = stripeCustomer.id;
     }
 
     const setupIntent = await createSetupIntent(stripeCustomerId) as { client_secret: string };

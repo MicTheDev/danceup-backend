@@ -11,6 +11,7 @@ import * as sendgridService from "../services/sendgrid.service";
 import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
 import { validateCreateBookingPayload } from "../utils/validation";
+import { sendStudentPush } from "../utils/push-notifications";
 import {
   sendJsonResponse,
   sendErrorResponse,
@@ -324,6 +325,22 @@ app.post("/charge-saved", async (req, res) => {
       );
     } catch (notifyErr) { console.error("[charge-saved booking] Notification error:", notifyErr); }
 
+    try {
+      const db = getFirestore();
+      const pushTitle = "Private Lesson Payment Confirmed";
+      const pushBody = `${instructorName} at ${studioName} — ${date} · $${instructor["privateRate"] as number}`;
+      await db.collection("studentNotifications").add({
+        authUid: user.uid,
+        type: "payment",
+        title: pushTitle,
+        body: pushBody,
+        bookingId: bookingRef.id,
+        read: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      await sendStudentPush(user.uid, pushTitle, pushBody);
+    } catch (notifErr) { console.error("[charge-saved booking] Student notification error:", notifErr); }
+
     sendJsonResponse(req, res, 200, {
       success: true,
       bookingId: bookingRef.id,
@@ -499,6 +516,26 @@ app.patch("/:bookingId/confirm", async (req, res) => {
         if (notificationDoc) {
           await notificationsService.markNotificationAsRead(notificationDoc.id, studioOwnerId);
         }
+      }
+
+      const bookingData = booking as Record<string, unknown>;
+      const studentAuthUid = bookingData["authUid"] as string | undefined;
+      if (studentAuthUid) {
+        const bookingDate = bookingData["date"] as string | undefined;
+        const bookingTs = bookingData["timeSlot"] as Record<string, unknown> | undefined;
+        const timeLabel = bookingTs ? `${bookingTs["startTime"] as string} – ${bookingTs["endTime"] as string}` : "";
+        const pushTitle = "Private Lesson Confirmed!";
+        const pushBody = `Your lesson${bookingDate ? ` on ${bookingDate}` : ""}${timeLabel ? ` at ${timeLabel}` : ""} has been confirmed.`;
+        await db.collection("studentNotifications").add({
+          authUid: studentAuthUid,
+          type: "booking_confirmed",
+          title: pushTitle,
+          body: pushBody,
+          bookingId,
+          read: false,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        await sendStudentPush(studentAuthUid, pushTitle, pushBody);
       }
     } catch (err) { console.error("Error marking notification as read:", err); }
 

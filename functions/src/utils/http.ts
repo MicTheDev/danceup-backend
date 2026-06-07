@@ -8,6 +8,8 @@ const ALLOWED_ORIGINS = new Set([
   // Dev
   "https://danceup-users-dev--dev-danceup.us-east4.hosted.app",
   "https://danceup-studio-owners-dev--dev-danceup.us-east4.hosted.app",
+  "https://danceup-admin.web.app",
+  "https://danceup-admin--dev-danceup.web.app",
   // Staging
   "https://danceup-users-staging--staging-danceup.us-east4.hosted.app",
   "https://danceup-studio-owners--staging-danceup.us-east4.hosted.app",

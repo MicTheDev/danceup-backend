@@ -15,6 +15,7 @@ exports.workshops = require("./workshops").workshops;
 exports.events = require("./events").events;
 exports.packages = require("./packages").packages;
 exports.packagePurchases = require("./package-purchases").packagePurchases;
+exports.contact = require("./contact").contact;
 exports.support = require("./support").support;
 exports.attendance = require("./attendance").attendance;
 exports.students = require("./students").students;

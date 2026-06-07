@@ -2,7 +2,7 @@ import Stripe from "stripe";
 import { getSecret } from "../utils/secret-manager";
 
 export function platformFeeCents(amountCents: number): number {
-  return 25 + Math.round(amountCents * 0.01);
+  return 30 + Math.round(amountCents * 0.015);
 }
 
 export function platformFeePercent(amountCents: number): number {

@@ -320,6 +320,33 @@ app.get("/export-data", async (req, res) => {
   }
 });
 
+// PATCH /fcm-token — update FCM push token for the authenticated studio owner
+app.patch("/fcm-token", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const { fcmToken } = req.body as { fcmToken?: unknown };
+    if (!fcmToken || typeof fcmToken !== "string" || fcmToken.trim().length === 0 || fcmToken.length > 500) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "fcmToken must be a non-empty string ≤ 500 characters");
+    }
+
+    const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
+    if (!userDoc) return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
+
+    const db = getFirestore();
+    await db.collection("users").doc(userDoc.id).update({
+      fcmToken: fcmToken.trim(),
+      fcmTokenUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, { ok: true });
+  } catch (error) {
+    console.error("PATCH /fcm-token error:", error);
+    handleError(req, res, error);
+  }
+});
+
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => handleError(_req, res, err));
 
 export const profile = functions.https.onRequest(app);
