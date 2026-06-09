@@ -612,6 +612,90 @@ export async function sendMilestoneEmail(
   });
 }
 
+export async function sendVendorConfirmationEmail(
+  to: string, businessName: string, eventName: string, studioName: string,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendVendorConfirmationEmail: no recipient email, skipping"); return; }
+  const biz = businessName?.trim() || "your business";
+  const event = eventName?.trim() || "the event";
+  const studio = studioName?.trim() || "the studio";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">Vendor Application Received!</h2>
+        <p style="color:#64748b;margin:0 0 20px">Thank you for your interest in vending at <strong>${event}</strong> hosted by <strong>${studio}</strong>.</p>
+        <p style="color:#475569;margin:0 0 20px">We've received the application for <strong>${biz}</strong> and the event host will review it shortly. You'll receive another email once your application has been reviewed.</p>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">This is an automated confirmation. Please do not reply to this email.</p>
+      </div>
+    </div>`;
+  const text = `Vendor Application Received!\n\nThank you for your interest in vending at ${event} hosted by ${studio}.\n\nWe've received the application for ${biz} and the event host will review it shortly. You'll receive another email once your application has been reviewed.`;
+
+  await sendEmail({
+    to, from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `Vendor Application Received — ${event}`, html, text, categories: ["vendor-application"],
+  });
+}
+
+export async function sendVendorApprovalEmail(
+  to: string, businessName: string, eventName: string, paymentUrl: string,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendVendorApprovalEmail: no recipient email, skipping"); return; }
+  const biz = businessName?.trim() || "your business";
+  const event = eventName?.trim() || "the event";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">Your Vendor Application is Approved!</h2>
+        <p style="color:#64748b;margin:0 0 20px">Great news! The application for <strong>${biz}</strong> has been approved for <strong>${event}</strong>.</p>
+        <p style="color:#475569;margin:0 0 24px">Complete your vendor registration by securing your spot with payment:</p>
+        <a href="${paymentUrl}" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          Complete Registration →
+        </a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">This is an automated notification. Please do not reply to this email.</p>
+      </div>
+    </div>`;
+  const text = `Your Vendor Application is Approved!\n\nGreat news! The application for ${biz} has been approved for ${event}.\n\nComplete your vendor registration here: ${paymentUrl}`;
+
+  await sendEmail({
+    to, from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `Vendor Application Approved — ${event}`, html, text, categories: ["vendor-approved"],
+  });
+}
+
+export async function sendVendorDeclineEmail(
+  to: string, businessName: string, eventName: string, reason: string,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendVendorDeclineEmail: no recipient email, skipping"); return; }
+  const biz = businessName?.trim() || "your business";
+  const event = eventName?.trim() || "the event";
+  const declineReason = reason?.trim() || "No reason provided.";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">Vendor Application Update</h2>
+        <p style="color:#64748b;margin:0 0 20px">We regret to inform you that the vendor application for <strong>${biz}</strong> at <strong>${event}</strong> was not approved at this time.</p>
+        <div style="background:#f1f5f9;border-radius:8px;padding:16px;margin-bottom:20px">
+          <p style="color:#475569;margin:0 0 4px;font-weight:600;font-size:14px">Reason:</p>
+          <p style="color:#475569;margin:0;font-size:14px">${declineReason}</p>
+        </div>
+        <p style="color:#94a3b8;font-size:13px;margin:0">If you have questions, please contact the event organizer directly.</p>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">This is an automated notification. Please do not reply to this email.</p>
+      </div>
+    </div>`;
+  const text = `Vendor Application Update\n\nWe regret to inform you that the vendor application for ${biz} at ${event} was not approved at this time.\n\nReason: ${declineReason}\n\nIf you have questions, please contact the event organizer directly.`;
+
+  await sendEmail({
+    to, from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `Vendor Application Update — ${event}`, html, text, categories: ["vendor-declined"],
+  });
+}
+
 export async function sendSignupNudgeEmail(
   to: string, firstName: string, studioName: string, daysSinceSignup: number,
 ): Promise<void> {

@@ -28,7 +28,7 @@ export function isAllowedOrigin(origin: string): boolean {
   return ALLOWED_ORIGINS.has(origin);
 }
 
-const CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"] as const;
+const CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const;
 const CORS_ALLOWED_HEADERS = ["Content-Type", "Authorization", "X-Requested-With"] as const;
 const CORS_EXPOSED_HEADERS = ["Content-Type", "Authorization"] as const;
 

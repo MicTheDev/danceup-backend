@@ -89,6 +89,7 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
     const purchaseType = body["purchaseType"] as string | undefined;
     const itemId = body["itemId"] as string | undefined;
     const selectedTiers = body["selectedTiers"];
+    const teamName = typeof body["teamName"] === "string" && body["teamName"].trim() ? body["teamName"].trim() : null;
     if (!purchaseType || !itemId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType and itemId are required");
     }
@@ -230,6 +231,7 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
       studioName: itemDetails.studioName || "",
       studentId: studentDoc ? studentDoc.id : "",
       authUid: user.uid,
+      ...(teamName ? { teamName } : {}),
     };
 
     // For events/workshops, compute the actual total from the tiers the user selected.
@@ -328,6 +330,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
     const itemId = body["itemId"] as string | undefined;
     const paymentMethodId = body["paymentMethodId"] as string | undefined;
     const selectedTiers = body["selectedTiers"];
+    const teamName = typeof body["teamName"] === "string" && body["teamName"].trim() ? body["teamName"].trim() : null;
 
     if (!purchaseType || !itemId || !paymentMethodId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType, itemId, and paymentMethodId are required");
@@ -474,6 +477,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
     const purchaseMetadata: Record<string, unknown> = {
       ...itemDetails.metadata,
       ...(tierBreakdown ? { tierBreakdown } : {}),
+      ...(teamName ? { teamName } : {}),
     };
 
     const isRecurring = purchaseType === "package" && itemDetails.isRecurring === true;
@@ -1101,7 +1105,10 @@ app.post("/success", async (req, res) => {
       creditsGranted: creditResult.creditsGranted,
       creditIds: creditResult.creditIds,
       classId: purchaseType === "class" ? itemId : null,
-      metadata: itemDetails.metadata,
+      metadata: {
+        ...itemDetails.metadata,
+        ...(metadata["teamName"] ? { teamName: metadata["teamName"] } : {}),
+      },
     });
 
     try {

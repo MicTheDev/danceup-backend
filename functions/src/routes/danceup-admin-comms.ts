@@ -233,9 +233,11 @@ app.post("/send", async (req: Request, res: Response) => {
         const chunk = recipientDocs.slice(i, i + BATCH_SIZE);
         const batch = db.batch();
         for (const doc of chunk) {
+          const data = doc.data();
+          const isStudioOwner = Array.isArray(data["roles"]) && (data["roles"] as string[]).includes("studio_owner");
           const ref = db.collection("notifications").doc();
           batch.set(ref, {
-            userId: doc.id,
+            ...(isStudioOwner ? { studioId: doc.id } : { userId: doc.id }),
             title: titleTrimmed,
             message: bodyTrimmed,
             type: "admin_broadcast",

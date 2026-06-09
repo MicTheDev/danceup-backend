@@ -93,7 +93,61 @@ export interface InstructorAvailability {
   slots: Array<{ startTime: string; endTime: string }>;
 }
 
+// ─── Performer Registration ───────────────────────────────────────────────────
+
+export interface PerformerQuestion {
+  id: string;
+  label: string;
+  required: boolean;
+  order: number;
+  type?: 'text' | 'state';
+}
+
+export interface PerformerApplication {
+  eventId: string;
+  studioOwnerId: string;
+  teamName: string;
+  answers: Record<string, string>;
+  status: "pending" | "approved" | "declined";
+  paymentUrl?: string | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+// ─── Vendor Registration ──────────────────────────────────────────────────────
+
+export interface VendorQuestion {
+  id: string;
+  label: string;
+  required: boolean;
+  order: number;
+}
+
+export interface VendorApplication {
+  id?: string;
+  eventId: string;
+  studioOwnerId: string;
+  businessName: string;
+  email: string;
+  answers: Record<string, string>;
+  status: "pending" | "approved" | "declined";
+  declineReason?: string | null;
+  paymentUrl?: string | null;
+  submittedBy: string;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
 // ─── Event ────────────────────────────────────────────────────────────────────
+
+export interface ScheduleSlot {
+  date: string;          // YYYY-MM-DD
+  startTime: string;     // HH:mm (24-hour)
+  endTime: string;       // HH:mm (24-hour)
+  room: string;
+  className: string;
+  instructors: string[];
+}
 
 export interface Event {
   studioOwnerId: string;
@@ -114,6 +168,13 @@ export interface Event {
   capacity?: number | null;
   stripePriceId?: string | null;
   stripeProductId?: string | null;
+  rooms?: string[];
+  schedule?: ScheduleSlot[];
+  showSchedule?: boolean;
+  enablePerformerRegistration?: boolean;
+  performerQuestionnaire?: PerformerQuestion[];
+  enableVendorRegistration?: boolean;
+  vendorQuestionnaire?: VendorQuestion[];
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }

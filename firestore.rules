@@ -1,23 +1,57 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // Returns the studioOwnerId (user doc ID) for an event
+    function getEventOwnerId(eventId) {
+      return get(/databases/$(database)/documents/events/$(eventId)).data.studioOwnerId;
+    }
+
+    // True if the current user is the owner of the given event
+    function isEventOwner(eventId) {
+      return request.auth != null &&
+        resource.data.eventId is string &&
+        get(/databases/$(database)/documents/users/$(getEventOwnerId(eventId))).data.authUid == request.auth.uid;
+    }
+
     // Attendance collection rules
     match /attendance/{attendanceId} {
       // Allow read if user is authenticated and the attendance record's studioOwnerId
       // points to a user document where that user's authUid equals the current user's UID
-      allow read: if request.auth != null && 
+      allow read: if request.auth != null &&
                      resource.data.studioOwnerId != null &&
                      exists(/databases/$(database)/documents/users/$(resource.data.studioOwnerId)) &&
                      get(/databases/$(database)/documents/users/$(resource.data.studioOwnerId)).data.authUid == request.auth.uid;
-      
+
       // Allow write only through backend (deny direct client writes for now)
       allow write: if false;
     }
-    
+
     // Kiosk watch-mode sessions — authenticated users only; all writes go through backend
     match /kioskSessions/{sessionId} {
       allow read: if request.auth != null;
       allow write: if false;
+    }
+
+    // Performer applications
+    match /performerApplications/{appId} {
+      // Any authenticated user (performer) can submit an application
+      allow create: if request.auth != null;
+
+      // Studio owners can read and update (approve/decline) applications for their events
+      allow read, update: if isEventOwner(resource.data.eventId);
+    }
+
+    // Vendor applications
+    match /vendorApplications/{appId} {
+      // Any authenticated user (vendor) can submit an application
+      allow create: if request.auth != null;
+
+      // Studio owners can read applications for their events
+      allow read: if isEventOwner(resource.data.eventId);
+
+      // Approve/decline go through the backend API (which verifies ownership), not direct client writes
+      allow update: if false;
     }
 
     // Default rule: deny all access

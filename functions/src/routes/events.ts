@@ -1,3 +1,4 @@
+import * as admin from "firebase-admin";
 import * as functions from "firebase-functions";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
@@ -6,6 +7,11 @@ import storageService from "../services/storage.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateEventPayload, validateUpdateEventPayload } from "../utils/validation";
 import { getFirestore } from "../utils/firestore";
+import {
+  sendVendorConfirmationEmail,
+  sendVendorApprovalEmail,
+  sendVendorDeclineEmail,
+} from "../services/sendgrid.service";
 import {
   sendJsonResponse,
   sendErrorResponse,
@@ -270,6 +276,7 @@ app.get("/:id/attendees", async (req, res) => {
         checkedInBy: purchase["checkedInBy"] || null,
         eventCode: null,
         stripePaymentIntentId: purchase["stripePaymentIntentId"] || null,
+        teamName: (meta["teamName"] as string) || null,
       });
     }
 
@@ -456,6 +463,216 @@ app.delete("/:id", async (req, res) => {
     const msg = (error as Error).message;
     if (msg?.includes("not found")) return sendErrorResponse(req, res, 404, "Not Found", msg);
     if (msg?.includes("Access denied")) return sendErrorResponse(req, res, 403, "Access Denied", msg);
+    handleError(req, res, error);
+  }
+});
+
+// ─── Performer Applications ────────────────────────────────────────────────────
+
+app.post("/performer-applications", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const { eventId, teamName, answers } = req.body as {
+      eventId: string;
+      teamName: string;
+      answers: Record<string, string>;
+    };
+
+    if (!eventId || typeof eventId !== "string") {
+      return sendErrorResponse(req, res, 400, "Bad Request", "eventId is required");
+    }
+    if (!teamName || typeof teamName !== "string" || teamName.trim() === "") {
+      return sendErrorResponse(req, res, 400, "Bad Request", "teamName is required");
+    }
+
+    const db = getFirestore();
+    const eventDoc = await db.collection("events").doc(eventId).get();
+    if (!eventDoc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Event not found");
+    }
+
+    const docRef = await db.collection("performerApplications").add({
+      eventId,
+      studioOwnerId: eventDoc.data()!["studioOwnerId"],
+      teamName: teamName.trim(),
+      answers: answers ?? {},
+      status: "pending",
+      paymentUrl: null,
+      submittedBy: user.uid,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 201, { id: docRef.id });
+  } catch (error) {
+    console.error("Error submitting performer application:", error);
+    handleError(req, res, error);
+  }
+});
+
+// ─── Vendor Applications ──────────────────────────────────────────────────────
+
+app.post("/vendor-applications", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const { eventId, businessName, email, answers } = req.body as {
+      eventId: string;
+      businessName: string;
+      email: string;
+      answers: Record<string, string>;
+    };
+
+    if (!eventId || typeof eventId !== "string") {
+      return sendErrorResponse(req, res, 400, "Bad Request", "eventId is required");
+    }
+    if (!businessName || typeof businessName !== "string" || businessName.trim() === "") {
+      return sendErrorResponse(req, res, 400, "Bad Request", "businessName is required");
+    }
+    if (!email || typeof email !== "string" || email.trim() === "") {
+      return sendErrorResponse(req, res, 400, "Bad Request", "email is required");
+    }
+
+    const db = getFirestore();
+    const eventDoc = await db.collection("events").doc(eventId).get();
+    if (!eventDoc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Event not found");
+    }
+
+    const eventData = eventDoc.data()!;
+    const docRef = await db.collection("vendorApplications").add({
+      eventId,
+      studioOwnerId: eventData["studioOwnerId"],
+      businessName: businessName.trim(),
+      email: email.trim().toLowerCase(),
+      answers: answers ?? {},
+      status: "pending",
+      declineReason: null,
+      paymentUrl: null,
+      submittedBy: user.uid,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    try {
+      await sendVendorConfirmationEmail(
+        email.trim(),
+        businessName.trim(),
+        eventData["name"] as string ?? "the event",
+        eventData["studioName"] as string ?? "the studio",
+      );
+    } catch (emailErr) {
+      console.warn("[vendor-applications] confirmation email failed:", emailErr);
+    }
+
+    sendJsonResponse(req, res, 201, { id: docRef.id });
+  } catch (error) {
+    console.error("Error submitting vendor application:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.post("/vendor-applications/:appId/approve", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const { appId } = req.params;
+    const { paymentUrl } = req.body as { paymentUrl: string };
+
+    if (!paymentUrl || typeof paymentUrl !== "string") {
+      return sendErrorResponse(req, res, 400, "Bad Request", "paymentUrl is required");
+    }
+
+    const db = getFirestore();
+    const appDoc = await db.collection("vendorApplications").doc(appId).get();
+    if (!appDoc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Vendor application not found");
+    }
+
+    const appData = appDoc.data()!;
+    const ownerDoc = await db.collection("users").doc(appData["studioOwnerId"]).get();
+    if (!ownerDoc.exists || ownerDoc.data()!["authUid"] !== user.uid) {
+      return sendErrorResponse(req, res, 403, "Forbidden", "Access denied");
+    }
+
+    await appDoc.ref.update({
+      status: "approved",
+      paymentUrl,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const eventDoc = await db.collection("events").doc(appData["eventId"]).get();
+    const eventName = (eventDoc.data()?.["name"] as string) ?? "the event";
+
+    try {
+      await sendVendorApprovalEmail(
+        appData["email"] as string,
+        appData["businessName"] as string,
+        eventName,
+        paymentUrl,
+      );
+    } catch (emailErr) {
+      console.warn("[vendor-applications/approve] approval email failed:", emailErr);
+    }
+
+    sendJsonResponse(req, res, 200, { success: true });
+  } catch (error) {
+    console.error("Error approving vendor application:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.post("/vendor-applications/:appId/decline", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const { appId } = req.params;
+    const { reason } = req.body as { reason: string };
+
+    if (!reason || typeof reason !== "string" || reason.trim() === "") {
+      return sendErrorResponse(req, res, 400, "Bad Request", "reason is required");
+    }
+
+    const db = getFirestore();
+    const appDoc = await db.collection("vendorApplications").doc(appId).get();
+    if (!appDoc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Vendor application not found");
+    }
+
+    const appData = appDoc.data()!;
+    const ownerDoc = await db.collection("users").doc(appData["studioOwnerId"]).get();
+    if (!ownerDoc.exists || ownerDoc.data()!["authUid"] !== user.uid) {
+      return sendErrorResponse(req, res, 403, "Forbidden", "Access denied");
+    }
+
+    await appDoc.ref.update({
+      status: "declined",
+      declineReason: reason.trim(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const eventDoc = await db.collection("events").doc(appData["eventId"]).get();
+    const eventName = (eventDoc.data()?.["name"] as string) ?? "the event";
+
+    try {
+      await sendVendorDeclineEmail(
+        appData["email"] as string,
+        appData["businessName"] as string,
+        eventName,
+        reason.trim(),
+      );
+    } catch (emailErr) {
+      console.warn("[vendor-applications/decline] decline email failed:", emailErr);
+    }
+
+    sendJsonResponse(req, res, 200, { success: true });
+  } catch (error) {
+    console.error("Error declining vendor application:", error);
     handleError(req, res, error);
   }
 });

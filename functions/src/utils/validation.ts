@@ -156,8 +156,11 @@ export function validateDanceGenre(genre: unknown): ValidationResult {
     "contemporary", "jazz", "modern", "lyrical",
     "ballet", "tap", "flamenco", "belly dance",
   ];
-  if (!validGenres.includes((genre as string).toLowerCase())) {
-    return { valid: false, message: `Dance genre must be one of: ${validGenres.join(", ")}` };
+  const genres = Array.isArray(genre) ? genre : [genre];
+  for (const g of genres) {
+    if (typeof g !== "string" || !validGenres.includes(g.toLowerCase())) {
+      return { valid: false, message: `Dance genre must be one of: ${validGenres.join(", ")}` };
+    }
   }
   return { valid: true, message: "" };
 }
@@ -230,6 +233,9 @@ function validateEventType(type: unknown): ValidationResult {
 interface PriceTier {
   name?: unknown;
   price?: unknown;
+  isPerformancePass?: unknown;
+  isVendorPass?: unknown;
+  displayPublicly?: unknown;
 }
 
 function validatePriceTier(tier: unknown): ValidationResult {
@@ -242,6 +248,69 @@ function validatePriceTier(tier: unknown): ValidationResult {
   }
   if (t.price === undefined || t.price === null || typeof t.price !== "number" || (t.price as number) < 0) {
     return { valid: false, message: "Price tier price must be a non-negative number" };
+  }
+  if (t.isPerformancePass !== undefined && t.isPerformancePass !== null && typeof t.isPerformancePass !== "boolean") {
+    return { valid: false, message: "Price tier isPerformancePass must be a boolean" };
+  }
+  if (t.isVendorPass !== undefined && t.isVendorPass !== null && typeof t.isVendorPass !== "boolean") {
+    return { valid: false, message: "Price tier isVendorPass must be a boolean" };
+  }
+  if (t.displayPublicly !== undefined && t.displayPublicly !== null && typeof t.displayPublicly !== "boolean") {
+    return { valid: false, message: "Price tier displayPublicly must be a boolean" };
+  }
+  return { valid: true, message: "" };
+}
+
+function validatePerformerQuestion(q: unknown): ValidationResult {
+  if (!q || typeof q !== "object") return { valid: false, message: "Performer question must be an object" };
+  const obj = q as Record<string, unknown>;
+  if (!obj["id"] || typeof obj["id"] !== "string" || (obj["id"] as string).trim().length === 0) {
+    return { valid: false, message: "question.id must be a non-empty string" };
+  }
+  if (!obj["label"] || typeof obj["label"] !== "string" || (obj["label"] as string).trim().length === 0) {
+    return { valid: false, message: "question.label must be a non-empty string" };
+  }
+  if (typeof obj["required"] !== "boolean") {
+    return { valid: false, message: "question.required must be a boolean" };
+  }
+  if (typeof obj["order"] !== "number") {
+    return { valid: false, message: "question.order must be a number" };
+  }
+  return { valid: true, message: "" };
+}
+
+function validatePerformerQuestionnaire(questions: unknown): ValidationResult {
+  if (!Array.isArray(questions)) return { valid: false, message: "performerQuestionnaire must be an array" };
+  for (let i = 0; i < questions.length; i++) {
+    const v = validatePerformerQuestion(questions[i]);
+    if (!v.valid) return { valid: false, message: `performerQuestionnaire[${i}]: ${v.message}` };
+  }
+  return { valid: true, message: "" };
+}
+
+function validateVendorQuestion(q: unknown): ValidationResult {
+  if (!q || typeof q !== "object") return { valid: false, message: "Vendor question must be an object" };
+  const obj = q as Record<string, unknown>;
+  if (!obj["id"] || typeof obj["id"] !== "string" || (obj["id"] as string).trim().length === 0) {
+    return { valid: false, message: "question.id must be a non-empty string" };
+  }
+  if (!obj["label"] || typeof obj["label"] !== "string" || (obj["label"] as string).trim().length === 0) {
+    return { valid: false, message: "question.label must be a non-empty string" };
+  }
+  if (typeof obj["required"] !== "boolean") {
+    return { valid: false, message: "question.required must be a boolean" };
+  }
+  if (typeof obj["order"] !== "number") {
+    return { valid: false, message: "question.order must be a number" };
+  }
+  return { valid: true, message: "" };
+}
+
+function validateVendorQuestionnaire(questions: unknown): ValidationResult {
+  if (!Array.isArray(questions)) return { valid: false, message: "vendorQuestionnaire must be an array" };
+  for (let i = 0; i < questions.length; i++) {
+    const v = validateVendorQuestion(questions[i]);
+    if (!v.valid) return { valid: false, message: `vendorQuestionnaire[${i}]: ${v.message}` };
   }
   return { valid: true, message: "" };
 }
@@ -256,6 +325,31 @@ function validatePriceTiers(priceTiers: unknown): ValidationResult {
   for (let i = 0; i < priceTiers.length; i++) {
     const v = validatePriceTier(priceTiers[i]);
     if (!v.valid) return { valid: false, message: `Price tier ${i + 1}: ${v.message}` };
+  }
+  return { valid: true, message: "" };
+}
+
+function validateScheduleSlot(slot: unknown): ValidationResult {
+  if (!slot || typeof slot !== "object") return { valid: false, message: "Schedule slot must be an object" };
+  const s = slot as Record<string, unknown>;
+  if (!isValidDateFormat(s["date"])) return { valid: false, message: "slot.date must be a valid date (YYYY-MM-DD)" };
+  if (!isValidTimeFormat(s["startTime"])) return { valid: false, message: "slot.startTime must be in HH:mm format" };
+  if (!isValidTimeFormat(s["endTime"])) return { valid: false, message: "slot.endTime must be in HH:mm format" };
+  if (!s["room"] || typeof s["room"] !== "string" || (s["room"] as string).trim().length === 0) {
+    return { valid: false, message: "slot.room is required" };
+  }
+  if (!s["className"] || typeof s["className"] !== "string" || (s["className"] as string).trim().length === 0) {
+    return { valid: false, message: "slot.className is required" };
+  }
+  if (!Array.isArray(s["instructors"])) return { valid: false, message: "slot.instructors must be an array" };
+  return { valid: true, message: "" };
+}
+
+function validateSchedule(schedule: unknown): ValidationResult {
+  if (!Array.isArray(schedule)) return { valid: false, message: "schedule must be an array" };
+  for (let i = 0; i < schedule.length; i++) {
+    const v = validateScheduleSlot(schedule[i]);
+    if (!v.valid) return { valid: false, message: `schedule[${i}]: ${v.message}` };
   }
   return { valid: true, message: "" };
 }
@@ -775,6 +869,15 @@ export function validateCreateWorkshopPayload(payload: Record<string, unknown>):
     }
   }
 
+  if (payload["schedule"] !== undefined && payload["schedule"] !== null) {
+    const v = validateSchedule(payload["schedule"]);
+    if (!v.valid) errors.push({ field: "schedule", message: v.message ?? "" });
+  }
+
+  if (payload["showSchedule"] !== undefined && typeof payload["showSchedule"] !== "boolean") {
+    errors.push({ field: "showSchedule", message: "showSchedule must be a boolean" });
+  }
+
   return { valid: errors.length === 0, errors };
 }
 
@@ -844,6 +947,15 @@ export function validateUpdateWorkshopPayload(payload: Record<string, unknown>):
     }
   }
 
+  if (payload["schedule"] !== undefined && payload["schedule"] !== null) {
+    const v = validateSchedule(payload["schedule"]);
+    if (!v.valid) errors.push({ field: "schedule", message: v.message ?? "" });
+  }
+
+  if (payload["showSchedule"] !== undefined && typeof payload["showSchedule"] !== "boolean") {
+    errors.push({ field: "showSchedule", message: "showSchedule must be a boolean" });
+  }
+
   return { valid: errors.length === 0, errors };
 }
 
@@ -906,6 +1018,33 @@ export function validateCreateEventPayload(payload: Record<string, unknown>): Va
     } else if (!payload["imageFile"].startsWith("data:image/")) {
       errors.push({ field: "imageFile", message: "Image file must be a valid base64 image data URL" });
     }
+  }
+
+  if (payload["schedule"] !== undefined && payload["schedule"] !== null) {
+    const v = validateSchedule(payload["schedule"]);
+    if (!v.valid) errors.push({ field: "schedule", message: v.message ?? "" });
+  }
+
+  if (payload["showSchedule"] !== undefined && typeof payload["showSchedule"] !== "boolean") {
+    errors.push({ field: "showSchedule", message: "showSchedule must be a boolean" });
+  }
+
+  if (payload["enablePerformerRegistration"] !== undefined && typeof payload["enablePerformerRegistration"] !== "boolean") {
+    errors.push({ field: "enablePerformerRegistration", message: "enablePerformerRegistration must be a boolean" });
+  }
+
+  if (payload["performerQuestionnaire"] !== undefined && payload["performerQuestionnaire"] !== null) {
+    const v = validatePerformerQuestionnaire(payload["performerQuestionnaire"]);
+    if (!v.valid) errors.push({ field: "performerQuestionnaire", message: v.message ?? "" });
+  }
+
+  if (payload["enableVendorRegistration"] !== undefined && typeof payload["enableVendorRegistration"] !== "boolean") {
+    errors.push({ field: "enableVendorRegistration", message: "enableVendorRegistration must be a boolean" });
+  }
+
+  if (payload["vendorQuestionnaire"] !== undefined && payload["vendorQuestionnaire"] !== null) {
+    const v = validateVendorQuestionnaire(payload["vendorQuestionnaire"]);
+    if (!v.valid) errors.push({ field: "vendorQuestionnaire", message: v.message ?? "" });
   }
 
   return { valid: errors.length === 0, errors };
@@ -975,6 +1114,33 @@ export function validateUpdateEventPayload(payload: Record<string, unknown>): Va
     } else if (!payload["imageFile"].startsWith("data:image/")) {
       errors.push({ field: "imageFile", message: "Image file must be a valid base64 image data URL" });
     }
+  }
+
+  if (payload["schedule"] !== undefined && payload["schedule"] !== null) {
+    const v = validateSchedule(payload["schedule"]);
+    if (!v.valid) errors.push({ field: "schedule", message: v.message ?? "" });
+  }
+
+  if (payload["showSchedule"] !== undefined && typeof payload["showSchedule"] !== "boolean") {
+    errors.push({ field: "showSchedule", message: "showSchedule must be a boolean" });
+  }
+
+  if (payload["enablePerformerRegistration"] !== undefined && typeof payload["enablePerformerRegistration"] !== "boolean") {
+    errors.push({ field: "enablePerformerRegistration", message: "enablePerformerRegistration must be a boolean" });
+  }
+
+  if (payload["performerQuestionnaire"] !== undefined && payload["performerQuestionnaire"] !== null) {
+    const v = validatePerformerQuestionnaire(payload["performerQuestionnaire"]);
+    if (!v.valid) errors.push({ field: "performerQuestionnaire", message: v.message ?? "" });
+  }
+
+  if (payload["enableVendorRegistration"] !== undefined && typeof payload["enableVendorRegistration"] !== "boolean") {
+    errors.push({ field: "enableVendorRegistration", message: "enableVendorRegistration must be a boolean" });
+  }
+
+  if (payload["vendorQuestionnaire"] !== undefined && payload["vendorQuestionnaire"] !== null) {
+    const v = validateVendorQuestionnaire(payload["vendorQuestionnaire"]);
+    if (!v.valid) errors.push({ field: "vendorQuestionnaire", message: v.message ?? "" });
   }
 
   return { valid: errors.length === 0, errors };
