@@ -11,6 +11,7 @@ import notificationsService from "../services/notifications.service";
 import { sendConfirmationEmail } from "../services/sendgrid.service";
 import authService from "../services/auth.service";
 import purchaseService from "../services/purchase.service";
+import { logAuditEvent } from "../services/audit.service";
 import {
   sendJsonResponse,
   sendErrorResponse,
@@ -593,8 +594,13 @@ app.post("/subscription/cancel", async (req, res) => {
     }
 
     const stripe = await stripeService.getStripeClient() as import("stripe").default;
-    const updated = await stripe.subscriptions.update(userData["stripeSubscriptionId"] as string, {
+    const subscriptionId = userData["stripeSubscriptionId"] as string;
+    const updated = await stripe.subscriptions.update(subscriptionId, {
       cancel_at_period_end: true,
+    });
+
+    logAuditEvent(user.uid, userQuery.docs[0]!.id, "subscription_cancelled", "subscription", subscriptionId, {
+      currentPeriodEnd: updated.current_period_end,
     });
 
     sendJsonResponse(req, res, 200, {
@@ -857,6 +863,16 @@ app.put("/payment-methods/:id", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "User not found");
     }
 
+    const userData = userQuery.docs[0]!.data() as Record<string, unknown>;
+    if (!userData["stripeCustomerId"]) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No Stripe customer found");
+    }
+
+    const methods = await stripeService.listPaymentMethods(userData["stripeCustomerId"] as string) as Array<{ id: string }>;
+    if (!methods.some((pm) => pm.id === id)) {
+      return sendErrorResponse(req, res, 403, "Forbidden", "Payment method does not belong to this account");
+    }
+
     const updated = await stripeService.updatePaymentMethod(id, month, year) as unknown as Record<string, unknown>;
     const card = (updated["card"] as Record<string, unknown>) || {};
 
@@ -890,7 +906,18 @@ app.delete("/payment-methods/:id", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "User not found");
     }
 
+    const userData = userQuery.docs[0]!.data() as Record<string, unknown>;
+    if (!userData["stripeCustomerId"]) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No Stripe customer found");
+    }
+
+    const methods = await stripeService.listPaymentMethods(userData["stripeCustomerId"] as string) as Array<{ id: string }>;
+    if (!methods.some((pm) => pm.id === id)) {
+      return sendErrorResponse(req, res, 403, "Forbidden", "Payment method does not belong to this account");
+    }
+
     await stripeService.detachPaymentMethod(id);
+    logAuditEvent(user.uid, userQuery.docs[0]!.id, "payment_method_deleted", "payment_method", id);
     sendJsonResponse(req, res, 200, { success: true });
   } catch (error) {
     handleError(req, res, error);

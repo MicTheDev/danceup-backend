@@ -304,7 +304,17 @@ app.post("/reset-password", async (req, res) => {
     }
 
     const { oobCode, newPassword } = req.body as { oobCode: string; newPassword: string };
-    await authService.verifyPasswordResetCode(oobCode, newPassword);
+    const resetEmail = await authService.verifyPasswordResetCode(oobCode, newPassword);
+
+    // Revoke all existing sessions so the old password can no longer be used
+    if (resetEmail) {
+      try {
+        const userRecord = await admin.auth().getUserByEmail(resetEmail);
+        await admin.auth().revokeRefreshTokens(userRecord.uid);
+      } catch (revokeError) {
+        console.warn("Failed to revoke tokens after password reset:", (revokeError as Error).message);
+      }
+    }
 
     sendJsonResponse(req, res, 200, { message: "Password reset successfully" });
   } catch (error) {
@@ -351,6 +361,9 @@ app.post("/change-email", async (req, res) => {
     }
 
     await authService.updateUserEmail(user.uid, newEmail);
+
+    // Revoke all existing sessions so old tokens referencing the previous email are invalidated
+    await admin.auth().revokeRefreshTokens(user.uid);
 
     const db = getFirestore();
     await db.collection("users").doc(userDoc.id).update({

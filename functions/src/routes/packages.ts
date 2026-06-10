@@ -5,6 +5,7 @@ import packagesService from "../services/packages.service";
 import packagePurchaseService from "../services/package-purchase.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreatePackagePayload, validateUpdatePackagePayload } from "../utils/validation";
+import { sanitizeRichText } from "../utils/sanitize";
 import {
   sendJsonResponse,
   sendErrorResponse,
@@ -74,6 +75,11 @@ app.post("/", async (req, res) => {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
+    const packageBody: Record<string, unknown> = { ...req.body };
+    if (typeof packageBody["description"] === "string") {
+      packageBody["description"] = sanitizeRichText(packageBody["description"]);
+    }
+
     const validation = validateCreatePackagePayload(req.body);
     if (!validation.valid) {
       return sendErrorResponse(req, res, 400, "Validation Error", "Invalid package data", {
@@ -86,7 +92,7 @@ app.post("/", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
-    const packageId = await packagesService.createPackage(req.body, studioOwnerId);
+    const packageId = await packagesService.createPackage(packageBody, studioOwnerId);
     sendJsonResponse(req, res, 201, { id: packageId, message: "Package created successfully" });
   } catch (error) {
     console.error("Error creating package:", error);
@@ -124,6 +130,11 @@ app.put("/:id", async (req, res) => {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
+    const packageBody: Record<string, unknown> = { ...req.body };
+    if (typeof packageBody["description"] === "string") {
+      packageBody["description"] = sanitizeRichText(packageBody["description"]);
+    }
+
     const validation = validateUpdatePackagePayload(req.body);
     if (!validation.valid) {
       return sendErrorResponse(req, res, 400, "Validation Error", "Invalid package data", {
@@ -136,7 +147,7 @@ app.put("/:id", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
-    await packagesService.updatePackage(req.params["id"] as string, req.body, studioOwnerId);
+    await packagesService.updatePackage(req.params["id"] as string, packageBody, studioOwnerId);
     sendJsonResponse(req, res, 200, { message: "Package updated successfully" });
   } catch (error) {
     console.error("Error updating package:", error);

@@ -155,7 +155,7 @@ export class AuthService {
     }
   }
 
-  async verifyPasswordResetCode(oobCode: string, newPassword: string): Promise<void> {
+  async verifyPasswordResetCode(oobCode: string, newPassword: string): Promise<string> {
     const apiKey = await getFirebaseApiKey();
     const url = `https://identitytoolkit.googleapis.com/v1/accounts:resetPassword?key=${apiKey}`;
     const response = await fetch(url, {
@@ -167,6 +167,8 @@ export class AuthService {
       const errorData = await response.json().catch(() => ({})) as { error?: { message?: string } };
       throw new Error(errorData.error?.message ?? "Failed to reset password");
     }
+    const data = await response.json() as { email?: string };
+    return data.email ?? "";
   }
 
   async updateUserEmail(uid: string, newEmail: string): Promise<void> {

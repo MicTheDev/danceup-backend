@@ -3,6 +3,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import instructorsService from "../services/instructors.service";
 import storageService from "../services/storage.service";
+import { logAuditEvent } from "../services/audit.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateInstructorPayload, validateUpdateInstructorPayload } from "../utils/validation";
 import {
@@ -88,6 +89,7 @@ app.post("/", async (req, res) => {
 
     const payload = photoUrl ? { ...instructorData, photoUrl } : instructorData;
     const instructorId = await instructorsService.createInstructor(payload, studioOwnerId);
+    logAuditEvent(user.uid, studioOwnerId, "instructor_created", "instructor", instructorId);
 
     sendJsonResponse(req, res, 201, { id: instructorId, message: "Instructor created successfully" });
   } catch (error) {
@@ -189,8 +191,10 @@ app.put("/:id", async (req, res) => {
       }
     }
 
+    const instructorId = req.params["id"] as string;
     const payload = photoUrl !== undefined ? { ...instructorData, photoUrl } : instructorData;
-    await instructorsService.updateInstructor(req.params["id"] as string, payload, studioOwnerId);
+    await instructorsService.updateInstructor(instructorId, payload, studioOwnerId);
+    logAuditEvent(user.uid, studioOwnerId, "instructor_updated", "instructor", instructorId);
 
     sendJsonResponse(req, res, 200, { message: "Instructor updated successfully" });
   } catch (error) {
@@ -212,7 +216,9 @@ app.delete("/:id", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
-    await instructorsService.deleteInstructor(req.params["id"] as string, studioOwnerId);
+    const instructorId = req.params["id"] as string;
+    await instructorsService.deleteInstructor(instructorId, studioOwnerId);
+    logAuditEvent(user.uid, studioOwnerId, "instructor_deleted", "instructor", instructorId);
     sendJsonResponse(req, res, 200, { message: "Instructor deleted successfully" });
   } catch (error) {
     console.error("Error deleting instructor:", error);

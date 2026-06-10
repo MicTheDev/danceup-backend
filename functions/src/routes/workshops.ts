@@ -5,6 +5,7 @@ import workshopsService from "../services/workshops.service";
 import storageService from "../services/storage.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateWorkshopPayload, validateUpdateWorkshopPayload } from "../utils/validation";
+import { sanitizeRichText } from "../utils/sanitize";
 import { getFirestore } from "../utils/firestore";
 import {
   sendJsonResponse,
@@ -142,6 +143,9 @@ app.post("/", async (req, res) => {
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
     const { imageFile, ...workshopData } = req.body as Record<string, unknown>;
+    if (typeof workshopData["description"] === "string") {
+      workshopData["description"] = sanitizeRichText(workshopData["description"]);
+    }
 
     const validation = validateCreateWorkshopPayload(req.body);
     if (!validation.valid) {
@@ -403,6 +407,9 @@ app.put("/:id", async (req, res) => {
 
     const id = req.params["id"] as string;
     const { imageFile, ...workshopData } = req.body as Record<string, unknown>;
+    if (typeof workshopData["description"] === "string") {
+      workshopData["description"] = sanitizeRichText(workshopData["description"]);
+    }
 
     const validation = validateUpdateWorkshopPayload(req.body);
     if (!validation.valid) {

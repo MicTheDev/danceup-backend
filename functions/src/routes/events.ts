@@ -6,6 +6,7 @@ import eventsService from "../services/events.service";
 import storageService from "../services/storage.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateEventPayload, validateUpdateEventPayload } from "../utils/validation";
+import { sanitizeRichText } from "../utils/sanitize";
 import { getFirestore } from "../utils/firestore";
 import {
   sendVendorConfirmationEmail,
@@ -148,6 +149,9 @@ app.post("/", async (req, res) => {
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
     const { imageFile, ...eventData } = req.body as Record<string, unknown>;
+    if (typeof eventData["description"] === "string") {
+      eventData["description"] = sanitizeRichText(eventData["description"]);
+    }
 
     const validation = validateCreateEventPayload(req.body);
     if (!validation.valid) {
@@ -407,6 +411,9 @@ app.put("/:id", async (req, res) => {
 
     const id = req.params["id"] as string;
     const { imageFile, ...eventData } = req.body as Record<string, unknown>;
+    if (typeof eventData["description"] === "string") {
+      eventData["description"] = sanitizeRichText(eventData["description"]);
+    }
 
     const validation = validateUpdateEventPayload(req.body);
     if (!validation.valid) {

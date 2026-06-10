@@ -4,6 +4,27 @@ import type { Bucket } from "@google-cloud/storage";
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
 const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
 
+// Magic byte signatures for each allowed image type
+const MAGIC_BYTES: Record<string, (buf: Buffer) => boolean> = {
+  "image/jpeg": (buf) => buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF,
+  "image/jpg":  (buf) => buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF,
+  "image/png":  (buf) => buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47,
+  // WebP: RIFF....WEBP
+  "image/webp": (buf) =>
+    buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+    buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50,
+};
+
+function verifyMagicBytes(buffer: Buffer, declaredMime: string): void {
+  const check = MAGIC_BYTES[declaredMime];
+  if (!check) {
+    throw new Error("Invalid file type. Only JPEG, PNG, and WebP images are allowed");
+  }
+  if (!check(buffer)) {
+    throw new Error("File content does not match the declared image type");
+  }
+}
+
 export class StorageService {
   getBucket(): Bucket {
     try {
@@ -32,6 +53,7 @@ export class StorageService {
     if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
       throw new Error("Invalid file type. Only JPEG, PNG, and WebP images are allowed");
     }
+    verifyMagicBytes(fileBuffer, mimeType);
     if (fileBuffer.length > MAX_SIZE) {
       throw new Error("File size exceeds 5MB limit");
     }

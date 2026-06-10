@@ -3,6 +3,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import studentsService from "../services/students.service";
 import creditTrackingService from "../services/credit-tracking.service";
+import { logAuditEvent } from "../services/audit.service";
 import { getFirestore } from "../utils/firestore";
 import { verifyToken } from "../utils/auth";
 import { validateCreateStudentPayload, validateUpdateStudentPayload } from "../utils/validation";
@@ -154,7 +155,9 @@ app.delete("/:id", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
-    await studentsService.deleteStudent(req.params["id"] as string, studioOwnerId);
+    const studentId = req.params["id"] as string;
+    await studentsService.deleteStudent(studentId, studioOwnerId);
+    logAuditEvent(user.uid, studioOwnerId, "student_deleted", "student", studentId);
     sendJsonResponse(req, res, 200, { message: "Student deleted successfully" });
   } catch (error) {
     console.error("Error deleting student:", error);

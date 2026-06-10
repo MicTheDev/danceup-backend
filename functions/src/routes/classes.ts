@@ -5,6 +5,7 @@ import classesService from "../services/classes.service";
 import storageService from "../services/storage.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateClassPayload, validateUpdateClassPayload } from "../utils/validation";
+import { sanitizeRichText } from "../utils/sanitize";
 import {
   sendJsonResponse,
   sendErrorResponse,
@@ -120,6 +121,9 @@ app.post("/", async (req, res) => {
     }
 
     const classBody: Record<string, unknown> = { ...req.body };
+    if (typeof classBody["description"] === "string") {
+      classBody["description"] = sanitizeRichText(classBody["description"]);
+    }
     if (classBody["imageFile"] && typeof classBody["imageFile"] === "string") {
       try {
         const fileBuffer = storageService.base64ToBuffer(classBody["imageFile"] as string);
@@ -183,6 +187,9 @@ app.put("/:id", async (req, res) => {
     }
 
     const updateBody: Record<string, unknown> = { ...req.body };
+    if (typeof updateBody["description"] === "string") {
+      updateBody["description"] = sanitizeRichText(updateBody["description"]);
+    }
     if (updateBody["imageFile"] && typeof updateBody["imageFile"] === "string") {
       try {
         const fileBuffer = storageService.base64ToBuffer(updateBody["imageFile"] as string);
