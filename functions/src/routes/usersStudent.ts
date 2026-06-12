@@ -1260,6 +1260,25 @@ app.post("/me/request-deletion", async (req, res) => {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
+    const { currentPassword } = req.body as { currentPassword?: string };
+    if (!currentPassword || typeof currentPassword !== "string" || !currentPassword.trim()) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Current password is required");
+    }
+
+    let apiKey: string;
+    try {
+      apiKey = await getFirebaseApiKey() as string;
+    } catch (error) {
+      console.error("FIREBASE_WEB_API_KEY not configured:", (error as Error).message);
+      return sendErrorResponse(req, res, 500, "Configuration Error", "Server configuration error");
+    }
+
+    try {
+      await authService.verifyPasswordForReauth(user.email, currentPassword, apiKey);
+    } catch {
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Incorrect password");
+    }
+
     const db = getFirestore();
     const profileSnap = await db.collection("usersStudentProfiles")
       .where("authUid", "==", user.uid)
