@@ -202,6 +202,41 @@ export async function getProducts(): Promise<Array<Record<string, unknown>>> {
   }
 }
 
+// Derives the DanceUp membership tier from a Stripe priceId by inspecting the
+// associated product's metadata. Returns null if the price is unknown/inactive.
+export async function getMembershipForPriceId(priceId: string): Promise<string | null> {
+  const stripe = await getStripeClient();
+  try {
+    const price = await stripe.prices.retrieve(priceId, { expand: ["product"] });
+    if (!price.active) return null;
+    const product = price.product as Stripe.Product;
+    if (!product || typeof product === "string" || !product.active) return null;
+
+    const tierPatterns: TierPattern[] = [
+      { tier: "studio_owner_pro_plus", patterns: ["studio_owner_pro_plus", "studio owner pro+", "studio owner pro plus", "pro+"] },
+      { tier: "studio_owner", patterns: ["studio_owner", "studio owner"] },
+      { tier: "individual_instructor", patterns: ["individual_instructor", "individual instructor", "indivdual instructor"] },
+      { tier: "event_host", patterns: ["event_host", "event host"] },
+    ];
+
+    const metadataTier = product.metadata?.["membership_tier"];
+    if (metadataTier) {
+      for (const { tier, patterns } of tierPatterns) {
+        if (patterns.includes(metadataTier.toLowerCase())) return tier;
+      }
+    }
+    const productName = product.name.toLowerCase();
+    for (const { tier, patterns } of tierPatterns) {
+      for (const pattern of patterns) {
+        if (productName.includes(pattern)) return tier;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function createCustomer(email: string, metadata: Record<string, string> = {}): Promise<Stripe.Customer> {
   const stripe = await getStripeClient();
   try {

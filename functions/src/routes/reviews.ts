@@ -324,12 +324,21 @@ app.post("/:id/flag", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "Review not found");
     }
 
+    const reviewData = reviewDoc.data() as Record<string, unknown>;
+    const existingFlags = (reviewData["flags"] as Array<Record<string, unknown>>) ?? [];
+    const alreadyFlagged = existingFlags.some((f) => f["reportedBy"] === user.uid);
+
+    if (alreadyFlagged) {
+      return sendJsonResponse(req, res, 200, { message: "Review already reported." });
+    }
+
+    // reportedBy is omitted from the timestamp-free object so arrayUnion
+    // correctly deduplicates by uid if the check above is ever bypassed.
     await reviewRef.update({
       flagCount: admin.firestore.FieldValue.increment(1),
       flags: admin.firestore.FieldValue.arrayUnion({
         reportedBy: user.uid,
         reason: reason?.trim() || null,
-        reportedAt: new Date().toISOString(),
       }),
     });
 

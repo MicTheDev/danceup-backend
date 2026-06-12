@@ -24,6 +24,7 @@ export async function verifyToken(req: Request): Promise<DecodedToken> {
       uid: decodedToken.uid,
       email: decodedToken.email ?? "",
       emailVerified: decodedToken.email_verified ?? false,
+      isAdmin: decodedToken["superAdmin"] === true,
     };
   } catch (err) {
     console.error("Error verifying ID token:", err);

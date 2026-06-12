@@ -15,7 +15,6 @@ import {
   validateForgotPasswordPayload,
   validateResetPasswordPayload,
   validateChangeEmailPayload,
-  validateMembership,
 } from "../utils/validation";
 import {
   sendJsonResponse,
@@ -385,53 +384,6 @@ app.post("/change-email", async (req, res) => {
   }
 });
 
-app.patch("/update-membership", async (req, res) => {
-  try {
-    let user;
-    try { user = await verifyToken(req); } catch {
-      return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid or expired token");
-    }
-
-    const { membership } = req.body as { membership?: string };
-
-    if (!membership) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "Membership is required");
-    }
-
-    const membershipValidation = validateMembership(membership);
-    if (!membershipValidation.valid) {
-      return sendErrorResponse(req, res, 400, "Validation Error", (membershipValidation as { valid: false; message: string }).message);
-    }
-
-    const db = getFirestore();
-    const userQuery = await db.collection("users").where("authUid", "==", user.uid).limit(1).get();
-
-    if (userQuery.empty) {
-      return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
-    }
-
-    const userDoc = userQuery.docs[0];
-    if (!userDoc) return sendErrorResponse(req, res, 404, "Not Found", "User profile not found");
-    const userData = userDoc.data() as Record<string, unknown>;
-
-    if (userData["stripeSubscriptionId"] && userData["stripeSubscriptionStatus"] === "active") {
-      return sendErrorResponse(
-        req, res, 403, "Forbidden",
-        "Your membership is managed through your Stripe subscription. Please use the billing portal to make changes.",
-      );
-    }
-
-    await userDoc.ref.update({
-      membership,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    sendJsonResponse(req, res, 200, { message: "Membership updated successfully", membership });
-  } catch (error) {
-    console.error("Update membership error:", error);
-    handleError(req, res, error);
-  }
-});
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => handleError(_req, res, err));
 

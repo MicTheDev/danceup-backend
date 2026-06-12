@@ -50,23 +50,41 @@ function getFingerprint(req: Request): string {
   return crypto.createHash("sha256").update(`${ip}|${ua}`).digest("hex");
 }
 
+const CONTENT_COLLECTIONS: Record<string, string> = {
+  class: "classes",
+  workshop: "workshops",
+  event: "events",
+};
+
 app.post("/view", async (req, res) => {
   try {
-    const { contentType, contentId, contentName, studioOwnerId } = req.body as {
+    const { contentType, contentId, contentName } = req.body as {
       contentType?: string;
       contentId?: string;
       contentName?: string;
-      studioOwnerId?: string;
+      studioOwnerId?: string; // ignored — resolved server-side
     };
 
-    if (!contentType || !contentId || !studioOwnerId) {
-      return sendErrorResponse(req, res, 400, "Bad Request", "contentType, contentId, and studioOwnerId are required");
+    if (!contentType || !contentId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "contentType and contentId are required");
     }
     if (!["class", "workshop", "event"].includes(contentType)) {
       return sendErrorResponse(req, res, 400, "Bad Request", "contentType must be class, workshop, or event");
     }
 
     const db = getFirestore();
+
+    // Resolve studioOwnerId server-side so callers cannot attribute views to
+    // an arbitrary studio.
+    const contentDoc = await db.collection(CONTENT_COLLECTIONS[contentType]!).doc(contentId).get();
+    if (!contentDoc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Content not found");
+    }
+    const studioOwnerId = (contentDoc.data() as Record<string, unknown>)["studioOwnerId"] as string | undefined;
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "Content has no associated studio owner");
+    }
+
     const fingerprint = getFingerprint(req);
     const docId = `${contentType}_${contentId}`;
     const viewsRef = db.collection("contentViews").doc(docId);

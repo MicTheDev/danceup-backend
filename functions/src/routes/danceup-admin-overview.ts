@@ -15,7 +15,6 @@ import {
 import { getFirestore } from "../utils/firestore";
 import { getStripeClient } from "../services/stripe.service";
 
-const ADMIN_EMAIL = "info@danceup.app";
 const EXPAND = ["data.source", "data.source.charge"];
 
 const PLAN_COLORS: Record<string, string> = {
@@ -154,7 +153,7 @@ app.get("/", async (req: Request, res: Response) => {
   try {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
-    if (user.email !== ADMIN_EMAIL) return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
+    if (!user.isAdmin) return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
 
     const nowMs = Date.now();
     const nowSec = Math.floor(nowMs / 1000);
@@ -353,7 +352,7 @@ app.get("/transactions", async (req: Request, res: Response) => {
   try {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
-    if (user.email !== ADMIN_EMAIL) return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
+    if (!user.isAdmin) return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
 
     const startingAfter = req.query["startingAfter"] as string | undefined;
     const [stripe, db] = await Promise.all([getStripeClient(), Promise.resolve(getFirestore())]);

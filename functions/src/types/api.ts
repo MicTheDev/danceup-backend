@@ -4,6 +4,7 @@ export interface DecodedToken {
   uid: string;
   email: string;
   emailVerified: boolean;
+  isAdmin: boolean;
 }
 
 export interface AuthenticatedRequest extends Request {

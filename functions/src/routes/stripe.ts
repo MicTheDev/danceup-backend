@@ -1,5 +1,6 @@
 import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
+import * as crypto from "crypto";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import { verifyToken } from "../utils/auth";
@@ -307,12 +308,17 @@ app.post("/account-session", async (req, res) => {
 app.post("/create-checkout-session", async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
-    const membership = body["membership"] as string | undefined;
     const priceId = body["priceId"] as string | undefined;
     let userEmail = body["email"] as string | undefined;
 
-    if (!membership || !priceId) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "Membership and priceId are required");
+    if (!priceId) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "priceId is required");
+    }
+
+    // Derive membership from the priceId via Stripe — never trust the client-supplied value.
+    const membership = await stripeService.getMembershipForPriceId(priceId);
+    if (!membership) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid or unrecognized priceId");
     }
 
     let userId: string | null = null;
@@ -409,12 +415,17 @@ app.post("/create-checkout-session", async (req, res) => {
 app.post("/create-payment-link", async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
-    const membership = body["membership"] as string | undefined;
     const priceId = body["priceId"] as string | undefined;
     const email = body["email"] as string | undefined;
 
-    if (!membership || !priceId || !email) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "Membership, priceId, and email are required");
+    if (!priceId || !email) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "priceId and email are required");
+    }
+
+    // Derive membership from the priceId via Stripe — never trust the client-supplied value.
+    const membership = await stripeService.getMembershipForPriceId(priceId);
+    if (!membership) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid or unrecognized priceId");
     }
 
     let userId: string | null = null;
@@ -437,8 +448,26 @@ app.post("/create-payment-link", async (req, res) => {
       (req.headers.referer as string | undefined)?.split("/").slice(0, 3).join("/") ||
       process.env["FRONTEND_URL"] ||
       "https://studioowners.danceup.com";
-    const successUrl = `${origin}/login?payment=success`;
     const cancelUrl = `${origin}/login?payment=canceled`;
+
+    // Generate a single-use state token so /checkout-success can verify
+    // the redirect came from this specific payment initiation (prevents
+    // session-ID interception from granting another user's Firebase token).
+    const stateToken = crypto.randomUUID();
+    const stateTokenExpiry = Date.now() + 2 * 60 * 60 * 1000; // 2 hours
+
+    if (userId) {
+      const db = getFirestore();
+      await db.collection("users").doc(userId).update({
+        pendingCheckoutStateToken: stateToken,
+        pendingCheckoutStateTokenExpiry: stateTokenExpiry,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    // Stripe replaces {CHECKOUT_SESSION_ID} with the actual session ID at redirect time.
+    // The checkout component reads ?session_id= and calls /checkout-success with the state token.
+    const successUrl = `${origin}/register/checkout-success?session_id={CHECKOUT_SESSION_ID}&state=${stateToken}`;
 
     const metadata = {
       userId: userId || "",
@@ -927,6 +956,11 @@ app.delete("/payment-methods/:id", async (req, res) => {
 // POST /subscription-payment-success
 app.post("/subscription-payment-success", async (req, res) => {
   try {
+    let user;
+    try { user = await verifyToken(req); } catch {
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid or expired token");
+    }
+
     const body = req.body as Record<string, unknown>;
     const paymentIntentId = body["paymentIntentId"] as string | undefined;
 
@@ -978,6 +1012,10 @@ app.post("/subscription-payment-success", async (req, res) => {
 
     const userData = userDoc.data() as Record<string, unknown>;
 
+    if ((userData["authUid"] as string) !== user.uid) {
+      return sendErrorResponse(req, res, 403, "Forbidden", "Access denied");
+    }
+
     const updateData: Record<string, unknown> = {
       stripeCustomerId: pi.customer,
       stripeSubscriptionId: (subscription as import("stripe").default.Subscription).id,
@@ -1025,8 +1063,13 @@ app.post("/subscription-payment-success", async (req, res) => {
 // POST /checkout-success
 app.post("/checkout-success", async (req, res) => {
   try {
+    // Attempt to verify a Firebase auth token; null if unauthenticated (legacy payment-link flow).
+    let authedUser: { uid: string } | null = null;
+    try { authedUser = await verifyToken(req); } catch { /* unauthenticated path is permitted below */ }
+
     const body = req.body as Record<string, unknown>;
     const sessionId = body["sessionId"] as string | undefined;
+    const stateToken = body["stateToken"] as string | undefined;
 
     if (!sessionId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "Session ID is required");
@@ -1080,6 +1123,27 @@ app.post("/checkout-success", async (req, res) => {
     }
 
     const userData = userDoc.data() as Record<string, unknown>;
+
+    if (authedUser) {
+      // Authenticated path: verify the token belongs to this user.
+      if ((userData["authUid"] as string) !== authedUser.uid) {
+        return sendErrorResponse(req, res, 403, "Forbidden", "Access denied");
+      }
+    } else {
+      // Unauthenticated path (payment-link flow): verify the one-time state token
+      // that was embedded in the Stripe success URL by /create-payment-link.
+      const storedToken = userData["pendingCheckoutStateToken"] as string | undefined;
+      const storedExpiry = userData["pendingCheckoutStateTokenExpiry"] as number | undefined;
+
+      if (!storedToken || !stateToken || storedToken !== stateToken) {
+        return sendErrorResponse(req, res, 403, "Forbidden", "Invalid or missing state token");
+      }
+
+      if (!storedExpiry || Date.now() > storedExpiry) {
+        return sendErrorResponse(req, res, 403, "Forbidden", "State token has expired");
+      }
+    }
+
     const membership = sessionMeta["membership"] || (userData["membership"] as string);
 
     const updateData: Record<string, unknown> = {
@@ -1087,6 +1151,9 @@ app.post("/checkout-success", async (req, res) => {
       stripeSubscriptionId: session["subscription"],
       stripeSubscriptionStatus: "active",
       membership,
+      // Consume the state token so it cannot be reused
+      pendingCheckoutStateToken: admin.firestore.FieldValue.delete(),
+      pendingCheckoutStateTokenExpiry: admin.firestore.FieldValue.delete(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 

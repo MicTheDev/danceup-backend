@@ -53,7 +53,7 @@ app.get("/", async (req: Request, res: Response) => {
   try {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
-    if (user.email !== ADMIN_EMAIL) return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
+    if (!user.isAdmin) return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
 
     const db = getFirestore();
     const snap = await db.collection("reviews")
@@ -113,7 +113,7 @@ app.post("/:id/remove", async (req: Request, res: Response) => {
   try {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
-    if (user.email !== ADMIN_EMAIL) return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
+    if (!user.isAdmin) return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
 
     const id = req.params["id"] as string;
     const db = getFirestore();
@@ -140,7 +140,7 @@ app.post("/:id/keep", async (req: Request, res: Response) => {
   try {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
-    if (user.email !== ADMIN_EMAIL) return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
+    if (!user.isAdmin) return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
 
     const id = req.params["id"] as string;
     const db = getFirestore();

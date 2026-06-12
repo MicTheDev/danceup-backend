@@ -1151,7 +1151,7 @@ app.get("/", async (req, res) => {
     const type = req.query["type"] as string | undefined;
     const limitParam = req.query["limit"] as string | undefined;
     const startAfterParam = req.query["startAfter"] as string | undefined;
-    const limitNum = parseInt(limitParam || "50") || 50;
+    const limitNum = Math.min(parseInt(limitParam || "50") || 50, 200);
     const purchaseType = type && ["class", "event", "workshop", "package"].includes(type) ? type : null;
 
     const db = getFirestore();
@@ -1201,7 +1201,7 @@ app.get("/student/:studentId", async (req, res) => {
     const type = req.query["type"] as string | undefined;
     const limitParam = req.query["limit"] as string | undefined;
     const startAfterParam = req.query["startAfter"] as string | undefined;
-    const limitNum = parseInt(limitParam || "50") || 50;
+    const limitNum = Math.min(parseInt(limitParam || "50") || 50, 200);
     const purchaseType = type && ["class", "event", "workshop", "package"].includes(type) ? type : null;
 
     const studioOwnerId = await classesService.getStudioOwnerId(user.uid);
@@ -1516,13 +1516,12 @@ app.post("/cash", async (req, res) => {
     if (itemId) docData["itemId"] = itemId;
 
     if (studentId) {
-      try {
-        const studentDoc = await db.collection("students").doc(studentId).get();
-        if (studentDoc.exists) {
-          const s = studentDoc.data() as Record<string, unknown>;
-          docData["studentName"] = [s["firstName"], s["lastName"]].filter(Boolean).join(" ");
-        }
-      } catch (_) { /* non-critical */ }
+      const studentDoc = await db.collection("students").doc(studentId).get();
+      if (!studentDoc.exists || (studentDoc.data() as Record<string, unknown>)["studioOwnerId"] !== studioOwnerId) {
+        return sendErrorResponse(req, res, 403, "Access Denied", "Student not found");
+      }
+      const s = studentDoc.data() as Record<string, unknown>;
+      docData["studentName"] = [s["firstName"], s["lastName"]].filter(Boolean).join(" ");
     }
 
     const docRef = await db.collection("cashPurchases").add(docData);

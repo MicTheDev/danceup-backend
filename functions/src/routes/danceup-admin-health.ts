@@ -13,7 +13,6 @@ import {
 } from "../utils/http";
 import { getStripeClient } from "../services/stripe.service";
 
-const ADMIN_EMAIL = "info@danceup.app";
 
 interface GCPLogEntry {
   insertId?: string;
@@ -100,7 +99,7 @@ app.get("/", async (req: Request, res: Response) => {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
-    if (user.email !== ADMIN_EMAIL) {
+    if (!user.isAdmin) {
       return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
     }
 

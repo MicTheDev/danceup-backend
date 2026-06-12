@@ -14,7 +14,6 @@ import {
 import { getFirestore } from "../utils/firestore";
 import { sendEmail } from "../services/sendgrid.service";
 
-const ADMIN_EMAIL = "info@danceup.app";
 
 type Audience = "all_studios" | "all_dancers" | "everyone" | "free_expiring" | "past_due" | "churned";
 type Channel = "push" | "email" | "in_app";
@@ -55,7 +54,7 @@ app.get("/", async (req: Request, res: Response) => {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
-    if (user.email !== ADMIN_EMAIL) {
+    if (!user.isAdmin) {
       return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
     }
 
@@ -122,7 +121,7 @@ app.post("/send", async (req: Request, res: Response) => {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
-    if (user.email !== ADMIN_EMAIL) {
+    if (!user.isAdmin) {
       return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
     }
 
