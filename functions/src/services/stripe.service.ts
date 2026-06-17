@@ -163,6 +163,7 @@ export async function getProducts(): Promise<Array<Record<string, unknown>>> {
         const productPrices = prices.data.filter((price) => price.product === product.id && price.active);
         const monthlyPrice = productPrices.find((p) => p.recurring?.interval === "month");
         const yearlyPrice = productPrices.find((p) => p.recurring?.interval === "year");
+        const oneTimePrice = productPrices.find((p) => p.type === "one_time");
         // Fall back to any recurring price for backwards compat
         const anyRecurring = monthlyPrice ?? yearlyPrice ?? productPrices.find((p) => p.recurring);
         return {
@@ -191,6 +192,13 @@ export async function getProducts(): Promise<Array<Record<string, unknown>>> {
             amount: yearlyPrice.unit_amount,
             currency: yearlyPrice.currency,
             interval: "year",
+          } : null,
+          // One-time charge (no recurring billing)
+          oneTimePrice: oneTimePrice ? {
+            id: oneTimePrice.id,
+            amount: oneTimePrice.unit_amount,
+            currency: oneTimePrice.currency,
+            interval: "one_time",
           } : null,
           images: product.images,
           metadata: product.metadata,
@@ -1036,6 +1044,37 @@ export async function createPrivateLessonCheckoutSession(opts: PrivateLessonChec
   }
 
   return await stripe.checkout.sessions.create(sessionParams, requestOptions);
+}
+
+export async function createOneTimePaymentCheckout(
+  customerId: string,
+  priceId: string,
+  userId: string | null,
+  membership: string,
+): Promise<{ paymentIntentId: string; clientSecret: string }> {
+  const stripe = await getStripeClient();
+  try {
+    const price = await stripe.prices.retrieve(priceId);
+    if (!price.unit_amount) {
+      throw new Error("One-time price has no unit amount");
+    }
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      customer: customerId,
+      amount: price.unit_amount,
+      currency: price.currency,
+      payment_method_types: ["card"],
+      metadata: { userId: userId || "", membership, priceId },
+    });
+
+    if (!paymentIntent.client_secret) {
+      throw new Error("Failed to create payment intent — no client secret returned");
+    }
+
+    return { paymentIntentId: paymentIntent.id, clientSecret: paymentIntent.client_secret };
+  } catch (error) {
+    throw new Error(`Failed to create one-time payment: ${(error as Error).message}`);
+  }
 }
 
 export async function createSubscriptionCheckout(

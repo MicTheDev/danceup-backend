@@ -7,6 +7,7 @@ export type AuditAction =
   | "instructor_updated"
   | "instructor_deleted"
   | "subscription_cancelled"
+  | "subscription_plan_changed"
   | "payment_method_deleted"
   | "payment_method_set_default";
 

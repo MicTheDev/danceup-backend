@@ -388,20 +388,43 @@ app.post("/create-checkout-session", async (req, res) => {
       }
     }
 
-    const { subscriptionId, paymentIntentId, clientSecret } =
-      await stripeService.createSubscriptionCheckout(
+    // Determine whether this is a one-time charge or a recurring subscription
+    const stripe = await stripeService.getStripeClient() as import("stripe").default;
+    const price = await stripe.prices.retrieve(priceId);
+    const isOneTime = price.type === "one_time";
+
+    let subscriptionId: string | null = null;
+    let paymentIntentId: string;
+    let clientSecret: string;
+
+    if (isOneTime) {
+      const result = await stripeService.createOneTimePaymentCheckout(
+        customer.id,
+        priceId,
+        userId || null,
+        membership,
+      ) as { paymentIntentId: string; clientSecret: string };
+      paymentIntentId = result.paymentIntentId;
+      clientSecret = result.clientSecret;
+    } else {
+      const result = await stripeService.createSubscriptionCheckout(
         customer.id,
         priceId,
         userId || null,
         membership,
       ) as { subscriptionId: string; paymentIntentId: string; clientSecret: string };
+      subscriptionId = result.subscriptionId;
+      paymentIntentId = result.paymentIntentId;
+      clientSecret = result.clientSecret;
+    }
 
     if (userId) {
-      await db.collection("users").doc(userId).update({
-        pendingSubscriptionId: subscriptionId,
+      const pendingUpdate: Record<string, unknown> = {
         pendingPaymentIntentId: paymentIntentId,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      };
+      if (subscriptionId) pendingUpdate["pendingSubscriptionId"] = subscriptionId;
+      await db.collection("users").doc(userId).update(pendingUpdate);
     }
 
     sendJsonResponse(req, res, 200, { subscriptionId, paymentIntentId, clientSecret });
@@ -508,8 +531,20 @@ app.get("/subscription", async (req, res) => {
     }
 
     const userData = userQuery.docs[0]!.data() as Record<string, unknown>;
+    const currentMembership = (userData["membership"] as string | undefined) ?? null;
+
     if (!userData["stripeSubscriptionId"]) {
-      return sendJsonResponse(req, res, 200, null);
+      return sendJsonResponse(req, res, 200, {
+        subscriptionId: null,
+        membership: currentMembership,
+        status: "none",
+        cancelAtPeriodEnd: false,
+        currentPeriodEnd: null,
+        pausedUntil: null,
+        priceId: null,
+        subscriptionItemId: null,
+        plan: null,
+      });
     }
 
     const stripe = await stripeService.getStripeClient() as import("stripe").default;
@@ -520,17 +555,26 @@ app.get("/subscription", async (req, res) => {
     const item = subscription.items.data[0];
     const price = item?.price;
     const product = price?.product;
+    const productName = typeof product === "object" && product !== null
+      ? ((product as { name?: string }).name ?? "Platform Subscription")
+      : "Platform Subscription";
 
     sendJsonResponse(req, res, 200, {
-      id: subscription.id,
+      subscriptionId: subscription.id,
+      membership: currentMembership,
       status: subscription.status,
       cancelAtPeriodEnd: subscription.cancel_at_period_end,
       pausedUntil: subscription.pause_collection?.resumes_at ?? null,
       currentPeriodEnd: subscription.current_period_end,
-      planName: typeof product === "object" && product !== null ? ((product as { name?: string }).name ?? "Platform Subscription") : "Platform Subscription",
-      amount: price?.unit_amount ?? 0,
-      currency: price?.currency ?? "usd",
-      interval: price?.recurring?.interval ?? "month",
+      priceId: price?.id ?? null,
+      subscriptionItemId: item?.id ?? null,
+      plan: {
+        name: productName,
+        amount: price?.unit_amount ?? 0,
+        currency: price?.currency ?? "usd",
+        interval: price?.recurring?.interval ?? "month",
+        intervalCount: price?.recurring?.interval_count ?? 1,
+      },
     });
   } catch (error) {
     handleError(req, res, error);
@@ -666,6 +710,208 @@ app.post("/subscription/reactivate", async (req, res) => {
     });
 
     sendJsonResponse(req, res, 200, { cancelAtPeriodEnd: updated.cancel_at_period_end });
+  } catch (error) {
+    handleError(req, res, error);
+  }
+});
+
+// POST /subscription/change-plan
+app.post("/subscription/change-plan", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const body = req.body as Record<string, unknown>;
+    const priceId = body["priceId"] as string | undefined;
+
+    if (!priceId) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "priceId is required");
+    }
+
+    const db = getFirestore();
+    const userQuery = await db.collection("users")
+      .where("authUid", "==", user.uid)
+      .limit(1)
+      .get();
+
+    if (userQuery.empty) return sendErrorResponse(req, res, 404, "Not Found", "User not found");
+
+    const userDoc = userQuery.docs[0]!;
+    const userData = userDoc.data() as Record<string, unknown>;
+
+    if (!userData["stripeSubscriptionId"]) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No active subscription found. Event Host plans cannot be changed this way.");
+    }
+
+    // Derive new membership from priceId — never trust client-supplied membership
+    const price = await (await stripeService.getStripeClient() as import("stripe").default).prices.retrieve(priceId, {
+      expand: ["product"],
+    });
+
+    if (price.type === "one_time") {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Cannot switch to a one-time plan via subscription change. Please contact support.");
+    }
+
+    const newMembership = await stripeService.getMembershipForPriceId(priceId);
+    if (!newMembership) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid or unrecognized priceId");
+    }
+
+    const stripe = await stripeService.getStripeClient() as import("stripe").default;
+    const subscriptionId = userData["stripeSubscriptionId"] as string;
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+    const itemId = subscription.items.data[0]?.id;
+    if (!itemId) {
+      return sendErrorResponse(req, res, 500, "Internal Error", "Subscription item not found");
+    }
+
+    const updated = await stripe.subscriptions.update(subscriptionId, {
+      items: [{ id: itemId, price: priceId }],
+      proration_behavior: "always_invoice",
+    });
+
+    await userDoc.ref.update({
+      membership: newMembership,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    logAuditEvent(user.uid, userDoc.id, "subscription_plan_changed", "subscription", subscriptionId, {
+      newMembership,
+      newPriceId: priceId,
+    });
+
+    const updatedItem = updated.items.data[0];
+    const updatedPrice = updatedItem?.price;
+    const updatedProduct = updatedPrice?.product;
+    const productName = typeof updatedProduct === "object" && updatedProduct !== null
+      ? ((updatedProduct as { name?: string }).name ?? "Platform Subscription")
+      : "Platform Subscription";
+
+    sendJsonResponse(req, res, 200, {
+      subscriptionId: updated.id,
+      membership: newMembership,
+      status: updated.status,
+      cancelAtPeriodEnd: updated.cancel_at_period_end,
+      currentPeriodEnd: updated.current_period_end,
+      priceId: updatedPrice?.id ?? null,
+      plan: {
+        name: productName,
+        amount: updatedPrice?.unit_amount ?? 0,
+        currency: updatedPrice?.currency ?? "usd",
+        interval: (updatedPrice?.recurring?.interval) ?? "month",
+        intervalCount: (updatedPrice?.recurring?.interval_count) ?? 1,
+      },
+    });
+  } catch (error) {
+    handleError(req, res, error);
+  }
+});
+
+// POST /subscription/start — used by Event Host (no subscription) to start a recurring plan.
+// Requires the customer to already have a saved default payment method on file.
+app.post("/subscription/start", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const body = req.body as Record<string, unknown>;
+    const priceId = body["priceId"] as string | undefined;
+
+    if (!priceId) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "priceId is required");
+    }
+
+    const db = getFirestore();
+    const userQuery = await db.collection("users")
+      .where("authUid", "==", user.uid)
+      .limit(1)
+      .get();
+
+    if (userQuery.empty) return sendErrorResponse(req, res, 404, "Not Found", "User not found");
+
+    const userDoc = userQuery.docs[0]!;
+    const userData = userDoc.data() as Record<string, unknown>;
+
+    if (userData["stripeSubscriptionId"]) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "User already has an active subscription. Use change-plan instead.");
+    }
+
+    const stripe = await stripeService.getStripeClient() as import("stripe").default;
+
+    // Derive membership server-side from priceId
+    const price = await stripe.prices.retrieve(priceId);
+    if (price.type === "one_time") {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Cannot create a subscription with a one-time price.");
+    }
+
+    const newMembership = await stripeService.getMembershipForPriceId(priceId);
+    if (!newMembership) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid or unrecognized priceId");
+    }
+
+    // Ensure the customer has a default payment method saved
+    const customerId = userData["stripeCustomerId"] as string | undefined;
+    if (!customerId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No payment customer found. Please add a payment method first.");
+    }
+
+    const customer = await stripe.customers.retrieve(customerId) as import("stripe").default.Customer;
+    const defaultPmId = (customer.invoice_settings?.default_payment_method as string | null) ?? null;
+
+    if (!defaultPmId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "No saved payment method found. Please add a card before subscribing.");
+    }
+
+    // Create the subscription; payment is collected immediately via the saved card
+    const subscription = await stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: priceId }],
+      default_payment_method: defaultPmId,
+      metadata: {
+        userId: userDoc.id,
+        authUid: user.uid,
+        membership: newMembership,
+      },
+      expand: ["items.data.price.product", "latest_invoice"],
+    });
+
+    const item = subscription.items.data[0];
+    const subPrice = item?.price;
+    const subProduct = subPrice?.product;
+    const productName = typeof subProduct === "object" && subProduct !== null
+      ? ((subProduct as { name?: string }).name ?? "Platform Subscription")
+      : "Platform Subscription";
+
+    // Persist the new subscription and membership
+    await userDoc.ref.update({
+      stripeSubscriptionId: subscription.id,
+      stripeSubscriptionStatus: subscription.status,
+      membership: newMembership,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    logAuditEvent(user.uid, userDoc.id, "subscription_plan_changed", "subscription", subscription.id, {
+      newMembership,
+      newPriceId: priceId,
+      source: "event_host_upgrade",
+    });
+
+    sendJsonResponse(req, res, 200, {
+      subscriptionId: subscription.id,
+      membership: newMembership,
+      status: subscription.status,
+      cancelAtPeriodEnd: subscription.cancel_at_period_end,
+      currentPeriodEnd: subscription.current_period_end,
+      priceId: subPrice?.id ?? null,
+      plan: {
+        name: productName,
+        amount: subPrice?.unit_amount ?? 0,
+        currency: subPrice?.currency ?? "usd",
+        interval: (subPrice?.recurring?.interval) ?? "month",
+        intervalCount: (subPrice?.recurring?.interval_count) ?? 1,
+      },
+    });
   } catch (error) {
     handleError(req, res, error);
   }
@@ -993,13 +1239,11 @@ app.post("/subscription-payment-success", async (req, res) => {
     }
 
     const invoice = pi.invoice as (import("stripe").default.Invoice & { subscription?: import("stripe").default.Subscription }) | null;
-    const subscription = invoice?.subscription;
-    if (!subscription) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "Could not resolve subscription from payment intent");
-    }
+    const subscription = invoice?.subscription as import("stripe").default.Subscription | null | undefined;
 
-    const userId = (subscription as import("stripe").default.Subscription).metadata?.["userId"];
-    const membership = (subscription as import("stripe").default.Subscription).metadata?.["membership"];
+    // One-time payments don't have a subscription — read metadata from the PaymentIntent directly.
+    const userId = subscription?.metadata?.["userId"] ?? pi.metadata?.["userId"];
+    const membership = subscription?.metadata?.["membership"] ?? pi.metadata?.["membership"];
 
     if (!userId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "User ID not found in subscription metadata");
@@ -1018,13 +1262,15 @@ app.post("/subscription-payment-success", async (req, res) => {
 
     const updateData: Record<string, unknown> = {
       stripeCustomerId: pi.customer,
-      stripeSubscriptionId: (subscription as import("stripe").default.Subscription).id,
-      stripeSubscriptionStatus: "active",
       membership: membership || userData["membership"],
-      pendingSubscriptionId: admin.firestore.FieldValue.delete(),
       pendingPaymentIntentId: admin.firestore.FieldValue.delete(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
+    if (subscription?.id) {
+      updateData["stripeSubscriptionId"] = subscription.id;
+      updateData["stripeSubscriptionStatus"] = "active";
+      updateData["pendingSubscriptionId"] = admin.firestore.FieldValue.delete();
+    }
 
     if (!userData["stripeAccountId"]) {
       const account = await stripeService.createConnectedAccount(userData["email"] as string, {
