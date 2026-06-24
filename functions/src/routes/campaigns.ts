@@ -34,8 +34,8 @@ app.options("*", cors(corsOptions));
 app.use(express.json());
 applySecurityMiddleware(app);
 
-const VALID_TRIGGER_TYPES: TriggerType[] = ["inactive_days", "credits_expiring_days", "signup_no_attend", "milestone_checkins"];
-const VALID_ACTION_TYPES: ActionType[] = ["re_engagement_email", "credit_reminder_email", "milestone_email", "signup_nudge_email"];
+const VALID_TRIGGER_TYPES: TriggerType[] = ["inactive_days", "credits_expiring_days", "signup_no_attend", "milestone_checkins", "first_class_attended", "credits_depleted"];
+const VALID_ACTION_TYPES: ActionType[] = ["re_engagement_email", "credit_reminder_email", "milestone_email", "signup_nudge_email", "first_class_email", "credits_depleted_email"];
 
 app.get("/rules", async (req, res) => {
   try {

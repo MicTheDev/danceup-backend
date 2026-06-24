@@ -479,6 +479,54 @@ export async function sendStudioOwnerWelcomeEmail(
   });
 }
 
+export async function sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
+  if (!to) {
+    console.warn("[SendGrid] sendPasswordResetEmail: no recipient email, skipping");
+    return;
+  }
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h1 style="margin:0 0 8px;font-size:24px;color:#1e293b">Reset your password</h1>
+        <p style="margin:0 0 24px;color:#64748b;font-size:15px">
+          We received a request to reset your DanceUp password. Click the button below to choose a new one. This link expires in 1 hour.
+        </p>
+        <a href="${resetUrl}"
+           style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          Reset Password →
+        </a>
+        <p style="margin:16px 0 0;color:#94a3b8;font-size:13px">
+          If the button doesn't work, copy and paste this link into your browser:<br/>
+          <a href="${resetUrl}" style="color:#6366f1;word-break:break-all">${resetUrl}</a>
+        </p>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">
+          If you didn't request a password reset, you can safely ignore this email. Your password will not change.
+        </p>
+      </div>
+    </div>`;
+
+  const text = [
+    `Reset your DanceUp password`,
+    ``,
+    `We received a request to reset your password. Click the link below to choose a new one. This link expires in 1 hour.`,
+    ``,
+    resetUrl,
+    ``,
+    `If you didn't request a password reset, you can safely ignore this email.`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: "Reset your DanceUp password",
+    html,
+    text,
+    categories: ["password-reset"],
+  });
+}
+
 export async function sendConfirmationEmail(
   to: string,
   type: ConfirmationEmailType | string,
@@ -693,6 +741,58 @@ export async function sendVendorDeclineEmail(
   await sendEmail({
     to, from: { email: "info@danceup.app", name: "DanceUp" },
     subject: `Vendor Application Update — ${event}`, html, text, categories: ["vendor-declined"],
+  });
+}
+
+export async function sendFirstClassEmail(
+  to: string, firstName: string, studioName: string,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendFirstClassEmail: no recipient email, skipping"); return; }
+  const name = firstName?.trim() || "there";
+  const studio = studioName?.trim() || "the studio";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">You did it, ${name}! 🎉</h2>
+        <p style="color:#64748b;margin:0 0 20px">You just completed your first class at <strong>${studio}</strong>. That first step is the hardest — and you crushed it.</p>
+        <p style="color:#475569;margin:0 0 24px">The best dancers in the world started exactly where you are right now. Keep showing up and you'll be amazed at how quickly it clicks.</p>
+        <a href="https://danceup.app" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">Book Your Next Class →</a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because you just attended your first class at ${studio} via DanceUp.</p>
+      </div>
+    </div>`;
+  const text = `You did it, ${name}!\n\nYou just completed your first class at ${studio}. That first step is the hardest — and you crushed it.\n\nKeep showing up and book your next class at https://danceup.app`;
+
+  await sendEmail({
+    to, from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `You crushed your first class at ${studio}! 🎉`, html, text, categories: ["first-class"],
+  });
+}
+
+export async function sendCreditsDepletedEmail(
+  to: string, firstName: string, studioName: string,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendCreditsDepletedEmail: no recipient email, skipping"); return; }
+  const name = firstName?.trim() || "there";
+  const studio = studioName?.trim() || "your studio";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">You've used all your credits, ${name}</h2>
+        <p style="color:#64748b;margin:0 0 20px">Your credit balance at <strong>${studio}</strong> has reached zero — which means you've been putting in the work!</p>
+        <p style="color:#475569;margin:0 0 24px">Don't let the momentum stop. Grab another package and keep dancing.</p>
+        <a href="https://danceup.app" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">Get More Credits →</a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because your credits at ${studio} via DanceUp have run out.</p>
+      </div>
+    </div>`;
+  const text = `You've used all your credits at ${studio}, ${name}!\n\nYour balance has reached zero — keep the momentum going by grabbing another package.\n\nhttps://danceup.app`;
+
+  await sendEmail({
+    to, from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `Your credits at ${studio} are all used up`, html, text, categories: ["credits-depleted"],
   });
 }
 

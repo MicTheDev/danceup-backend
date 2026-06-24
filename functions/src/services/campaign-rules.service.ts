@@ -5,10 +5,12 @@ import {
   sendCreditExpiryEmail,
   sendMilestoneEmail,
   sendSignupNudgeEmail,
+  sendFirstClassEmail,
+  sendCreditsDepletedEmail,
 } from "./sendgrid.service";
 
-export type TriggerType = "inactive_days" | "credits_expiring_days" | "signup_no_attend" | "milestone_checkins";
-export type ActionType = "re_engagement_email" | "credit_reminder_email" | "milestone_email" | "signup_nudge_email";
+export type TriggerType = "inactive_days" | "credits_expiring_days" | "signup_no_attend" | "milestone_checkins" | "first_class_attended" | "credits_depleted";
+export type ActionType = "re_engagement_email" | "credit_reminder_email" | "milestone_email" | "signup_nudge_email" | "first_class_email" | "credits_depleted_email";
 
 export interface CampaignRule {
   id: string;
@@ -125,8 +127,9 @@ class CampaignRulesService {
       ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string) || "your studio"
       : "your studio";
 
-    // Build last-attended and total check-in maps; filter isRemoved in JS
+    // Build attendance maps; filter isRemoved in JS
     const lastAttendedMap = new Map<string, Date>();
+    const firstAttendedMap = new Map<string, Date>();
     const totalCheckInsMap = new Map<string, number>();
     attendanceSnap.forEach((doc) => {
       const d = doc.data() as Record<string, unknown>;
@@ -134,8 +137,10 @@ class CampaignRulesService {
       const sid = d["studentId"] as string | undefined;
       const date = tsToDate(d["classInstanceDate"]);
       if (!sid || !date) return;
-      const existing = lastAttendedMap.get(sid);
-      if (!existing || date > existing) lastAttendedMap.set(sid, date);
+      const lastExisting = lastAttendedMap.get(sid);
+      if (!lastExisting || date > lastExisting) lastAttendedMap.set(sid, date);
+      const firstExisting = firstAttendedMap.get(sid);
+      if (!firstExisting || date < firstExisting) firstAttendedMap.set(sid, date);
       totalCheckInsMap.set(sid, (totalCheckInsMap.get(sid) || 0) + 1);
     });
 
@@ -171,6 +176,23 @@ class CampaignRulesService {
           const existing = expiringCreditsMap.get(studentDoc.id);
           if (existing === undefined || daysUntil < existing) expiringCreditsMap.set(studentDoc.id, daysUntil);
         });
+      }));
+    }
+
+    // Build set of students who have purchased credits but have zero remaining
+    const depletedCreditsSet = new Set<string>();
+    const needsDepletedCheck = activeRuleDocs.some(
+      (d) => (d.data() as Record<string, unknown>)["triggerType"] === "credits_depleted"
+    );
+    if (needsDepletedCheck) {
+      await Promise.all(studentsSnap.docs.map(async (studentDoc) => {
+        const creditsRef = db.collection("students").doc(studentDoc.id).collection("credits");
+        const allSnap = await creditsRef.get();
+        if (allSnap.empty) return; // never purchased credits — skip
+        const hasActive = allSnap.docs.some(
+          (doc) => ((doc.data() as Record<string, unknown>)["credits"] as number || 0) > 0
+        );
+        if (!hasActive) depletedCreditsSet.add(studentDoc.id);
       }));
     }
 
@@ -220,6 +242,21 @@ class CampaignRulesService {
             shouldSend = total >= rule.triggerValue && total < rule.triggerValue + 5;
             break;
           }
+          case "first_class_attended": {
+            const total = totalCheckInsMap.get(sid) || 0;
+            if (total === 0) { shouldSend = false; break; }
+            const firstDate = firstAttendedMap.get(sid);
+            const daysSinceFirst = firstDate
+              ? Math.floor((now.getTime() - firstDate.getTime()) / (24 * 60 * 60 * 1000))
+              : 999;
+            // Fire within triggerValue days of first check-in, within early window (≤5 total)
+            shouldSend = total <= 5 && daysSinceFirst <= rule.triggerValue;
+            break;
+          }
+          case "credits_depleted": {
+            shouldSend = depletedCreditsSet.has(sid);
+            break;
+          }
         }
 
         if (!shouldSend) continue;
@@ -254,6 +291,12 @@ class CampaignRulesService {
               await sendSignupNudgeEmail(email, firstName, studioName, daysSince);
               break;
             }
+            case "first_class_email":
+              await sendFirstClassEmail(email, firstName, studioName);
+              break;
+            case "credits_depleted_email":
+              await sendCreditsDepletedEmail(email, firstName, studioName);
+              break;
           }
 
           await db.collection("campaign_emails").add({

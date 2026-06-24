@@ -22,7 +22,7 @@ import {
   getStripePublishableKey,
   getStripeClient,
 } from "../services/stripe.service";
-import { sendWelcomeEmail } from "../services/sendgrid.service";
+import { sendWelcomeEmail, sendPasswordResetEmail } from "../services/sendgrid.service";
 import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
 import { getFirebaseApiKey } from "../utils/firebase-api-key";
@@ -876,20 +876,12 @@ app.post("/forgot-password", async (req, res) => {
     }
 
     const { email } = req.body as { email: string };
-
-    const passwordResetUrl = process.env["PASSWORD_RESET_URL"];
-    if (!passwordResetUrl) {
-      console.error("PASSWORD_RESET_URL environment variable is not set");
-      return sendErrorResponse(req, res, 503, "Configuration Error", "Password reset is not configured. Please contact support.");
-    }
-
-    const actionCodeSettings = {
-      url: passwordResetUrl,
-      handleCodeInApp: false,
-    };
+    const baseResetUrl = process.env["PASSWORD_RESET_URL"] || `${req.headers.origin || "https://danceup.app"}/reset-password`;
 
     try {
-      await authService.sendPasswordResetEmail(email, actionCodeSettings);
+      const oobCode = await authService.generatePasswordResetOobCode(email);
+      const resetUrl = `${baseResetUrl}?oobCode=${encodeURIComponent(oobCode)}`;
+      await sendPasswordResetEmail(email, resetUrl);
     } catch (emailError) {
       const msg = (emailError as Error).message || "";
       if (!msg.includes("user-not-found") && !msg.includes("No user found")) throw emailError;
