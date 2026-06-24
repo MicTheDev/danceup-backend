@@ -124,31 +124,16 @@ export class AuthService {
     }
   }
 
-  async sendPasswordResetEmail(email: string, actionCodeSettings: ActionCodeSettings): Promise<void> {
+  async generatePasswordResetOobCode(email: string): Promise<string> {
     try {
-      await this.getUserByEmail(email);
-      const apiKey = await getFirebaseApiKey();
-      const url = `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${apiKey}`;
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestType: "PASSWORD_RESET",
-          email: email.trim().toLowerCase(),
-          continueUrl: actionCodeSettings?.url,
-        }),
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({})) as { error?: { message?: string } };
-        const errorMessage = errorData.error?.message ?? "Failed to send password reset email";
-        if (errorMessage.includes("USER_NOT_FOUND") || errorMessage.includes("user-not-found")) {
-          throw new Error("No user found with this email address");
-        }
-        throw new Error(errorMessage);
-      }
+      const user = await this.getUserByEmail(email);
+      const link = await admin.auth().generatePasswordResetLink(user.email ?? email);
+      const oobCode = new URL(link).searchParams.get("oobCode");
+      if (!oobCode) throw new Error("Failed to generate password reset code");
+      return oobCode;
     } catch (error) {
-      const err = error as { code?: string; message?: string };
-      if (err.code === "auth/user-not-found" || err.message?.includes("user-not-found") || err.message?.includes("No user found")) {
+      const err = error as { code?: string };
+      if (err.code === "auth/user-not-found") {
         throw new Error("No user found with this email address");
       }
       throw error;

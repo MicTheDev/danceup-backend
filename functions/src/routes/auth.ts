@@ -5,7 +5,7 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import authService from "../services/auth.service";
 import storageService from "../services/storage.service";
-import { sendStudioOwnerWelcomeEmail } from "../services/sendgrid.service";
+import { sendStudioOwnerWelcomeEmail, sendPasswordResetEmail } from "../services/sendgrid.service";
 import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
 import { getFirebaseApiKey } from "../utils/firebase-api-key";
@@ -270,13 +270,12 @@ app.post("/forgot-password", forgotPasswordLimiter, async (req, res) => {
     }
 
     const { email } = req.body as { email: string };
-    const actionCodeSettings = {
-      url: process.env["PASSWORD_RESET_URL"] || `${req.headers.origin || "https://your-app.com"}/reset-password`,
-      handleCodeInApp: false,
-    };
+    const baseResetUrl = process.env["PASSWORD_RESET_URL"] || `${req.headers.origin || "https://studios.danceup.app"}/reset-password`;
 
     try {
-      await authService.sendPasswordResetEmail(email, actionCodeSettings);
+      const oobCode = await authService.generatePasswordResetOobCode(email);
+      const resetUrl = `${baseResetUrl}?oobCode=${encodeURIComponent(oobCode)}`;
+      await sendPasswordResetEmail(email, resetUrl);
     } catch (emailError) {
       const msg = (emailError as Error).message || "";
       if (!msg.includes("user-not-found") && !msg.includes("No user found")) {

@@ -14,6 +14,7 @@ export { events } from "./routes/events";
 export { expireCredits, expireCreditsManual } from "./routes/credit-expiration";
 export { health } from "./routes/health";
 export { instructors } from "./routes/instructors";
+export { flyers } from "./routes/flyers";
 export { marketing } from "./routes/marketing";
 export { notifications } from "./routes/notifications";
 export { packagePurchases } from "./routes/package-purchases";
