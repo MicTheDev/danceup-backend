@@ -707,58 +707,64 @@ export class AttendanceService {
     });
   }
 
-  async getDashboardStats(studioOwnerId: string): Promise<Record<string, unknown>> {
+  async getDashboardStats(studioOwnerId: string, period: 'week' | 'month' | 'year' = 'week'): Promise<Record<string, unknown>> {
     const db = getFirestore();
     const now = new Date();
     const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-    const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const startOfPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const endOfPrevMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    let currentStart: Date;
+    let prevStart: Date;
+    let prevEnd: Date;
 
-    const dayOfWeek = now.getDay();
-    const startOfCurrentWeek = new Date(now);
-    startOfCurrentWeek.setDate(now.getDate() - dayOfWeek);
-    startOfCurrentWeek.setHours(0, 0, 0, 0);
-    const startOfPrevWeek = new Date(startOfCurrentWeek);
-    startOfPrevWeek.setDate(startOfPrevWeek.getDate() - 7);
-    const endOfPrevWeek = new Date(startOfCurrentWeek);
-    endOfPrevWeek.setMilliseconds(-1);
+    if (period === 'year') {
+      currentStart = new Date(now.getFullYear(), 0, 1);
+      prevStart = new Date(now.getFullYear() - 1, 0, 1);
+      prevEnd = new Date(now.getFullYear(), 0, 0, 23, 59, 59, 999);
+    } else if (period === 'month') {
+      currentStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      prevEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    } else {
+      const dow = now.getDay();
+      currentStart = new Date(now); currentStart.setDate(now.getDate() - dow); currentStart.setHours(0, 0, 0, 0);
+      prevStart = new Date(currentStart); prevStart.setDate(prevStart.getDate() - 7);
+      prevEnd = new Date(currentStart); prevEnd.setMilliseconds(-1);
+    }
 
     const sevenDaysAgo = new Date(now);
     sevenDaysAgo.setDate(now.getDate() - 6);
     sevenDaysAgo.setHours(0, 0, 0, 0);
 
-    const attendanceRecords = await this.getAttendanceRecords(studioOwnerId, startOfPrevMonth, now);
+    const attendanceRecords = await this.getAttendanceRecords(studioOwnerId, prevStart, now);
     const activeRecords = attendanceRecords.filter((r) => !r["isRemoved"]);
 
     // Active students
-    const currentMonthStudents = new Set<string>();
-    const prevMonthStudents = new Set<string>();
+    const currentStudents = new Set<string>();
+    const prevStudents = new Set<string>();
     activeRecords.forEach((r) => {
       const d = tsToDate(r["classInstanceDate"]);
       if (!d) return;
-      if (d >= startOfCurrentMonth) currentMonthStudents.add(r["studentId"] as string);
-      else if (d >= startOfPrevMonth && d <= endOfPrevMonth) prevMonthStudents.add(r["studentId"] as string);
+      if (d >= currentStart) currentStudents.add(r["studentId"] as string);
+      else if (d >= prevStart && d <= prevEnd) prevStudents.add(r["studentId"] as string);
     });
-    const activeStudentsCurrent = currentMonthStudents.size;
-    const activeStudentsPrev = prevMonthStudents.size;
+    const activeStudentsCurrent = currentStudents.size;
+    const activeStudentsPrev = prevStudents.size;
     const activeStudentsChange = activeStudentsPrev > 0
       ? Math.round(((activeStudentsCurrent - activeStudentsPrev) / activeStudentsPrev) * 100)
       : activeStudentsCurrent > 0 ? 100 : 0;
 
     // Avg attendance
-    let currentWeekCheckIns = 0;
-    let prevWeekCheckIns = 0;
+    let currentCheckIns = 0;
+    let prevCheckIns = 0;
     activeRecords.forEach((r) => {
       const d = tsToDate(r["classInstanceDate"]);
       if (!d) return;
-      if (d >= startOfCurrentWeek) currentWeekCheckIns++;
-      else if (d >= startOfPrevWeek && d < startOfCurrentWeek) prevWeekCheckIns++;
+      if (d >= currentStart) currentCheckIns++;
+      else if (d >= prevStart && d <= prevEnd) prevCheckIns++;
     });
-    const avgAttendanceChange = prevWeekCheckIns > 0
-      ? Math.round(((currentWeekCheckIns - prevWeekCheckIns) / prevWeekCheckIns) * 100)
-      : currentWeekCheckIns > 0 ? 100 : 0;
+    const avgAttendanceChange = prevCheckIns > 0
+      ? Math.round(((currentCheckIns - prevCheckIns) / prevCheckIns) * 100)
+      : currentCheckIns > 0 ? 100 : 0;
 
     // New sign-ups
     const studentsSnapshot = await db.collection("students").where("studioOwnerId", "==", studioOwnerId).get();
@@ -768,23 +774,22 @@ export class AttendanceService {
       const data = doc.data() as Record<string, unknown>;
       const ca = tsToDate(data["createdAt"]);
       if (!ca) return;
-      if (ca >= startOfCurrentWeek) newSignupsCurrent++;
-      else if (ca >= startOfPrevWeek && ca < startOfCurrentWeek) newSignupsPrev++;
+      if (ca >= currentStart) newSignupsCurrent++;
+      else if (ca >= prevStart && ca <= prevEnd) newSignupsPrev++;
     });
     const newSignupsChange = newSignupsPrev > 0
       ? Math.round(((newSignupsCurrent - newSignupsPrev) / newSignupsPrev) * 100)
       : newSignupsCurrent > 0 ? 100 : 0;
 
-    // Monthly revenue
-    const startOfPrevMonthForRevenue = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    // Revenue
     const [purchasesSnapshot, cashPurchasesSnapshot, privateLessonSnapshot] = await Promise.all([
       db.collection("purchases").where("studioOwnerId", "==", studioOwnerId).get(),
       db.collection("cashPurchases").where("studioOwnerId", "==", studioOwnerId).get(),
       db.collection("privateLessonBookings").where("studioId", "==", studioOwnerId).where("paymentStatus", "==", "paid").get(),
     ]);
 
-    let currentMonthRevenue = 0;
-    let prevMonthRevenue = 0;
+    let currentRevenue = 0;
+    let prevRevenue = 0;
 
     purchasesSnapshot.forEach((doc) => {
       const data = doc.data() as Record<string, unknown>;
@@ -793,8 +798,8 @@ export class AttendanceService {
       const ca = tsToDate(data["createdAt"]);
       if (!ca) return;
       const amount = (data["price"] as number) ?? (data["amount"] as number) ?? 0;
-      if (ca >= startOfCurrentMonth) currentMonthRevenue += amount;
-      else if (ca >= startOfPrevMonthForRevenue && ca < startOfCurrentMonth) prevMonthRevenue += amount;
+      if (ca >= currentStart) currentRevenue += amount;
+      else if (ca >= prevStart && ca <= prevEnd) prevRevenue += amount;
     });
     cashPurchasesSnapshot.forEach((doc) => {
       const data = doc.data() as Record<string, unknown>;
@@ -802,23 +807,43 @@ export class AttendanceService {
       const ca = tsToDate(data["createdAt"]);
       if (!ca) return;
       const amount = (data["amount"] as number) ?? 0;
-      if (ca >= startOfCurrentMonth) currentMonthRevenue += amount;
-      else if (ca >= startOfPrevMonthForRevenue && ca < startOfCurrentMonth) prevMonthRevenue += amount;
+      if (ca >= currentStart) currentRevenue += amount;
+      else if (ca >= prevStart && ca <= prevEnd) prevRevenue += amount;
     });
     privateLessonSnapshot.forEach((doc) => {
       const data = doc.data() as Record<string, unknown>;
       const ca = tsToDate(data["createdAt"]);
       if (!ca) return;
       const amount = (data["amountPaid"] as number) ?? 0;
-      if (ca >= startOfCurrentMonth) currentMonthRevenue += amount;
-      else if (ca >= startOfPrevMonthForRevenue && ca < startOfCurrentMonth) prevMonthRevenue += amount;
+      if (ca >= currentStart) currentRevenue += amount;
+      else if (ca >= prevStart && ca <= prevEnd) prevRevenue += amount;
     });
 
-    const revenueChange = prevMonthRevenue > 0
-      ? Math.round(((currentMonthRevenue - prevMonthRevenue) / prevMonthRevenue) * 100)
-      : currentMonthRevenue > 0 ? 100 : 0;
+    const revenueChange = prevRevenue > 0
+      ? Math.round(((currentRevenue - prevRevenue) / prevRevenue) * 100)
+      : currentRevenue > 0 ? 100 : 0;
 
-    // Attendance pulse
+    // Top classes in current period
+    const classCountMap = new Map<string, number>();
+    activeRecords.forEach((r) => {
+      const d = tsToDate(r["classInstanceDate"]);
+      if (!d || d < currentStart) return;
+      const classId = r["classId"] as string | undefined;
+      if (classId) classCountMap.set(classId, (classCountMap.get(classId) ?? 0) + 1);
+    });
+    const topClassIds = [...classCountMap.entries()]
+      .sort((a, b) => b[1] - a[1]).slice(0, 6).map(([id]) => id);
+    let topClasses: Array<{ classId: string; className: string; totalAttendance: number }> = [];
+    if (topClassIds.length > 0) {
+      const classDocs = await Promise.all(topClassIds.map((id) => db.collection("classes").doc(id).get()));
+      topClasses = topClassIds.map((id, i) => {
+        const doc = classDocs[i];
+        const name = doc?.exists ? (doc.data() as Record<string, unknown>)["name"] as string : id;
+        return { classId: id, className: name || id, totalAttendance: classCountMap.get(id) ?? 0 };
+      });
+    }
+
+    // Attendance pulse (always last 7 days)
     const classesSnapshot = await db.collection("classes")
       .where("studioOwnerId", "==", studioOwnerId)
       .where("isActive", "==", true)
@@ -857,11 +882,59 @@ export class AttendanceService {
 
     return {
       activeStudents: { current: activeStudentsCurrent, previous: activeStudentsPrev, change: activeStudentsChange },
-      avgAttendance: { current: currentWeekCheckIns, previous: prevWeekCheckIns, change: avgAttendanceChange },
+      avgAttendance: { current: currentCheckIns, previous: prevCheckIns, change: avgAttendanceChange },
       newSignups: { current: newSignupsCurrent, previous: newSignupsPrev, change: newSignupsChange },
-      monthlyRevenue: { current: currentMonthRevenue, previous: prevMonthRevenue, change: revenueChange },
+      monthlyRevenue: { current: currentRevenue, previous: prevRevenue, change: revenueChange },
+      topClasses,
       attendancePulse,
     };
+  }
+
+  async getRevenueTrend(studioOwnerId: string, months = 12): Promise<Array<{ month: string; revenue: number }>> {
+    const db = getFirestore();
+    const now = new Date();
+    const bucketMap = new Map<string, number>();
+    const ordered: string[] = [];
+    for (let i = months - 1; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      bucketMap.set(key, 0);
+      ordered.push(key);
+    }
+    const startDate = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
+
+    const [purchasesSnap, cashSnap, plSnap] = await Promise.all([
+      db.collection("purchases").where("studioOwnerId", "==", studioOwnerId).get(),
+      db.collection("cashPurchases").where("studioOwnerId", "==", studioOwnerId).get(),
+      db.collection("privateLessonBookings").where("studioId", "==", studioOwnerId).where("paymentStatus", "==", "paid").get(),
+    ]);
+
+    purchasesSnap.forEach((doc) => {
+      const d = doc.data() as Record<string, unknown>;
+      if (d["status"] && d["status"] !== "completed") return;
+      if (d["paymentMethod"] === "cash") return;
+      const ca = tsToDate(d["createdAt"]);
+      if (!ca || ca < startDate) return;
+      const key = `${ca.getFullYear()}-${String(ca.getMonth() + 1).padStart(2, '0')}`;
+      if (bucketMap.has(key)) bucketMap.set(key, (bucketMap.get(key) ?? 0) + ((d["price"] as number) ?? (d["amount"] as number) ?? 0));
+    });
+    cashSnap.forEach((doc) => {
+      const d = doc.data() as Record<string, unknown>;
+      if (d["status"] && d["status"] !== "completed") return;
+      const ca = tsToDate(d["createdAt"]);
+      if (!ca || ca < startDate) return;
+      const key = `${ca.getFullYear()}-${String(ca.getMonth() + 1).padStart(2, '0')}`;
+      if (bucketMap.has(key)) bucketMap.set(key, (bucketMap.get(key) ?? 0) + ((d["amount"] as number) ?? 0));
+    });
+    plSnap.forEach((doc) => {
+      const d = doc.data() as Record<string, unknown>;
+      const ca = tsToDate(d["createdAt"]);
+      if (!ca || ca < startDate) return;
+      const key = `${ca.getFullYear()}-${String(ca.getMonth() + 1).padStart(2, '0')}`;
+      if (bucketMap.has(key)) bucketMap.set(key, (bucketMap.get(key) ?? 0) + ((d["amountPaid"] as number) ?? 0));
+    });
+
+    return ordered.map((month) => ({ month, revenue: bucketMap.get(month) ?? 0 }));
   }
 }
 

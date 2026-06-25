@@ -121,10 +121,29 @@ app.get("/dashboard-stats", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
-    const stats = await attendanceService.getDashboardStats(studioOwnerId);
+    const rawPeriod = req.query["period"] as string | undefined;
+    const period: 'week' | 'month' | 'year' =
+      rawPeriod === 'month' || rawPeriod === 'year' ? rawPeriod : 'week';
+
+    const stats = await attendanceService.getDashboardStats(studioOwnerId, period);
     sendJsonResponse(req, res, 200, stats);
   } catch (error) {
     console.error("Error getting dashboard stats:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.get("/revenue-trend", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    const months = Math.min(24, Math.max(1, parseInt((req.query["months"] as string) || "12", 10) || 12));
+    const trend = await attendanceService.getRevenueTrend(studioOwnerId, months);
+    sendJsonResponse(req, res, 200, trend);
+  } catch (error) {
+    console.error("Error getting revenue trend:", error);
     handleError(req, res, error);
   }
 });
