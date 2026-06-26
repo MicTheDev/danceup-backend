@@ -217,7 +217,7 @@ export class PackagesService {
         stat.totalCreditsUsed += Math.max(0, pkg.credits - Math.max(0, remaining));
 
         // Expiring in the next 30 days
-        if (expirationDate.toMillis() <= in30Days.toMillis()) {
+        if (remaining > 0 && expirationDate.toMillis() <= in30Days.toMillis()) {
           const daysUntilExpiry = Math.ceil(
             (expirationDate.toMillis() - now.toMillis()) / (24 * 60 * 60 * 1000),
           );
