@@ -726,9 +726,15 @@ export class AttendanceService {
       prevEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
     } else {
       const dow = now.getDay();
-      currentStart = new Date(now); currentStart.setDate(now.getDate() - dow); currentStart.setHours(0, 0, 0, 0);
-      prevStart = new Date(currentStart); prevStart.setDate(prevStart.getDate() - 7);
-      prevEnd = new Date(currentStart); prevEnd.setMilliseconds(-1);
+
+      currentStart = new Date(now);
+      currentStart.setDate(now.getDate() - dow);
+      currentStart.setHours(0, 0, 0, 0);
+
+      prevStart = new Date(currentStart);
+      prevStart.setDate(prevStart.getDate() - 7);
+
+      prevEnd = new Date(currentStart.getTime() - 1);
     }
 
     const sevenDaysAgo = new Date(now);
