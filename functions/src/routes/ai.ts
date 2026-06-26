@@ -143,7 +143,7 @@ app.post("/scheduling-suggestions", async (req, res) => {
     });
     const existingSchedule = existingClasses.join("\n");
 
-    const dashStats = await attendanceService.getDashboardStats(studioOwnerId) as Record<string, unknown>;
+    const dashStats = await attendanceService.getDashboardStats(studioOwnerId, "month") as Record<string, unknown>;
     const pulseLines = ((dashStats["attendancePulse"] as Array<Record<string, unknown>>) || []).map(
       (p) => `  ${p["day"]}: ${p["checkIns"]} check-ins / ${p["fillRate"]}% fill`,
     );
@@ -223,7 +223,7 @@ app.get("/package-recommendations", async (req, res) => {
       db.collection("packages").where("studioOwnerId", "==", studioOwnerId).get(),
       db.collection("purchases").where("studioOwnerId", "==", studioOwnerId).get(),
       db.collection("users").doc(studioOwnerId).get(),
-      attendanceService.getDashboardStats(studioOwnerId) as Promise<Record<string, unknown>>,
+      attendanceService.getDashboardStats(studioOwnerId, "month") as Promise<Record<string, unknown>>,
     ]);
 
     const studioName = studioDoc.exists ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string || "Your Studio") : "Your Studio";
