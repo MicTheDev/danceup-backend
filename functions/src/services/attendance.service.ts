@@ -707,7 +707,7 @@ export class AttendanceService {
     });
   }
 
-  async getDashboardStats(studioOwnerId: string, period: 'week' | 'month' | 'year' = 'week'): Promise<Record<string, unknown>> {
+  async getDashboardStats(studioOwnerId: string, period: 'week' | 'month' | 'year' = 'month'): Promise<Record<string, unknown>> {
     const db = getFirestore();
     const now = new Date();
     const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
