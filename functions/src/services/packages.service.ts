@@ -200,18 +200,21 @@ export class PackagesService {
         if (!pkg || !stat) continue;
 
         const remaining = (credit["credits"] as number) || 0;
-        if (remaining <= 0) continue;
 
         const expirationDate = credit["expirationDate"] as admin.firestore.Timestamp;
         const purchaseDate = credit["purchaseDate"] as admin.firestore.Timestamp | undefined;
 
+        // Count every credit entry as a unit sold (even if fully used), but only treat >0 as active balance.
         stat.unitsSold++;
-        stat.activeStudents.add(studentId);
-        stat.totalCreditsRemaining += remaining;
-        stat.totalCreditsUsed += Math.max(0, pkg.credits - remaining);
         stat.studentPurchaseCounts.set(
           studentId, (stat.studentPurchaseCounts.get(studentId) || 0) + 1,
         );
+
+        if (remaining > 0) {
+          stat.activeStudents.add(studentId);
+          stat.totalCreditsRemaining += remaining;
+        }
+        stat.totalCreditsUsed += Math.max(0, pkg.credits - Math.max(0, remaining));
 
         // Expiring in the next 30 days
         if (expirationDate.toMillis() <= in30Days.toMillis()) {
