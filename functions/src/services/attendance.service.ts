@@ -833,13 +833,13 @@ export class AttendanceService {
     });
     const topClassIds = [...classCountMap.entries()]
       .sort((a, b) => b[1] - a[1]).slice(0, 6).map(([id]) => id);
-    let topClasses: Array<{ classId: string; className: string; totalAttendance: number }> = [];
+    let topClasses: Array<{ classId: string; className: string; checkIns: number }> = [];
     if (topClassIds.length > 0) {
       const classDocs = await Promise.all(topClassIds.map((id) => db.collection("classes").doc(id).get()));
       topClasses = topClassIds.map((id, i) => {
         const doc = classDocs[i];
         const name = doc?.exists ? (doc.data() as Record<string, unknown>)["name"] as string : id;
-        return { classId: id, className: name || id, totalAttendance: classCountMap.get(id) ?? 0 };
+        return { classId: id, className: name || id, checkIns: classCountMap.get(id) ?? 0 };
       });
     }
 
