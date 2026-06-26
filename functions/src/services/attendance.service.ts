@@ -910,9 +910,19 @@ export class AttendanceService {
     const startDate = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
 
     const [purchasesSnap, cashSnap, plSnap] = await Promise.all([
-      db.collection("purchases").where("studioOwnerId", "==", studioOwnerId).get(),
-      db.collection("cashPurchases").where("studioOwnerId", "==", studioOwnerId).get(),
-      db.collection("privateLessonBookings").where("studioId", "==", studioOwnerId).where("paymentStatus", "==", "paid").get(),
+      db.collection("purchases")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("createdAt", ">=", admin.firestore.Timestamp.fromDate(startDate))
+        .get(),
+      db.collection("cashPurchases")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("createdAt", ">=", admin.firestore.Timestamp.fromDate(startDate))
+        .get(),
+      db.collection("privateLessonBookings")
+        .where("studioId", "==", studioOwnerId)
+        .where("paymentStatus", "==", "paid")
+        .where("createdAt", ">=", admin.firestore.Timestamp.fromDate(startDate))
+        .get(),
     ]);
 
     purchasesSnap.forEach((doc) => {
