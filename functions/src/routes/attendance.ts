@@ -123,7 +123,7 @@ app.get("/dashboard-stats", async (req, res) => {
 
     const rawPeriod = req.query["period"] as string | undefined;
     const period: 'week' | 'month' | 'year' =
-      rawPeriod === 'month' || rawPeriod === 'year' ? rawPeriod : 'week';
+      rawPeriod === 'week' || rawPeriod === 'month' || rawPeriod === 'year' ? rawPeriod : 'month';
 
     const stats = await attendanceService.getDashboardStats(studioOwnerId, period);
     sendJsonResponse(req, res, 200, stats);
