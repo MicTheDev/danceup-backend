@@ -884,7 +884,7 @@ export class AttendanceService {
       activeStudents: { current: activeStudentsCurrent, previous: activeStudentsPrev, change: activeStudentsChange },
       avgAttendance: { current: currentCheckIns, previous: prevCheckIns, change: avgAttendanceChange },
       newSignups: { current: newSignupsCurrent, previous: newSignupsPrev, change: newSignupsChange },
-      monthlyRevenue: { current: currentRevenue, previous: prevRevenue, change: revenueChange },
+      periodRevenue: { current: currentRevenue, previous: prevRevenue, change: revenueChange },
       topClasses,
       attendancePulse,
     };
