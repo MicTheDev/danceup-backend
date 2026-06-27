@@ -100,6 +100,24 @@ app.post("/", async (req, res) => {
   }
 });
 
+app.get("/analytics", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const studioOwnerId = await packagesService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const analytics = await packagesService.getPackageAnalytics(studioOwnerId);
+    sendJsonResponse(req, res, 200, analytics);
+  } catch (error) {
+    console.error("Error getting package analytics:", error);
+    handleError(req, res, error);
+  }
+});
+
 app.get("/:id", async (req, res) => {
   try {
     let user;
