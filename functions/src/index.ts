@@ -25,6 +25,7 @@ export { reviews } from "./routes/reviews";
 export { stripe } from "./routes/stripe";
 export { students } from "./routes/students";
 export { studios } from "./routes/studios";
+export { teams } from "./routes/teams";
 export { support } from "./routes/support";
 export { updateClassImages } from "./routes/updateClassImages";
 export { usersstudent } from "./routes/usersStudent";

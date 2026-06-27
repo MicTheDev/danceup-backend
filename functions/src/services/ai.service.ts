@@ -287,7 +287,7 @@ export async function generateStudioInsights(data: InsightsData): Promise<{ insi
   const active = ds["activeStudents"] as { current?: number; change?: number } | undefined;
   const avg = ds["avgAttendance"] as { current?: number; change?: number } | undefined;
   const signups = ds["newSignups"] as { current?: number; change?: number } | undefined;
-  const revenue = ds["monthlyRevenue"] as { current?: number; change?: number } | undefined;
+  const revenue = ds["periodRevenue"] as { current?: number; change?: number } | undefined;
 
   const classLines = topClasses.length > 0
     ? topClasses.map((c) => `  - ${c.name}: ${c.totalAttendance} check-ins`).join("\n")

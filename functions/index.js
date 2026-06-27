@@ -35,3 +35,4 @@ exports.ai = require("./ai").ai;
 exports.analytics = require("./analytics").analytics;
 exports.health = require("./health").health;
 exports.retentionTriggers = require("./retention").retentionTriggers;
+exports.teams = require("./teams").teams;

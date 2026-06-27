@@ -84,6 +84,8 @@ app.get("/", async (req, res) => {
       state: userData.state,
       zip: userData.zip,
       studioImageUrl: userData.studioImageUrl || null,
+      classrooms: userData.classrooms || [],
+      dropInPrice: userData.dropInPrice ?? null,
       facebook: userData.facebook || null,
       instagram: userData.instagram || null,
       tiktok: userData.tiktok || null,
@@ -151,6 +153,8 @@ app.put("/", async (req, res) => {
       tiktok,
       youtube,
       studioImageFile,
+      classrooms,
+      dropInPrice,
     } = req.body;
 
     // Handle studio image upload if provided
@@ -228,6 +232,30 @@ app.put("/", async (req, res) => {
     if (studioImageUrl !== null) {
       updateData.studioImageUrl = studioImageUrl;
     }
+    if (classrooms !== undefined) {
+      if (!Array.isArray(classrooms)) {
+        return sendErrorResponse(req, res, 400, "Validation Error", "classrooms must be an array");
+      }
+      for (const room of classrooms) {
+        if (!room.name || typeof room.name !== "string" || !room.name.trim()) {
+          return sendErrorResponse(req, res, 400, "Validation Error", "Each classroom must have a non-empty name");
+        }
+        if (typeof room.capacity !== "number" || !Number.isInteger(room.capacity) || room.capacity < 1) {
+          return sendErrorResponse(req, res, 400, "Validation Error", "Each classroom capacity must be an integer >= 1");
+        }
+      }
+      updateData.classrooms = classrooms.map((r) => ({
+        id: r.id || "",
+        name: r.name.trim(),
+        capacity: r.capacity,
+      }));
+    }
+    if (dropInPrice !== undefined) {
+      if (dropInPrice !== null && (typeof dropInPrice !== "number" || isNaN(dropInPrice) || dropInPrice < 0)) {
+        return sendErrorResponse(req, res, 400, "Validation Error", "dropInPrice must be a non-negative number or null");
+      }
+      updateData.dropInPrice = dropInPrice;
+    }
 
     // Geocode studio address if any address field was updated
     const addressChanged = studioAddressLine1 !== undefined || city !== undefined ||
@@ -251,6 +279,23 @@ app.put("/", async (req, res) => {
     const db = getFirestore();
     await db.collection("users").doc(userDoc.id).update(updateData);
 
+    // Batch-update cost on all classes when dropInPrice changes
+    if (dropInPrice !== undefined) {
+      const classesSnapshot = await db.collection("classes")
+          .where("studioOwnerId", "==", userDoc.id)
+          .get();
+      if (!classesSnapshot.empty) {
+        const batch = db.batch();
+        classesSnapshot.forEach((classDoc) => {
+          batch.update(classDoc.ref, {
+            cost: dropInPrice ?? 0,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        });
+        await batch.commit();
+      }
+    }
+
     // Get updated document
     const updatedDoc = await db.collection("users").doc(userDoc.id).get();
     const updatedData = updatedDoc.data();
@@ -265,6 +310,8 @@ app.put("/", async (req, res) => {
       state: updatedData.state,
       zip: updatedData.zip,
       studioImageUrl: updatedData.studioImageUrl || null,
+      classrooms: updatedData.classrooms || [],
+      dropInPrice: updatedData.dropInPrice ?? null,
       facebook: updatedData.facebook || null,
       instagram: updatedData.instagram || null,
       tiktok: updatedData.tiktok || null,

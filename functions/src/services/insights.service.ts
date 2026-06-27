@@ -41,7 +41,7 @@ export async function getInsightsData(studioOwnerId: string): Promise<{
   thirtyDaysAgo.setDate(now.getDate() - 30);
 
   const [dashboardStats, classStats, studioDoc] = await Promise.all([
-    attendanceService.getDashboardStats(studioOwnerId),
+    attendanceService.getDashboardStats(studioOwnerId, "month"),
     attendanceService.getClassAttendanceStats(studioOwnerId, thirtyDaysAgo, now),
     db.collection("users").doc(studioOwnerId).get(),
   ]);

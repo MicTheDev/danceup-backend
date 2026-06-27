@@ -353,10 +353,12 @@ function validateCreateClassPayload(payload) {
     errors.push({field: "level", message: levelValidation.message});
   }
 
-  // Cost validation
-  const costValidation = validateCost(payload.cost);
-  if (!costValidation.valid) {
-    errors.push({field: "cost", message: costValidation.message});
+  // Cost is set automatically from studio drop-in price; validate only if provided
+  if (payload.cost !== undefined && payload.cost !== null) {
+    const costValidation = validateCost(payload.cost);
+    if (!costValidation.valid) {
+      errors.push({field: "cost", message: costValidation.message});
+    }
   }
 
   // Day of week validation
