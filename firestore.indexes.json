@@ -243,7 +243,49 @@
       ]
     },
     {
+      "collectionGroup": "performanceTeams",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "studioOwnerId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "purchases",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "studioOwnerId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "purchases",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "studioOwnerId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "cashPurchases",
       "queryScope": "COLLECTION",
       "fields": [
         {
@@ -266,7 +308,25 @@
         },
         {
           "fieldPath": "createdAt",
-          "order": "DESCENDING"
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "privateLessonBookings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "studioId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "paymentStatus",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
         }
       ]
     },

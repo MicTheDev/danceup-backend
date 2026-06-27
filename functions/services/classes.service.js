@@ -97,12 +97,15 @@ class ClassesService {
     // If a custom imageUrl was already set (e.g. uploaded by the endpoint), keep it.
     // Otherwise fall back to the studio's own image, then to the placeholder.
     let imageUrl = classData.imageUrl;
-    if (!imageUrl) {
-      imageUrl = this.getStudioPlaceholderImage();
-      if (studioOwnerDoc.exists) {
-        const studioOwnerData = studioOwnerDoc.data();
+    if (studioOwnerDoc.exists) {
+      const studioOwnerData = studioOwnerDoc.data();
+      if (!imageUrl) {
         imageUrl = studioOwnerData.studioImageUrl || this.getStudioPlaceholderImage();
       }
+      // Cost is always derived from the studio's drop-in price
+      classData.cost = studioOwnerData.dropInPrice ?? 0;
+    } else if (!imageUrl) {
+      imageUrl = this.getStudioPlaceholderImage();
     }
     
     // Geocode using the studio owner's address

@@ -71,6 +71,8 @@ app.get("/", async (req, res) => {
       instagram: userData["instagram"] || null,
       tiktok: userData["tiktok"] || null,
       youtube: userData["youtube"] || null,
+      classrooms: userData["classrooms"] || [],
+      dropInPrice: userData["dropInPrice"] ?? null,
       email: userData["email"],
       membership: userData["membership"],
       stripeAccountId: userData["stripeAccountId"] || null,
@@ -111,7 +113,8 @@ app.put("/", async (req, res) => {
     const {
       firstName, lastName, studioName, studioAddressLine1, studioAddressLine2,
       city, state, zip, facebook, instagram, tiktok, youtube, studioImageFile,
-    } = req.body as Record<string, string | undefined>;
+      classrooms, dropInPrice,
+    } = req.body as Record<string, unknown>;
 
     const existingData = userDoc.data() as Record<string, unknown>;
     let studioImageUrl: string | null = null;
@@ -139,19 +142,44 @@ app.put("/", async (req, res) => {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-    if (firstName !== undefined) updateData["firstName"] = firstName.trim();
-    if (lastName !== undefined) updateData["lastName"] = lastName.trim();
-    if (studioName !== undefined) updateData["studioName"] = studioName.trim();
-    if (studioAddressLine1 !== undefined) updateData["studioAddressLine1"] = studioAddressLine1.trim();
-    if (studioAddressLine2 !== undefined) updateData["studioAddressLine2"] = studioAddressLine2 ? studioAddressLine2.trim() : null;
-    if (city !== undefined) updateData["city"] = city.trim();
-    if (state !== undefined) updateData["state"] = state.trim().toUpperCase();
-    if (zip !== undefined) updateData["zip"] = zip.trim();
-    if (facebook !== undefined) updateData["facebook"] = facebook ? facebook.trim() : null;
-    if (instagram !== undefined) updateData["instagram"] = instagram ? instagram.trim() : null;
-    if (tiktok !== undefined) updateData["tiktok"] = tiktok ? tiktok.trim() : null;
-    if (youtube !== undefined) updateData["youtube"] = youtube ? youtube.trim() : null;
+    if (firstName !== undefined) updateData["firstName"] = (firstName as string).trim();
+    if (lastName !== undefined) updateData["lastName"] = (lastName as string).trim();
+    if (studioName !== undefined) updateData["studioName"] = (studioName as string).trim();
+    if (studioAddressLine1 !== undefined) updateData["studioAddressLine1"] = (studioAddressLine1 as string).trim();
+    if (studioAddressLine2 !== undefined) updateData["studioAddressLine2"] = studioAddressLine2 ? (studioAddressLine2 as string).trim() : null;
+    if (city !== undefined) updateData["city"] = (city as string).trim();
+    if (state !== undefined) updateData["state"] = (state as string).trim().toUpperCase();
+    if (zip !== undefined) updateData["zip"] = (zip as string).trim();
+    if (facebook !== undefined) updateData["facebook"] = facebook ? (facebook as string).trim() : null;
+    if (instagram !== undefined) updateData["instagram"] = instagram ? (instagram as string).trim() : null;
+    if (tiktok !== undefined) updateData["tiktok"] = tiktok ? (tiktok as string).trim() : null;
+    if (youtube !== undefined) updateData["youtube"] = youtube ? (youtube as string).trim() : null;
     if (studioImageUrl !== null) updateData["studioImageUrl"] = studioImageUrl;
+    if (classrooms !== undefined) {
+      if (!Array.isArray(classrooms)) {
+        return sendErrorResponse(req, res, 400, "Validation Error", "classrooms must be an array");
+      }
+      for (const room of classrooms as Array<Record<string, unknown>>) {
+        if (!room["name"] || typeof room["name"] !== "string" || !(room["name"] as string).trim()) {
+          return sendErrorResponse(req, res, 400, "Validation Error", "Each classroom must have a non-empty name");
+        }
+        const cap = Number(room["capacity"]);
+        if (!Number.isInteger(cap) || cap < 1) {
+          return sendErrorResponse(req, res, 400, "Validation Error", "Each classroom capacity must be an integer ≥ 1");
+        }
+      }
+      updateData["classrooms"] = (classrooms as Array<Record<string, unknown>>).map((r) => ({
+        id: r["id"] || crypto.randomUUID(),
+        name: (r["name"] as string).trim(),
+        capacity: Number(r["capacity"]),
+      }));
+    }
+    if (dropInPrice !== undefined) {
+      if (dropInPrice !== null && (typeof dropInPrice !== "number" || dropInPrice < 0)) {
+        return sendErrorResponse(req, res, 400, "Validation Error", "dropInPrice must be a number ≥ 0 or null");
+      }
+      updateData["dropInPrice"] = dropInPrice;
+    }
 
     const addressChanged = studioAddressLine1 !== undefined || city !== undefined ||
       state !== undefined || zip !== undefined;
@@ -172,6 +200,18 @@ app.put("/", async (req, res) => {
     const db = getFirestore();
     await db.collection("users").doc(userDoc.id).update(updateData);
 
+    if (dropInPrice !== undefined) {
+      const classesSnap = await db.collection("classes").where("studioOwnerId", "==", userDoc.id).get();
+      if (!classesSnap.empty) {
+        const batch = db.batch();
+        classesSnap.forEach((doc) => batch.update(doc.ref, {
+          cost: dropInPrice ?? 0,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }));
+        await batch.commit();
+      }
+    }
+
     const updatedDoc = await db.collection("users").doc(userDoc.id).get();
     const updatedData = updatedDoc.data() as Record<string, unknown>;
 
@@ -189,6 +229,8 @@ app.put("/", async (req, res) => {
       instagram: updatedData["instagram"] || null,
       tiktok: updatedData["tiktok"] || null,
       youtube: updatedData["youtube"] || null,
+      classrooms: updatedData["classrooms"] || [],
+      dropInPrice: updatedData["dropInPrice"] ?? null,
       email: updatedData["email"],
       membership: updatedData["membership"],
     });
