@@ -27,7 +27,7 @@ interface SendGridTemplate {
   updatedAt: string;
 }
 
-type ConfirmationEmailType = "private_lesson" | "package" | "class" | "event" | "workshop";
+type ConfirmationEmailType = "private_lesson" | "private_lesson_confirmed" | "package" | "class" | "event" | "workshop";
 
 interface ConfirmationDetails {
   instructorName?: string;
@@ -195,18 +195,37 @@ export function buildConfirmationEmail(opts: {
 
   switch (type) {
     case "private_lesson":
-      subject = `Private Lesson Confirmed — ${details.instructorName}`;
+      subject = `Private Lesson Request Received — ${details.instructorName}`;
       bodyLines = [
-        `<h2 style="color:#1e293b;margin:0 0 16px">Private Lesson Confirmed!</h2>`,
-        `<p>Your private lesson has been booked and payment received. Here are the details:</p>`,
+        `<h2 style="color:#1e293b;margin:0 0 16px">Private Lesson Request Received</h2>`,
+        `<p>Your payment was received and your private lesson request has been sent to the studio. You'll get another email once the studio confirms your booking.</p>`,
         `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
         `<tr><td style="padding:8px 0;color:#64748b;width:140px">Instructor</td><td style="padding:8px 0;font-weight:600">${details.instructorName}</td></tr>`,
         `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${details.studioName}</td></tr>`,
         `<tr><td style="padding:8px 0;color:#64748b">Date</td><td style="padding:8px 0">${details.date}</td></tr>`,
         `<tr><td style="padding:8px 0;color:#64748b">Time</td><td style="padding:8px 0">${details.timeSlot}</td></tr>`,
         `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${details.amountPaid}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Status</td><td style="padding:8px 0"><span style="background:#fef9c3;color:#854d0e;padding:2px 10px;border-radius:999px;font-size:13px;font-weight:600">Pending Confirmation</span></td></tr>`,
         `</table>`,
-        `<p style="color:#475569">The studio may reach out to confirm any final details. If you have questions, contact the studio directly.</p>`,
+        `<p style="color:#475569">If you have questions in the meantime, contact the studio directly.</p>`,
+      ];
+      break;
+
+    case "private_lesson_confirmed":
+      subject = `Private Lesson Confirmed — ${details.instructorName}`;
+      bodyLines = [
+        `<h2 style="color:#1e293b;margin:0 0 16px">Your Private Lesson is Confirmed!</h2>`,
+        details.studioMessage
+          ? `<div style="background:#f0fdf4;border-left:4px solid #22c55e;padding:14px 16px;border-radius:0 8px 8px 0;margin:0 0 20px"><p style="margin:0;color:#166534;font-size:15px">${String(details.studioMessage).replace(/\n/g, "<br>")}</p></div>`
+          : `<p>Great news — your private lesson has been confirmed by the studio. See you there!</p>`,
+        `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
+        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Instructor</td><td style="padding:8px 0;font-weight:600">${details.instructorName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${details.studioName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Date</td><td style="padding:8px 0">${details.date}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Time</td><td style="padding:8px 0">${details.timeSlot}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Status</td><td style="padding:8px 0"><span style="background:#dcfce7;color:#166534;padding:2px 10px;border-radius:999px;font-size:13px;font-weight:600">Confirmed</span></td></tr>`,
+        `</table>`,
+        `<p style="color:#475569">If you have any questions, contact the studio directly.</p>`,
       ];
       break;
 

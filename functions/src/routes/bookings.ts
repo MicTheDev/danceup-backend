@@ -502,6 +502,7 @@ app.patch("/:bookingId/confirm", async (req, res) => {
     const studioOwnerId = userDoc.id;
     const bookingId = req.params["bookingId"] as string;
 
+    const { message: studioMessage } = (req.body || {}) as { message?: string };
     const booking = await bookingsService.confirmBooking(bookingId, studioOwnerId);
 
     try {
@@ -525,7 +526,8 @@ app.patch("/:bookingId/confirm", async (req, res) => {
         const bookingTs = bookingData["timeSlot"] as Record<string, unknown> | undefined;
         const timeLabel = bookingTs ? `${bookingTs["startTime"] as string} – ${bookingTs["endTime"] as string}` : "";
         const pushTitle = "Private Lesson Confirmed!";
-        const pushBody = `Your lesson${bookingDate ? ` on ${bookingDate}` : ""}${timeLabel ? ` at ${timeLabel}` : ""} has been confirmed.`;
+        const defaultBody = `Your lesson${bookingDate ? ` on ${bookingDate}` : ""}${timeLabel ? ` at ${timeLabel}` : ""} has been confirmed.`;
+        const pushBody = studioMessage?.trim() ? studioMessage.trim().slice(0, 500) : defaultBody;
         await db.collection("studentNotifications").add({
           authUid: studentAuthUid,
           type: "booking_confirmed",
@@ -536,6 +538,39 @@ app.patch("/:bookingId/confirm", async (req, res) => {
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
         await sendStudentPush(studentAuthUid, pushTitle, pushBody);
+
+        // Send confirmation email to student
+        try {
+          const studentProfileSnap = await db.collection("usersStudentProfiles")
+            .where("authUid", "==", studentAuthUid)
+            .limit(1)
+            .get();
+          const studentEmail = studentProfileSnap.empty
+            ? null
+            : (studentProfileSnap.docs[0]!.data() as Record<string, unknown>)["email"] as string | undefined;
+
+          if (studentEmail) {
+            const instructorId = bookingData["instructorId"] as string | undefined;
+            const instructorDoc = instructorId ? await db.collection("instructors").doc(instructorId).get() : null;
+            const instructorData = instructorDoc?.exists ? instructorDoc.data() as Record<string, unknown> : null;
+            const instructorName = instructorData
+              ? `${instructorData["firstName"] ?? ""} ${instructorData["lastName"] ?? ""}`.trim()
+              : "Your Instructor";
+
+            const studioDoc = await db.collection("users").doc(studioOwnerId).get();
+            const studioName = studioDoc.exists
+              ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string ?? "The Studio")
+              : "The Studio";
+
+            await sendgridService.sendConfirmationEmail(studentEmail, "private_lesson_confirmed", {
+              instructorName,
+              studioName,
+              date: bookingDate ?? "",
+              timeSlot: timeLabel,
+              studioMessage: studioMessage?.trim() || undefined,
+            });
+          }
+        } catch (emailErr) { console.error("[confirm booking] Confirmation email error:", emailErr); }
       }
     } catch (err) { console.error("Error marking notification as read:", err); }
 

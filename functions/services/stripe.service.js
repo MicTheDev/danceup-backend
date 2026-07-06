@@ -32,8 +32,6 @@ async function getStripeClient() {
   }
 
   try {
-    // Get secret key from Secret Manager
-    // Determine environment from project ID or use test by default
     const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || "";
     const isProduction = projectId.includes("production");
     const secretName = isProduction
@@ -1092,18 +1090,24 @@ async function createPrivateLessonCheckoutSession({
  * @param {string} membership - Membership tier for metadata
  * @returns {Promise<{subscriptionId: string, paymentIntentId: string, clientSecret: string}>}
  */
-async function createSubscriptionCheckout(customerId, priceId, userId, membership) {
+async function createSubscriptionCheckout(customerId, priceId, userId, membership, promotionCodeId) {
   const stripe = await getStripeClient();
 
   try {
-    const subscription = await stripe.subscriptions.create({
+    const subscriptionParams = {
       customer: customerId,
       items: [{ price: priceId }],
       payment_behavior: "default_incomplete",
       payment_settings: { save_default_payment_method: "on_subscription" },
       expand: ["latest_invoice.payment_intent"],
       metadata: { userId: userId || "", membership },
-    });
+    };
+
+    if (promotionCodeId) {
+      subscriptionParams.discounts = [{ promotion_code: promotionCodeId }];
+    }
+
+    const subscription = await stripe.subscriptions.create(subscriptionParams);
 
     const paymentIntent = subscription.latest_invoice?.payment_intent;
     if (!paymentIntent?.client_secret) {

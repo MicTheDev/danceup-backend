@@ -6,6 +6,7 @@ import storageService from "../services/storage.service";
 import { logAuditEvent } from "../services/audit.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateInstructorPayload, validateUpdateInstructorPayload } from "../utils/validation";
+import { getFirestore } from "../utils/firestore";
 import {
   sendJsonResponse,
   sendErrorResponse,
@@ -130,6 +131,115 @@ app.get("/public/:id", async (req, res) => {
     sendJsonResponse(req, res, 200, instructorData);
   } catch (error) {
     console.error("Error getting public instructor:", error);
+    handleError(req, res, error);
+  }
+});
+
+type DaySlot = { startTime: string; endTime: string };
+
+type DayConfig = {
+  day: string;
+  available: boolean;
+  timeSlots?: DaySlot[];
+  startTime?: string;
+  endTime?: string;
+};
+
+function getSlotsForDayConfig(dayConfig: DayConfig): DaySlot[] {
+  if (dayConfig.timeSlots && dayConfig.timeSlots.length > 0) return dayConfig.timeSlots;
+  // Legacy format: expand startTime–endTime range into 1-hour blocks
+  if (dayConfig.startTime && dayConfig.endTime) {
+    const startHour = parseInt(dayConfig.startTime.split(":")[0] ?? "0", 10);
+    const endHour = parseInt(dayConfig.endTime.split(":")[0] ?? "0", 10);
+    const slots: DaySlot[] = [];
+    for (let h = startHour; h < endHour; h++) {
+      slots.push({
+        startTime: `${String(h).padStart(2, "0")}:00`,
+        endTime: `${String(h + 1).padStart(2, "0")}:00`,
+      });
+    }
+    return slots;
+  }
+  return [];
+}
+
+app.get("/public/:id/available-slots", async (req, res) => {
+  try {
+    const instructorId = req.params["id"] as string;
+    const { year: yearStr, month: monthStr } = req.query as { year?: string; month?: string };
+
+    if (!yearStr || !monthStr) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "year and month query parameters are required");
+    }
+
+    const year = parseInt(yearStr, 10);
+    const month = parseInt(monthStr, 10); // 1-12
+    if (isNaN(year) || isNaN(month) || month < 1 || month > 12) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid year or month");
+    }
+
+    const instructor = await instructorsService.getPublicInstructorById(instructorId);
+    if (!instructor) return sendErrorResponse(req, res, 404, "Not Found", "Instructor not found");
+    console.log(`[available-slots] instructorId=${instructorId} availableForPrivates=${instructor.availability?.availableForPrivates} availabilityType=${typeof instructor.availability?.availability} availabilityLength=${Array.isArray(instructor.availability?.availability) ? (instructor.availability!.availability as unknown[]).length : "N/A"}`);
+    if (!instructor.availability?.availableForPrivates) return sendJsonResponse(req, res, 200, {});
+
+    const availabilityConfig = instructor.availability.availability as DayConfig[] | undefined;
+    if (!availabilityConfig || availabilityConfig.length === 0) {
+      console.log(`[available-slots] Early exit: availabilityConfig=${JSON.stringify(availabilityConfig)}`);
+      return sendJsonResponse(req, res, 200, {});
+    }
+    console.log(`[available-slots] Processing ${availabilityConfig.length} day configs for ${year}-${month}`);
+
+    // Build date range strings
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const lastDay = new Date(year, month, 0).getDate();
+    const startDate = `${year}-${pad(month)}-01`;
+    const endDate = `${year}-${pad(month)}-${pad(lastDay)}`;
+
+    // Fetch existing confirmed/pending bookings for this instructor this month
+    const db = getFirestore();
+    const snapshot = await db.collection("privateLessonBookings")
+      .where("instructorId", "==", instructorId)
+      .where("date", ">=", startDate)
+      .where("date", "<=", endDate)
+      .where("status", "in", ["pending", "confirmed"])
+      .get();
+
+    const bookedByDate = new Map<string, Set<string>>();
+    snapshot.docs.forEach((doc) => {
+      const d = doc.data() as Record<string, unknown>;
+      const date = d["date"] as string;
+      const ts = d["timeSlot"] as DaySlot;
+      if (!bookedByDate.has(date)) bookedByDate.set(date, new Set());
+      bookedByDate.get(date)!.add(`${ts.startTime}-${ts.endTime}`);
+    });
+
+    const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const result: Record<string, DaySlot[]> = {};
+    for (let day = 1; day <= lastDay; day++) {
+      const date = new Date(year, month - 1, day);
+      if (date < today) continue;
+
+      const dateStr = `${year}-${pad(month)}-${pad(day)}`;
+      const dayName = dayNames[date.getDay()];
+      const dayConfig = availabilityConfig.find((a) => a.day.toLowerCase() === dayName && a.available);
+      if (!dayConfig) continue;
+
+      const allSlots = getSlotsForDayConfig(dayConfig);
+      if (allSlots.length === 0) continue;
+
+      const booked = bookedByDate.get(dateStr) ?? new Set<string>();
+      const open = allSlots.filter((s) => !booked.has(`${s.startTime}-${s.endTime}`));
+      if (open.length > 0) result[dateStr] = open;
+    }
+
+    console.log(`[available-slots] Result keys: ${Object.keys(result).join(", ") || "(none)"}`);
+    sendJsonResponse(req, res, 200, result);
+  } catch (error) {
+    console.error("Error getting available slots:", error);
     handleError(req, res, error);
   }
 });

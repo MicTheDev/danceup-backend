@@ -427,12 +427,49 @@ app.post("/account-session", async (req, res) => {
 
 
 /**
+ * POST /validate-promo-code
+ * Validate a Stripe promotion code and return discount details
+ */
+app.post("/validate-promo-code", async (req, res) => {
+  try {
+    const { code } = req.body;
+
+    if (!code || typeof code !== "string" || !code.trim()) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Promotion code is required");
+    }
+
+    const stripe = await stripeService.getStripeClient();
+    const promoCodes = await stripe.promotionCodes.list({ code: code.trim().toUpperCase(), active: true, limit: 1 });
+
+    if (promoCodes.data.length === 0) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Invalid or expired promotion code");
+    }
+
+    const promoCode = promoCodes.data[0];
+    const coupon = promoCode.coupon;
+
+    sendJsonResponse(req, res, 200, {
+      valid: true,
+      promotionCodeId: promoCode.id,
+      percentOff: coupon.percent_off ?? null,
+      amountOff: coupon.amount_off ?? null,
+      currency: coupon.currency ?? null,
+      duration: coupon.duration,
+      durationInMonths: coupon.duration_in_months ?? null,
+    });
+  } catch (error) {
+    console.error("Validate promo code error:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * POST /create-checkout-session
  * Create a Stripe Checkout Session for subscription
  */
 app.post("/create-checkout-session", async (req, res) => {
   try {
-    const {membership, priceId, email} = req.body;
+    const {membership, priceId, email, promotionCode} = req.body;
 
     if (!membership || !priceId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "Membership and priceId are required");
@@ -517,12 +554,23 @@ app.post("/create-checkout-session", async (req, res) => {
     // Create an incomplete subscription and return its PaymentIntent client_secret.
     // This avoids Checkout Sessions whose client_secret format (cs_xxx) is rejected
     // by Stripe.js validation when the secret contains base64 '/' characters.
+    // Resolve promotion code string to a Stripe promotion code ID
+    let promotionCodeId = null;
+    if (promotionCode) {
+      const stripe = await stripeService.getStripeClient();
+      const promoCodes = await stripe.promotionCodes.list({ code: promotionCode, active: true, limit: 1 });
+      if (promoCodes.data.length > 0) {
+        promotionCodeId = promoCodes.data[0].id;
+      }
+    }
+
     const { subscriptionId, paymentIntentId, clientSecret } =
       await stripeService.createSubscriptionCheckout(
           customer.id,
           priceId,
           userId || null,
           membership,
+          promotionCodeId,
       );
 
     // Store subscription ID on the user document so the success handler can find it

@@ -54,7 +54,7 @@ function fetchJson(url) {
   return new Promise((resolve, reject) => {
     const options = {
       headers: {
-        "User-Agent": "THELDC-DanceUp-Backfill/1.0",
+        "User-Agent": "CodeBlack-DanceUp-Backfill/1.0",
         "Accept": "application/json",
       },
     };

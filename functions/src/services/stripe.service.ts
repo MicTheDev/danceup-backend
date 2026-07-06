@@ -1082,17 +1082,27 @@ export async function createSubscriptionCheckout(
   priceId: string,
   userId: string | null,
   membership: string,
+  promotionCodeId?: string,
+  couponId?: string,
 ): Promise<{ subscriptionId: string; paymentIntentId: string; clientSecret: string }> {
   const stripe = await getStripeClient();
   try {
-    const subscription = await stripe.subscriptions.create({
+    const subscriptionParams: Stripe.SubscriptionCreateParams = {
       customer: customerId,
       items: [{ price: priceId }],
       payment_behavior: "default_incomplete",
       payment_settings: { save_default_payment_method: "on_subscription" },
       expand: ["latest_invoice.payment_intent"],
       metadata: { userId: userId || "", membership },
-    });
+    };
+
+    if (promotionCodeId) {
+      subscriptionParams.discounts = [{ promotion_code: promotionCodeId }];
+    } else if (couponId) {
+      subscriptionParams.discounts = [{ coupon: couponId }];
+    }
+
+    const subscription = await stripe.subscriptions.create(subscriptionParams);
 
     const invoice = subscription.latest_invoice as Stripe.Invoice & { payment_intent?: Stripe.PaymentIntent } | null;
     const paymentIntent = invoice?.payment_intent;

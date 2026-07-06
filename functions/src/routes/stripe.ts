@@ -51,6 +51,33 @@ app.use(express.json());
 applySecurityMiddleware(app);
 app.use(express.urlencoded({ extended: true }));
 
+// Resolves a user-supplied code string to a Stripe discount reference.
+// Tries: promotion code → coupon ID → coupon name.
+async function resolveDiscount(
+  stripe: import("stripe").default,
+  code: string,
+): Promise<{ promotionCodeId?: string; couponId?: string }> {
+  const normalized = code.trim().toUpperCase();
+
+  const promoCodes = await stripe.promotionCodes.list({ code: normalized, limit: 1 });
+  if (promoCodes.data.length > 0) {
+    return { promotionCodeId: promoCodes.data[0]!.id };
+  }
+
+  try {
+    const coupon = await stripe.coupons.retrieve(normalized);
+    if (coupon.valid) return { couponId: coupon.id };
+  } catch {
+    // not found by ID
+  }
+
+  const allCoupons = await stripe.coupons.list({ limit: 100 });
+  const byName = allCoupons.data.find((c) => c.name?.toUpperCase() === normalized && c.valid);
+  if (byName) return { couponId: byName.id };
+
+  return {};
+}
+
 // GET /config/publishable-key
 app.get("/config/publishable-key", async (req, res) => {
   try {
@@ -304,11 +331,56 @@ app.post("/account-session", async (req, res) => {
   }
 });
 
+// POST /validate-promo-code
+app.post("/validate-promo-code", async (req, res) => {
+  try {
+    const body = req.body as Record<string, unknown>;
+    const code = body["code"] as string | undefined;
+
+    if (!code || !code.trim()) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Promotion code is required");
+    }
+
+    const stripe = await stripeService.getStripeClient() as import("stripe").default;
+    const normalizedCode = code.trim().toUpperCase();
+    const { promotionCodeId, couponId } = await resolveDiscount(stripe, normalizedCode);
+
+    if (!promotionCodeId && !couponId) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Invalid or expired promotion code");
+    }
+
+    // Fetch the coupon details for the response
+    let coupon: import("stripe").default.Coupon;
+    if (promotionCodeId) {
+      const promoCode = (await stripe.promotionCodes.retrieve(promotionCodeId, { expand: ["coupon"] }));
+      coupon = promoCode.coupon as import("stripe").default.Coupon;
+    } else {
+      coupon = await stripe.coupons.retrieve(couponId!);
+    }
+
+    return sendJsonResponse(req, res, 200, {
+      valid: true,
+      discountType: promotionCodeId ? "promotion_code" : "coupon",
+      promotionCodeId,
+      couponId,
+      percentOff: coupon.percent_off ?? null,
+      amountOff: coupon.amount_off ?? null,
+      currency: coupon.currency ?? null,
+      duration: coupon.duration,
+      durationInMonths: coupon.duration_in_months ?? null,
+    });
+  } catch (error) {
+    console.error("Validate promo code error:", error);
+    handleError(req, res, error);
+  }
+});
+
 // POST /create-checkout-session
 app.post("/create-checkout-session", async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
     const priceId = body["priceId"] as string | undefined;
+    const promotionCode = body["promotionCode"] as string | undefined;
     let userEmail = body["email"] as string | undefined;
 
     if (!priceId) {
@@ -407,11 +479,19 @@ app.post("/create-checkout-session", async (req, res) => {
       paymentIntentId = result.paymentIntentId;
       clientSecret = result.clientSecret;
     } else {
+      let promotionCodeId: string | undefined;
+      let couponId: string | undefined;
+      if (promotionCode) {
+        ({ promotionCodeId, couponId } = await resolveDiscount(stripe, promotionCode));
+      }
+
       const result = await stripeService.createSubscriptionCheckout(
         customer.id,
         priceId,
         userId || null,
         membership,
+        promotionCodeId,
+        couponId,
       ) as { subscriptionId: string; paymentIntentId: string; clientSecret: string };
       subscriptionId = result.subscriptionId;
       paymentIntentId = result.paymentIntentId;
