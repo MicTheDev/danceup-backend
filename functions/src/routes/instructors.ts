@@ -250,7 +250,7 @@ app.get("/public/:id/available-slots", async (req, res) => {
 
       const dateStr = `${year}-${pad(month)}-${pad(day)}`;
       const dayName = dayNames[date.getDay()];
-      const dayConfig = availabilityConfig.find((a) => a.day.toLowerCase() === dayName && a.available);
+      const dayConfig = availabilityConfig.find((a) => typeof a.day === "string" && a.day.toLowerCase() === dayName && a.available);
       if (!dayConfig) continue;
 
       const allSlots = getSlotsForDayConfig(dayConfig);

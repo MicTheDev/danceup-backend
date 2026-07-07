@@ -538,7 +538,9 @@ app.patch("/:bookingId/confirm", async (req, res) => {
           read: false,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
-        await sendStudentPush(studentAuthUid, pushTitle, pushBody);
+        try {
+          await sendStudentPush(studentAuthUid, pushTitle, pushBody);
+        } catch (pushErr) { console.error("[confirm booking] Push notification error:", pushErr); }
 
         // Send confirmation email to student
         try {

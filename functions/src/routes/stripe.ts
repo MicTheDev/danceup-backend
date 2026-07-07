@@ -3,6 +3,7 @@ import * as admin from "firebase-admin";
 import * as crypto from "crypto";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
 import { getSecret } from "../utils/secret-manager";
@@ -50,19 +51,28 @@ app.use(cors(corsOptions));
 app.use(express.json());
 applySecurityMiddleware(app);
 app.use(express.urlencoded({ extended: true }));
+app.set("trust proxy", 1);
+
+// Both endpoints below are unauthenticated and call resolveDiscount(), which hits the Stripe
+// API — rate-limit them to prevent brute-force/cost-amplification against Stripe.
+const promoCodeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too Many Requests", message: "Too many requests. Please try again in 15 minutes." },
+});
 
 // Cache of all coupons, keyed by name lookup, so unauthenticated callers (validate-promo-code,
 // create-checkout-session) can't force a burst of Stripe list calls on every request.
 const COUPON_CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_COUPONS_TO_SCAN = 500;
 let couponCache: { coupons: import("stripe").default.Coupon[]; expiresAt: number } | null = null;
+// In-flight refresh promise so concurrent requests on a cold/expired cache share one
+// Stripe pagination run instead of each kicking off their own burst of list calls.
+let couponCacheRefresh: Promise<import("stripe").default.Coupon[]> | null = null;
 
-async function getCachedCoupons(stripe: import("stripe").default): Promise<import("stripe").default.Coupon[]> {
-  const now = Date.now();
-  if (couponCache && couponCache.expiresAt > now) {
-    return couponCache.coupons;
-  }
-
+async function fetchAllCoupons(stripe: import("stripe").default): Promise<import("stripe").default.Coupon[]> {
   const coupons: import("stripe").default.Coupon[] = [];
   let startingAfter: string | undefined;
   let scanned = 0;
@@ -73,9 +83,27 @@ async function getCachedCoupons(stripe: import("stripe").default): Promise<impor
     if (!page.has_more || page.data.length === 0) break;
     startingAfter = page.data[page.data.length - 1]!.id;
   }
-
-  couponCache = { coupons, expiresAt: now + COUPON_CACHE_TTL_MS };
   return coupons;
+}
+
+async function getCachedCoupons(stripe: import("stripe").default): Promise<import("stripe").default.Coupon[]> {
+  const now = Date.now();
+  if (couponCache && couponCache.expiresAt > now) {
+    return couponCache.coupons;
+  }
+
+  if (!couponCacheRefresh) {
+    couponCacheRefresh = fetchAllCoupons(stripe)
+      .then((coupons) => {
+        couponCache = { coupons, expiresAt: Date.now() + COUPON_CACHE_TTL_MS };
+        return coupons;
+      })
+      .finally(() => {
+        couponCacheRefresh = null;
+      });
+  }
+
+  return couponCacheRefresh;
 }
 
 // Resolves a user-supplied code string to a Stripe discount reference.
@@ -360,7 +388,7 @@ app.post("/account-session", async (req, res) => {
 });
 
 // POST /validate-promo-code
-app.post("/validate-promo-code", async (req, res) => {
+app.post("/validate-promo-code", promoCodeLimiter, async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
     const code = body["code"];
@@ -403,7 +431,7 @@ app.post("/validate-promo-code", async (req, res) => {
 });
 
 // POST /create-checkout-session
-app.post("/create-checkout-session", async (req, res) => {
+app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
     const priceId = body["priceId"] as string | undefined;
