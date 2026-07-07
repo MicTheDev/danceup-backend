@@ -23,9 +23,9 @@ function getFirestore() {
     databaseId = "development";
   } else if (projectId === "staging-danceup") {
     databaseId = "staging";
-  } else if (projectId === "production-danceup") {
-    databaseId = "production";
   }
+  // production-danceup's Firestore database is named "(default)" (the initial value above) —
+  // there is no database named "production" on that project.
   
   // If database ID is specified in environment variable, use that
   if (process.env.FIRESTORE_DATABASE_ID) {

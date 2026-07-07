@@ -1142,15 +1142,15 @@ export async function generateBookingConfirmationMessage(data: {
 
   const notesSection = notes?.trim() ? `\nStudent notes: ${JSON.stringify(notes.trim())}` : "";
 
-  const prompt = `You are a warm, professional studio manager at "${studioName}", a dance studio.
+  const prompt = `You are a warm, professional studio manager at ${JSON.stringify(studioName)}, a dance studio.
 
 Write a short, friendly booking confirmation message to send to a student after their private lesson request has been confirmed.
 
 Booking details:
-- Student: ${studentName}
-- Instructor: ${instructorName}
-- Date: ${date}
-- Time: ${startTime} – ${endTime}${notesSection}
+- Student: ${JSON.stringify(studentName)}
+- Instructor: ${JSON.stringify(instructorName)}
+- Date: ${JSON.stringify(date)}
+- Time: ${JSON.stringify(startTime)} – ${JSON.stringify(endTime)}${notesSection}
 
 Guidelines:
 - 3–5 sentences maximum

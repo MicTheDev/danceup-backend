@@ -160,6 +160,36 @@ function formatMinutesAsTime(totalMinutes: number): string {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
+// Resolves "today"/"now" in the studio's local timezone (via lat/lng), matching the
+// geo-tz-based timezone handling used by auto-checkin, instead of the server's local time.
+function getStudioLocalDateParts(lat: number | undefined, lng: number | undefined): {
+  year: number; month: number; day: number; minutes: number;
+} {
+  let zone: string | undefined;
+  if (lat != null && lng != null) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { find } = require("geo-tz") as { find: (lat: number, lng: number) => string[] };
+      zone = find(lat, lng)[0];
+    } catch {
+      zone = undefined;
+    }
+  }
+
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: zone ?? "UTC",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(new Date());
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    minutes: (get("hour") % 24) * 60 + get("minute"),
+  };
+}
+
 function getSlotsForDayConfig(dayConfig: DayConfig): DaySlot[] {
   if (dayConfig.timeSlots && dayConfig.timeSlots.length > 0) return dayConfig.timeSlots;
   // Legacy format: expand startTime–endTime range into 1-hour blocks
@@ -218,8 +248,23 @@ app.get("/public/:id/available-slots", async (req, res) => {
     const startDate = `${year}-${pad(month)}-01`;
     const endDate = `${year}-${pad(month)}-${pad(lastDay)}`;
 
-    // Fetch existing confirmed/pending bookings for this instructor this month
     const db = getFirestore();
+
+    // Resolve the studio's timezone via its lat/lng so "today"/past-time filtering
+    // reflects the studio's local time, not the server's.
+    let studioLat: number | undefined;
+    let studioLng: number | undefined;
+    if (instructor.studioOwnerId) {
+      const studioDoc = await db.collection("users").doc(instructor.studioOwnerId).get();
+      if (studioDoc.exists) {
+        const sd = studioDoc.data() as Record<string, unknown>;
+        studioLat = sd["lat"] as number | undefined;
+        studioLng = sd["lng"] as number | undefined;
+      }
+    }
+    const studioToday = getStudioLocalDateParts(studioLat, studioLng);
+
+    // Fetch existing confirmed/pending bookings for this instructor this month
     const snapshot = await db.collection("privateLessonBookings")
       .where("instructorId", "==", instructorId)
       .where("date", ">=", startDate)
@@ -241,18 +286,16 @@ app.get("/public/:id/available-slots", async (req, res) => {
     });
 
     const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-    const now = new Date();
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
     const result: Record<string, DaySlot[]> = {};
     for (let day = 1; day <= lastDay; day++) {
-      const date = new Date(year, month - 1, day);
-      if (date < today) continue;
+      const isPastDate = year < studioToday.year ||
+        (year === studioToday.year && month < studioToday.month) ||
+        (year === studioToday.year && month === studioToday.month && day < studioToday.day);
+      if (isPastDate) continue;
 
       const dateStr = `${year}-${pad(month)}-${pad(day)}`;
-      const dayName = dayNames[date.getDay()];
+      const dayName = dayNames[new Date(year, month - 1, day).getDay()];
       const dayConfig = availabilityConfig.find((a) => typeof a.day === "string" && a.day.toLowerCase() === dayName && a.available);
       if (!dayConfig) continue;
 
@@ -261,8 +304,9 @@ app.get("/public/:id/available-slots", async (req, res) => {
 
       const booked = bookedByDate.get(dateStr) ?? new Set<string>();
       let open = allSlots.filter((s) => !booked.has(s.startTime));
-      if (date.getTime() === today.getTime()) {
-        open = open.filter((s) => parseTimeToMinutes(s.startTime) > nowMinutes);
+      const isToday = year === studioToday.year && month === studioToday.month && day === studioToday.day;
+      if (isToday) {
+        open = open.filter((s) => parseTimeToMinutes(s.startTime) > studioToday.minutes);
       }
       if (open.length > 0) result[dateStr] = open;
     }
