@@ -506,8 +506,9 @@ app.patch("/:bookingId/confirm", async (req, res) => {
     const studioMessage = typeof rawStudioMessage === "string" ? rawStudioMessage.trim().slice(0, 500) || undefined : undefined;
     const booking = await bookingsService.confirmBooking(bookingId, studioOwnerId);
 
+    const db = getFirestore();
+
     try {
-      const db = getFirestore();
       const notificationsSnapshot = await db.collection("notifications")
         .where("studioId", "==", studioOwnerId)
         .where("bookingId", "==", bookingId)
@@ -519,7 +520,9 @@ app.patch("/:bookingId/confirm", async (req, res) => {
           await notificationsService.markNotificationAsRead(notificationDoc.id, studioOwnerId);
         }
       }
+    } catch (err) { console.error("Error marking studio notification as read:", err); }
 
+    try {
       const bookingData = booking as Record<string, unknown>;
       const studentAuthUid = bookingData["authUid"] as string | undefined;
       if (studentAuthUid) {
@@ -576,7 +579,7 @@ app.patch("/:bookingId/confirm", async (req, res) => {
           }
         } catch (emailErr) { console.error("[confirm booking] Confirmation email error:", emailErr); }
       }
-    } catch (err) { console.error("Error marking notification as read:", err); }
+    } catch (err) { console.error("Error notifying student of booking confirmation:", err); }
 
     sendJsonResponse(req, res, 200, booking);
   } catch (error) {
