@@ -231,10 +231,12 @@ app.get("/public/:id/available-slots", async (req, res) => {
     const bookedByDate = new Map<string, Set<string>>();
     snapshot.docs.forEach((doc) => {
       const d = doc.data() as Record<string, unknown>;
-      const date = d["date"] as string;
-      const ts = d["timeSlot"] as DaySlot;
+      const date = d["date"];
+      const ts = d["timeSlot"] as Record<string, unknown> | undefined;
+      const startTime = ts?.["startTime"];
+      if (typeof date !== "string" || typeof startTime !== "string") return;
       if (!bookedByDate.has(date)) bookedByDate.set(date, new Set());
-      bookedByDate.get(date)!.add(ts.startTime);
+      bookedByDate.get(date)!.add(startTime);
     });
 
     const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];

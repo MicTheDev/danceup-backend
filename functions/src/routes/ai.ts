@@ -1265,8 +1265,8 @@ app.post("/booking-message", async (req, res) => {
   }
 });
 
-// GET /suggest-automations
-app.get("/suggest-automations", async (req, res) => {
+// POST /suggest-automations
+app.post("/suggest-automations", async (req, res) => {
   try {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }

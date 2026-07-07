@@ -1177,7 +1177,8 @@ Return ONLY a valid JSON object:
     throw new Error("AI returned an unexpected response format. Please try again.");
   }
   if (!parsed.message) throw new Error("AI response was missing the message field.");
-  return { message: String(parsed.message).trim() };
+  const MAX_MESSAGE_LENGTH = 1000;
+  return { message: String(parsed.message).trim().slice(0, MAX_MESSAGE_LENGTH) };
 }
 
 // ─── Automation Suggestions ───────────────────────────────────────────────────
