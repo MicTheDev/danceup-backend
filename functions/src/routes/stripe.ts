@@ -84,15 +84,16 @@ async function resolveDiscount(
   stripe: import("stripe").default,
   code: string,
 ): Promise<{ promotionCodeId?: string; couponId?: string }> {
-  const normalized = code.trim().toUpperCase();
+  const trimmed = code.trim();
+  const normalized = trimmed.toUpperCase();
 
-  const promoCodes = await stripe.promotionCodes.list({ code: normalized, active: true, limit: 1 });
+  const promoCodes = await stripe.promotionCodes.list({ code: trimmed, active: true, limit: 1 });
   if (promoCodes.data.length > 0) {
     return { promotionCodeId: promoCodes.data[0]!.id };
   }
 
   try {
-    const coupon = await stripe.coupons.retrieve(normalized);
+    const coupon = await stripe.coupons.retrieve(trimmed);
     if (coupon.valid) return { couponId: coupon.id };
   } catch {
     // not found by ID
@@ -369,8 +370,7 @@ app.post("/validate-promo-code", async (req, res) => {
     }
 
     const stripe = await stripeService.getStripeClient() as import("stripe").default;
-    const normalizedCode = code.trim().toUpperCase();
-    const { promotionCodeId, couponId } = await resolveDiscount(stripe, normalizedCode);
+    const { promotionCodeId, couponId } = await resolveDiscount(stripe, code);
 
     if (!promotionCodeId && !couponId) {
       return sendErrorResponse(req, res, 404, "Not Found", "Invalid or expired promotion code");

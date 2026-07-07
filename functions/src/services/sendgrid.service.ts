@@ -13,6 +13,12 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// For plain-text contexts (email subject lines) — no HTML entities, just strip
+// newlines so a crafted name can't inject extra header lines.
+function sanitizeForSubject(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").trim();
+}
+
 interface CategoryMetrics {
   delivered: number;
   opens: number;
@@ -204,12 +210,13 @@ export function buildConfirmationEmail(opts: {
 
   switch (type) {
     case "private_lesson": {
-      const instructorName = escapeHtml(String(details.instructorName ?? ""));
+      const rawInstructorName = String(details.instructorName ?? "");
+      const instructorName = escapeHtml(rawInstructorName);
       const studioName = escapeHtml(String(details.studioName ?? ""));
       const date = escapeHtml(String(details.date ?? ""));
       const timeSlot = escapeHtml(String(details.timeSlot ?? ""));
       const amountPaid = escapeHtml(String(details.amountPaid ?? ""));
-      subject = `Private Lesson Request Received — ${instructorName}`;
+      subject = `Private Lesson Request Received — ${sanitizeForSubject(rawInstructorName)}`;
       bodyLines = [
         `<h2 style="color:#1e293b;margin:0 0 16px">Private Lesson Request Received</h2>`,
         `<p>Your payment was received and your private lesson request has been sent to the studio. You'll get another email once the studio confirms your booking.</p>`,
@@ -227,11 +234,12 @@ export function buildConfirmationEmail(opts: {
     }
 
     case "private_lesson_confirmed": {
-      const instructorName = escapeHtml(String(details.instructorName ?? ""));
+      const rawInstructorName = String(details.instructorName ?? "");
+      const instructorName = escapeHtml(rawInstructorName);
       const studioName = escapeHtml(String(details.studioName ?? ""));
       const date = escapeHtml(String(details.date ?? ""));
       const timeSlot = escapeHtml(String(details.timeSlot ?? ""));
-      subject = `Private Lesson Confirmed — ${instructorName}`;
+      subject = `Private Lesson Confirmed — ${sanitizeForSubject(rawInstructorName)}`;
       bodyLines = [
         `<h2 style="color:#1e293b;margin:0 0 16px">Your Private Lesson is Confirmed!</h2>`,
         details.studioMessage

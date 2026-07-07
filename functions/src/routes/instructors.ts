@@ -226,13 +226,15 @@ app.get("/public/:id/available-slots", async (req, res) => {
       .where("status", "in", ["pending", "confirmed"])
       .get();
 
+    // Keyed by startTime only, matching the booking conflict check in bookingsService
+    // (createBooking/isTimeSlotAvailable both key conflicts on timeSlot.startTime alone).
     const bookedByDate = new Map<string, Set<string>>();
     snapshot.docs.forEach((doc) => {
       const d = doc.data() as Record<string, unknown>;
       const date = d["date"] as string;
       const ts = d["timeSlot"] as DaySlot;
       if (!bookedByDate.has(date)) bookedByDate.set(date, new Set());
-      bookedByDate.get(date)!.add(`${ts.startTime}-${ts.endTime}`);
+      bookedByDate.get(date)!.add(ts.startTime);
     });
 
     const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
@@ -255,7 +257,7 @@ app.get("/public/:id/available-slots", async (req, res) => {
       if (allSlots.length === 0) continue;
 
       const booked = bookedByDate.get(dateStr) ?? new Set<string>();
-      let open = allSlots.filter((s) => !booked.has(`${s.startTime}-${s.endTime}`));
+      let open = allSlots.filter((s) => !booked.has(s.startTime));
       if (date.getTime() === today.getTime()) {
         open = open.filter((s) => parseTimeToMinutes(s.startTime) > nowMinutes);
       }
