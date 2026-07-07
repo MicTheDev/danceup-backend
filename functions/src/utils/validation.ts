@@ -577,8 +577,10 @@ export function validateCreateClassPayload(payload: Record<string, unknown>): Va
   const levelV = validateClassLevel(payload["level"]);
   if (!levelV.valid) errors.push({ field: "level", message: levelV.message ?? "" });
 
-  const costV = validateCost(payload["cost"]);
-  if (!costV.valid) errors.push({ field: "cost", message: costV.message ?? "" });
+  if (payload["cost"] !== undefined) {
+    const costV = validateCost(payload["cost"]);
+    if (!costV.valid) errors.push({ field: "cost", message: costV.message ?? "" });
+  }
 
   const dayV = validateDayOfWeek(payload["dayOfWeek"]);
   if (!dayV.valid) errors.push({ field: "dayOfWeek", message: dayV.message ?? "" });

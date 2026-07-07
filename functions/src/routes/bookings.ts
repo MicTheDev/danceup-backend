@@ -502,10 +502,13 @@ app.patch("/:bookingId/confirm", async (req, res) => {
     const studioOwnerId = userDoc.id;
     const bookingId = req.params["bookingId"] as string;
 
+    const rawStudioMessage = (req.body as Record<string, unknown> | undefined)?.["message"];
+    const studioMessage = typeof rawStudioMessage === "string" ? rawStudioMessage.trim().slice(0, 500) || undefined : undefined;
     const booking = await bookingsService.confirmBooking(bookingId, studioOwnerId);
 
+    const db = getFirestore();
+
     try {
-      const db = getFirestore();
       const notificationsSnapshot = await db.collection("notifications")
         .where("studioId", "==", studioOwnerId)
         .where("bookingId", "==", bookingId)
@@ -517,7 +520,9 @@ app.patch("/:bookingId/confirm", async (req, res) => {
           await notificationsService.markNotificationAsRead(notificationDoc.id, studioOwnerId);
         }
       }
+    } catch (err) { console.error("Error marking studio notification as read:", err); }
 
+    try {
       const bookingData = booking as Record<string, unknown>;
       const studentAuthUid = bookingData["authUid"] as string | undefined;
       if (studentAuthUid) {
@@ -525,7 +530,8 @@ app.patch("/:bookingId/confirm", async (req, res) => {
         const bookingTs = bookingData["timeSlot"] as Record<string, unknown> | undefined;
         const timeLabel = bookingTs ? `${bookingTs["startTime"] as string} – ${bookingTs["endTime"] as string}` : "";
         const pushTitle = "Private Lesson Confirmed!";
-        const pushBody = `Your lesson${bookingDate ? ` on ${bookingDate}` : ""}${timeLabel ? ` at ${timeLabel}` : ""} has been confirmed.`;
+        const defaultBody = `Your lesson${bookingDate ? ` on ${bookingDate}` : ""}${timeLabel ? ` at ${timeLabel}` : ""} has been confirmed.`;
+        const pushBody = studioMessage ?? defaultBody;
         await db.collection("studentNotifications").add({
           authUid: studentAuthUid,
           type: "booking_confirmed",
@@ -535,9 +541,45 @@ app.patch("/:bookingId/confirm", async (req, res) => {
           read: false,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
-        await sendStudentPush(studentAuthUid, pushTitle, pushBody);
+        try {
+          await sendStudentPush(studentAuthUid, pushTitle, pushBody);
+        } catch (pushErr) { console.error("[confirm booking] Push notification error:", pushErr); }
+
+        // Send confirmation email to student
+        try {
+          const studentProfileSnap = await db.collection("usersStudentProfiles")
+            .where("authUid", "==", studentAuthUid)
+            .limit(1)
+            .get();
+          const rawStudentEmail = studentProfileSnap.empty
+            ? undefined
+            : (studentProfileSnap.docs[0]!.data() as Record<string, unknown>)["email"];
+          const studentEmail = typeof rawStudentEmail === "string" ? rawStudentEmail.trim() : "";
+
+          if (studentEmail) {
+            const instructorId = bookingData["instructorId"] as string | undefined;
+            const instructorDoc = instructorId ? await db.collection("instructors").doc(instructorId).get() : null;
+            const instructorData = instructorDoc?.exists ? instructorDoc.data() as Record<string, unknown> : null;
+            const instructorName = instructorData
+              ? `${instructorData["firstName"] ?? ""} ${instructorData["lastName"] ?? ""}`.trim()
+              : "Your Instructor";
+
+            const studioDoc = await db.collection("users").doc(studioOwnerId).get();
+            const studioName = studioDoc.exists
+              ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string ?? "The Studio")
+              : "The Studio";
+
+            await sendgridService.sendConfirmationEmail(studentEmail, "private_lesson_confirmed", {
+              instructorName,
+              studioName,
+              date: bookingDate ?? "",
+              timeSlot: timeLabel,
+              studioMessage,
+            });
+          }
+        } catch (emailErr) { console.error("[confirm booking] Confirmation email error:", emailErr); }
       }
-    } catch (err) { console.error("Error marking notification as read:", err); }
+    } catch (err) { console.error("Error notifying student of booking confirmation:", err); }
 
     sendJsonResponse(req, res, 200, booking);
   } catch (error) {

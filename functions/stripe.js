@@ -2,6 +2,7 @@ const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const express = require("express");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const {verifyToken} = require("./utils/auth");
 const {getFirestore} = require("./utils/firestore");
 const stripeService = require("./services/stripe.service");
@@ -51,6 +52,18 @@ app.use(cors(corsOptions));
 app.use(express.json());
 applySecurityMiddleware(app);
 app.use(express.urlencoded({extended: true}));
+app.set("trust proxy", 1);
+
+// /validate-promo-code, /create-checkout-session, and /create-payment-link are
+// unauthenticated and call the Stripe API — rate-limit them to prevent
+// brute-force/cost-amplification against Stripe.
+const promoCodeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {error: "Too Many Requests", message: "Too many requests. Please try again in 15 minutes."},
+});
 
 
 /**
@@ -427,12 +440,49 @@ app.post("/account-session", async (req, res) => {
 
 
 /**
+ * POST /validate-promo-code
+ * Validate a Stripe promotion code and return discount details
+ */
+app.post("/validate-promo-code", promoCodeLimiter, async (req, res) => {
+  try {
+    const { code } = req.body;
+
+    if (!code || typeof code !== "string" || !code.trim()) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Promotion code is required");
+    }
+
+    const stripe = await stripeService.getStripeClient();
+    const promoCodes = await stripe.promotionCodes.list({ code: code.trim().toUpperCase(), active: true, limit: 1 });
+
+    if (promoCodes.data.length === 0) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Invalid or expired promotion code");
+    }
+
+    const promoCode = promoCodes.data[0];
+    const coupon = promoCode.coupon;
+
+    sendJsonResponse(req, res, 200, {
+      valid: true,
+      promotionCodeId: promoCode.id,
+      percentOff: coupon.percent_off ?? null,
+      amountOff: coupon.amount_off ?? null,
+      currency: coupon.currency ?? null,
+      duration: coupon.duration,
+      durationInMonths: coupon.duration_in_months ?? null,
+    });
+  } catch (error) {
+    console.error("Validate promo code error:", error);
+    handleError(req, res, error);
+  }
+});
+
+/**
  * POST /create-checkout-session
  * Create a Stripe Checkout Session for subscription
  */
-app.post("/create-checkout-session", async (req, res) => {
+app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
   try {
-    const {membership, priceId, email} = req.body;
+    const {membership, priceId, email, promotionCode} = req.body;
 
     if (!membership || !priceId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "Membership and priceId are required");
@@ -517,12 +567,25 @@ app.post("/create-checkout-session", async (req, res) => {
     // Create an incomplete subscription and return its PaymentIntent client_secret.
     // This avoids Checkout Sessions whose client_secret format (cs_xxx) is rejected
     // by Stripe.js validation when the secret contains base64 '/' characters.
+    // Resolve promotion code string to a Stripe promotion code ID
+    let promotionCodeId = null;
+    if (promotionCode && typeof promotionCode === "string" && promotionCode.trim()) {
+      const stripe = await stripeService.getStripeClient();
+      const promoCodes = await stripe.promotionCodes.list({ code: promotionCode.trim().toUpperCase(), active: true, limit: 1 });
+      if (promoCodes.data.length > 0) {
+        promotionCodeId = promoCodes.data[0].id;
+      } else {
+        return sendErrorResponse(req, res, 404, "Not Found", "Invalid or expired promotion code");
+      }
+    }
+
     const { subscriptionId, paymentIntentId, clientSecret } =
       await stripeService.createSubscriptionCheckout(
           customer.id,
           priceId,
           userId || null,
           membership,
+          promotionCodeId,
       );
 
     // Store subscription ID on the user document so the success handler can find it
@@ -552,7 +615,7 @@ app.post("/create-checkout-session", async (req, res) => {
  * Create a Payment Link for subscription checkout (no-code solution)
  * No authentication required (for sign-up flow)
  */
-app.post("/create-payment-link", async (req, res) => {
+app.post("/create-payment-link", promoCodeLimiter, async (req, res) => {
   try {
     const {membership, priceId, email} = req.body;
 

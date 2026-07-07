@@ -3,6 +3,7 @@ import * as admin from "firebase-admin";
 import * as crypto from "crypto";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
 import { getSecret } from "../utils/secret-manager";
@@ -50,6 +51,105 @@ app.use(cors(corsOptions));
 app.use(express.json());
 applySecurityMiddleware(app);
 app.use(express.urlencoded({ extended: true }));
+app.set("trust proxy", 1);
+
+// Unauthenticated endpoints that hit the Stripe API (validate-promo-code and
+// create-checkout-session call resolveDiscount; create-payment-link creates billable
+// Stripe objects) — rate-limit them to prevent brute-force/cost-amplification.
+const promoCodeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too Many Requests", message: "Too many requests. Please try again in 15 minutes." },
+});
+
+// Cache of coupons used for name-based lookup in resolveDiscount(), so unauthenticated
+// callers (validate-promo-code, create-checkout-session) can't force a burst of Stripe
+// list calls on every request. The scan is capped at MAX_COUPONS_TO_SCAN — accounts with
+// more coupons than the cap will fail to match by name on coupons beyond it. Raise the
+// cap (or move name matching to promotion codes only) if that becomes a real problem.
+const COUPON_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_COUPONS_TO_SCAN = 500;
+let couponCache: { coupons: import("stripe").default.Coupon[]; expiresAt: number } | null = null;
+// In-flight refresh promise so concurrent requests on a cold/expired cache share one
+// Stripe pagination run instead of each kicking off their own burst of list calls.
+let couponCacheRefresh: Promise<import("stripe").default.Coupon[]> | null = null;
+
+async function fetchAllCoupons(stripe: import("stripe").default): Promise<import("stripe").default.Coupon[]> {
+  const coupons: import("stripe").default.Coupon[] = [];
+  let startingAfter: string | undefined;
+  let truncated = false;
+  while (true) {
+    const page = await stripe.coupons.list({ limit: 100, starting_after: startingAfter });
+    if (page.data.length === 0) break;
+    coupons.push(...page.data);
+
+    if (coupons.length > MAX_COUPONS_TO_SCAN) {
+      coupons.length = MAX_COUPONS_TO_SCAN;
+      truncated = true;
+      break;
+    }
+    if (coupons.length === MAX_COUPONS_TO_SCAN) {
+      truncated = page.has_more;
+      break;
+    }
+    if (!page.has_more) break;
+    startingAfter = page.data[page.data.length - 1]!.id;
+  }
+  if (truncated) {
+    console.warn(`[resolveDiscount] Coupon scan hit MAX_COUPONS_TO_SCAN (${MAX_COUPONS_TO_SCAN}); some coupons won't be matchable by name.`);
+  }
+  return coupons;
+}
+
+async function getCachedCoupons(stripe: import("stripe").default): Promise<import("stripe").default.Coupon[]> {
+  const now = Date.now();
+  if (couponCache && couponCache.expiresAt > now) {
+    return couponCache.coupons;
+  }
+
+  if (!couponCacheRefresh) {
+    couponCacheRefresh = fetchAllCoupons(stripe)
+      .then((coupons) => {
+        couponCache = { coupons, expiresAt: Date.now() + COUPON_CACHE_TTL_MS };
+        return coupons;
+      })
+      .finally(() => {
+        couponCacheRefresh = null;
+      });
+  }
+
+  return couponCacheRefresh;
+}
+
+// Resolves a user-supplied code string to a Stripe discount reference.
+// Tries: promotion code → coupon ID → coupon name.
+async function resolveDiscount(
+  stripe: import("stripe").default,
+  code: string,
+): Promise<{ promotionCodeId?: string; couponId?: string }> {
+  const trimmed = code.trim();
+  const normalized = trimmed.toUpperCase();
+
+  const promoCodes = await stripe.promotionCodes.list({ code: normalized, active: true, limit: 1 });
+  if (promoCodes.data.length > 0) {
+    return { promotionCodeId: promoCodes.data[0]!.id };
+  }
+
+  try {
+    const coupon = await stripe.coupons.retrieve(trimmed);
+    if (coupon.valid) return { couponId: coupon.id };
+  } catch {
+    // not found by ID
+  }
+
+  const coupons = await getCachedCoupons(stripe);
+  const byName = coupons.find((c) => c.name?.toUpperCase() === normalized && c.valid);
+  if (byName) return { couponId: byName.id };
+
+  return {};
+}
 
 // GET /config/publishable-key
 app.get("/config/publishable-key", async (req, res) => {
@@ -304,11 +404,56 @@ app.post("/account-session", async (req, res) => {
   }
 });
 
+// POST /validate-promo-code
+app.post("/validate-promo-code", promoCodeLimiter, async (req, res) => {
+  try {
+    const body = req.body as Record<string, unknown>;
+    const code = body["code"];
+
+    if (typeof code !== "string" || !code.trim()) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Promotion code is required");
+    }
+
+    const stripe = await stripeService.getStripeClient() as import("stripe").default;
+    const { promotionCodeId, couponId } = await resolveDiscount(stripe, code);
+
+    if (!promotionCodeId && !couponId) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Invalid or expired promotion code");
+    }
+
+    // Fetch the coupon details for the response
+    let coupon: import("stripe").default.Coupon;
+    if (promotionCodeId) {
+      const promoCode = (await stripe.promotionCodes.retrieve(promotionCodeId, { expand: ["coupon"] }));
+      coupon = promoCode.coupon as import("stripe").default.Coupon;
+    } else {
+      coupon = await stripe.coupons.retrieve(couponId!);
+    }
+
+    return sendJsonResponse(req, res, 200, {
+      valid: true,
+      discountType: promotionCodeId ? "promotion_code" : "coupon",
+      promotionCodeId,
+      couponId,
+      percentOff: coupon.percent_off ?? null,
+      amountOff: coupon.amount_off ?? null,
+      currency: coupon.currency ?? null,
+      duration: coupon.duration,
+      durationInMonths: coupon.duration_in_months ?? null,
+    });
+  } catch (error) {
+    console.error("Validate promo code error:", error);
+    handleError(req, res, error);
+  }
+});
+
 // POST /create-checkout-session
-app.post("/create-checkout-session", async (req, res) => {
+app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
     const priceId = body["priceId"] as string | undefined;
+    const rawPromotionCode = body["promotionCode"];
+    const promotionCode = typeof rawPromotionCode === "string" && rawPromotionCode.trim() ? rawPromotionCode : undefined;
     let userEmail = body["email"] as string | undefined;
 
     if (!priceId) {
@@ -407,11 +552,22 @@ app.post("/create-checkout-session", async (req, res) => {
       paymentIntentId = result.paymentIntentId;
       clientSecret = result.clientSecret;
     } else {
+      let promotionCodeId: string | undefined;
+      let couponId: string | undefined;
+      if (promotionCode) {
+        ({ promotionCodeId, couponId } = await resolveDiscount(stripe, promotionCode));
+        if (!promotionCodeId && !couponId) {
+          return sendErrorResponse(req, res, 404, "Not Found", "Invalid or expired promotion code");
+        }
+      }
+
       const result = await stripeService.createSubscriptionCheckout(
         customer.id,
         priceId,
         userId || null,
         membership,
+        promotionCodeId,
+        couponId,
       ) as { subscriptionId: string; paymentIntentId: string; clientSecret: string };
       subscriptionId = result.subscriptionId;
       paymentIntentId = result.paymentIntentId;
@@ -435,7 +591,7 @@ app.post("/create-checkout-session", async (req, res) => {
 });
 
 // POST /create-payment-link
-app.post("/create-payment-link", async (req, res) => {
+app.post("/create-payment-link", promoCodeLimiter, async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
     const priceId = body["priceId"] as string | undefined;

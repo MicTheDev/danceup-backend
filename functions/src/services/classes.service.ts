@@ -80,9 +80,13 @@ export class ClassesService {
       }
     }
 
+    let cost = typeof classData["cost"] === "number" ? classData["cost"] as number : undefined;
     let coords: { lat: number; lng: number } | null = null;
     if (studioOwnerDoc.exists) {
       const sd = studioOwnerDoc.data() as Record<string, unknown>;
+      if (cost === undefined) {
+        cost = typeof sd["dropInPrice"] === "number" ? sd["dropInPrice"] : 0;
+      }
       if (sd["studioAddressLine1"] && sd["city"] && sd["state"]) {
         coords = await geocodeAddress(
           sd["studioAddressLine1"] as string,
@@ -92,9 +96,11 @@ export class ClassesService {
         );
       }
     }
+    if (cost === undefined) cost = 0;
 
     const docRef = await db.collection("classes").add({
       ...classData,
+      cost,
       studioOwnerId,
       imageUrl,
       ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),

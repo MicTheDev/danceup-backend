@@ -6,6 +6,7 @@ import storageService from "../services/storage.service";
 import { logAuditEvent } from "../services/audit.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateInstructorPayload, validateUpdateInstructorPayload } from "../utils/validation";
+import { getFirestore } from "../utils/firestore";
 import {
   sendJsonResponse,
   sendErrorResponse,
@@ -16,6 +17,8 @@ import {
 } from "../utils/http";
 
 const app = express();
+
+const isDevOrEmulator = process.env["NODE_ENV"] === "development" || process.env["FUNCTIONS_EMULATOR"] === "true";
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -130,6 +133,190 @@ app.get("/public/:id", async (req, res) => {
     sendJsonResponse(req, res, 200, instructorData);
   } catch (error) {
     console.error("Error getting public instructor:", error);
+    handleError(req, res, error);
+  }
+});
+
+type DaySlot = { startTime: string; endTime: string };
+
+type DayConfig = {
+  day: string;
+  available: boolean;
+  timeSlots?: DaySlot[];
+  startTime?: string;
+  endTime?: string;
+};
+
+function parseTimeToMinutes(time: string): number {
+  const [hourStr, minuteStr] = time.split(":");
+  const hour = parseInt(hourStr ?? "0", 10);
+  const minute = parseInt(minuteStr ?? "0", 10);
+  return hour * 60 + minute;
+}
+
+function formatMinutesAsTime(totalMinutes: number): string {
+  const hour = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+// Resolves "today"/"now" in the studio's local timezone (via lat/lng), matching the
+// geo-tz-based timezone handling used by auto-checkin, instead of the server's local time.
+function getStudioLocalDateParts(lat: number | undefined, lng: number | undefined): {
+  year: number; month: number; day: number; minutes: number;
+} {
+  let zone: string | undefined;
+  if (lat != null && lng != null) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { find } = require("geo-tz") as { find: (lat: number, lng: number) => string[] };
+      zone = find(lat, lng)[0];
+    } catch {
+      zone = undefined;
+    }
+  }
+
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: zone ?? "UTC",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(new Date());
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    minutes: (get("hour") % 24) * 60 + get("minute"),
+  };
+}
+
+function getSlotsForDayConfig(dayConfig: DayConfig): DaySlot[] {
+  if (dayConfig.timeSlots && dayConfig.timeSlots.length > 0) return dayConfig.timeSlots;
+  // Legacy format: expand startTime–endTime range into 1-hour blocks
+  if (dayConfig.startTime && dayConfig.endTime) {
+    const startMinutes = parseTimeToMinutes(dayConfig.startTime);
+    const endMinutes = parseTimeToMinutes(dayConfig.endTime);
+    const slots: DaySlot[] = [];
+    for (let m = startMinutes; m + 60 <= endMinutes; m += 60) {
+      slots.push({
+        startTime: formatMinutesAsTime(m),
+        endTime: formatMinutesAsTime(m + 60),
+      });
+    }
+    return slots;
+  }
+  return [];
+}
+
+app.get("/public/:id/available-slots", async (req, res) => {
+  try {
+    const instructorId = req.params["id"] as string;
+    const { year: yearStr, month: monthStr } = req.query as { year?: string; month?: string };
+
+    if (!yearStr || !monthStr) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "year and month query parameters are required");
+    }
+
+    const year = parseInt(yearStr, 10);
+    const month = parseInt(monthStr, 10); // 1-12
+    if (isNaN(year) || isNaN(month) || month < 1 || month > 12) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid year or month");
+    }
+
+    const instructor = await instructorsService.getPublicInstructorById(instructorId);
+    if (!instructor) return sendErrorResponse(req, res, 404, "Not Found", "Instructor not found");
+    if (isDevOrEmulator) {
+      console.log(`[available-slots] instructorId=${instructorId} availableForPrivates=${instructor.availability?.availableForPrivates} availabilityType=${typeof instructor.availability?.availability} availabilityLength=${Array.isArray(instructor.availability?.availability) ? (instructor.availability!.availability as unknown[]).length : "N/A"}`);
+    }
+    if (!instructor.availability?.availableForPrivates) return sendJsonResponse(req, res, 200, {});
+
+    const rawAvailabilityConfig = instructor.availability.availability;
+    const availabilityConfig = Array.isArray(rawAvailabilityConfig) ? rawAvailabilityConfig as DayConfig[] : undefined;
+    if (!availabilityConfig || availabilityConfig.length === 0) {
+      if (isDevOrEmulator) {
+        console.log(`[available-slots] Early exit: availabilityConfig=${JSON.stringify(availabilityConfig)}`);
+      }
+      return sendJsonResponse(req, res, 200, {});
+    }
+    if (isDevOrEmulator) {
+      console.log(`[available-slots] Processing ${availabilityConfig.length} day configs for ${year}-${month}`);
+    }
+
+    // Build date range strings
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const lastDay = new Date(year, month, 0).getDate();
+    const startDate = `${year}-${pad(month)}-01`;
+    const endDate = `${year}-${pad(month)}-${pad(lastDay)}`;
+
+    const db = getFirestore();
+
+    // Resolve the studio's timezone via its lat/lng so "today"/past-time filtering
+    // reflects the studio's local time, not the server's.
+    let studioLat: number | undefined;
+    let studioLng: number | undefined;
+    if (instructor.studioOwnerId) {
+      const studioDoc = await db.collection("users").doc(instructor.studioOwnerId).get();
+      if (studioDoc.exists) {
+        const sd = studioDoc.data() as Record<string, unknown>;
+        studioLat = sd["lat"] as number | undefined;
+        studioLng = sd["lng"] as number | undefined;
+      }
+    }
+    const studioToday = getStudioLocalDateParts(studioLat, studioLng);
+
+    // Fetch existing confirmed/pending bookings for this instructor this month
+    const snapshot = await db.collection("privateLessonBookings")
+      .where("instructorId", "==", instructorId)
+      .where("date", ">=", startDate)
+      .where("date", "<=", endDate)
+      .where("status", "in", ["pending", "confirmed"])
+      .get();
+
+    // Keyed by startTime only, matching the booking conflict check in bookingsService
+    // (createBooking/isTimeSlotAvailable both key conflicts on timeSlot.startTime alone).
+    const bookedByDate = new Map<string, Set<string>>();
+    snapshot.docs.forEach((doc) => {
+      const d = doc.data() as Record<string, unknown>;
+      const date = d["date"];
+      const ts = d["timeSlot"] as Record<string, unknown> | undefined;
+      const startTime = ts?.["startTime"];
+      if (typeof date !== "string" || typeof startTime !== "string") return;
+      if (!bookedByDate.has(date)) bookedByDate.set(date, new Set());
+      bookedByDate.get(date)!.add(startTime);
+    });
+
+    const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+    const result: Record<string, DaySlot[]> = {};
+    for (let day = 1; day <= lastDay; day++) {
+      const isPastDate = year < studioToday.year ||
+        (year === studioToday.year && month < studioToday.month) ||
+        (year === studioToday.year && month === studioToday.month && day < studioToday.day);
+      if (isPastDate) continue;
+
+      const dateStr = `${year}-${pad(month)}-${pad(day)}`;
+      const dayName = dayNames[new Date(year, month - 1, day).getDay()];
+      const dayConfig = availabilityConfig.find((a) => typeof a.day === "string" && a.day.toLowerCase() === dayName && a.available);
+      if (!dayConfig) continue;
+
+      const allSlots = getSlotsForDayConfig(dayConfig);
+      if (allSlots.length === 0) continue;
+
+      const booked = bookedByDate.get(dateStr) ?? new Set<string>();
+      let open = allSlots.filter((s) => !booked.has(s.startTime));
+      const isToday = year === studioToday.year && month === studioToday.month && day === studioToday.day;
+      if (isToday) {
+        open = open.filter((s) => parseTimeToMinutes(s.startTime) > studioToday.minutes);
+      }
+      if (open.length > 0) result[dateStr] = open;
+    }
+
+    if (isDevOrEmulator) {
+      console.log(`[available-slots] Result keys: ${Object.keys(result).join(", ") || "(none)"}`);
+    }
+    sendJsonResponse(req, res, 200, result);
+  } catch (error) {
+    console.error("Error getting available slots:", error);
     handleError(req, res, error);
   }
 });

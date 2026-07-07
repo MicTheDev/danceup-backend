@@ -1125,3 +1125,152 @@ Return ONLY a valid JSON object (no markdown, no extra text):
     recommendations: parsed.recommendations || [],
   };
 }
+
+// ─── Booking Confirmation Message ─────────────────────────────────────────────
+
+export async function generateBookingConfirmationMessage(data: {
+  studioName: string;
+  studentName: string;
+  instructorName: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  notes?: string;
+}): Promise<{ message: string }> {
+  const genAI = await getClient();
+  const { studioName, studentName, instructorName, date, startTime, endTime, notes } = data;
+
+  const notesSection = notes?.trim() ? `\nStudent notes: ${JSON.stringify(notes.trim())}` : "";
+
+  const prompt = `You are a warm, professional studio manager at ${JSON.stringify(studioName)}, a dance studio.
+
+Write a short, friendly booking confirmation message to send to a student after their private lesson request has been confirmed.
+
+Booking details:
+- Student: ${JSON.stringify(studentName)}
+- Instructor: ${JSON.stringify(instructorName)}
+- Date: ${JSON.stringify(date)}
+- Time: ${JSON.stringify(startTime)} – ${JSON.stringify(endTime)}${notesSection}
+
+Guidelines:
+- 3–5 sentences maximum
+- Warm and encouraging tone, not overly formal
+- Confirm the key details (date, time, instructor)
+- End with a positive note (e.g., excited to see them, feel free to reach out with questions)
+- Do NOT use generic filler phrases like "I hope this message finds you well"
+- Write in first-person as the studio
+
+Return ONLY a valid JSON object:
+{"message": "..."}`;
+
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    generationConfig: { responseMimeType: "application/json", temperature: 0.6 },
+  });
+
+  const result = await model.generateContent(prompt);
+  const text = result.response.text().trim();
+  let parsed: { message?: string };
+  try {
+    parsed = parseAiResponse<{ message?: string }>(text);
+  } catch {
+    throw new Error("AI returned an unexpected response format. Please try again.");
+  }
+  if (!parsed.message) throw new Error("AI response was missing the message field.");
+  const MAX_MESSAGE_LENGTH = 1000;
+  return { message: String(parsed.message).trim().slice(0, MAX_MESSAGE_LENGTH) };
+}
+
+// ─── Automation Suggestions ───────────────────────────────────────────────────
+
+export interface AutomationSuggestion {
+  name: string;
+  triggerType: "inactive_days" | "credits_expiring_days" | "signup_no_attend" | "milestone_checkins" | "first_class_attended" | "credits_depleted";
+  triggerValue: number;
+  actionType: "re_engagement_email" | "credit_reminder_email" | "milestone_email" | "signup_nudge_email" | "first_class_email" | "credits_depleted_email";
+  cooldownDays: number;
+  reasoning: string;
+}
+
+export async function generateAutomationSuggestions(data: {
+  studioName: string;
+  existingRules: Array<{ name: string; triggerType: string; actionType: string }>;
+  atRiskStudentCount: number;
+  totalStudents: number;
+  studentsWithCredits: number;
+  studentsNeverAttended: number;
+  avgDaysSinceAttendance: number | null;
+}): Promise<{ suggestions: AutomationSuggestion[]; summary: string }> {
+  const genAI = await getClient();
+  const { studioName, existingRules, atRiskStudentCount, totalStudents, studentsWithCredits, studentsNeverAttended, avgDaysSinceAttendance } = data;
+
+  const existingRulesText = existingRules.length > 0
+    ? existingRules.map((r) => `  - "${r.name}": ${r.triggerType} → ${r.actionType}`).join("\n")
+    : "  None yet";
+
+  const avgDays = avgDaysSinceAttendance != null ? `${Math.round(avgDaysSinceAttendance)} days` : "unknown";
+
+  const prompt = `You are an expert studio engagement consultant for "${studioName}", a dance studio.
+
+STUDIO DATA:
+- Total students: ${totalStudents}
+- At-risk students (inactive 21+ days): ${atRiskStudentCount}
+- Students with unused credits: ${studentsWithCredits}
+- Students who signed up but never attended: ${studentsNeverAttended}
+- Average days since last attendance: ${avgDays}
+
+EXISTING AUTOMATION RULES (do NOT suggest duplicates of these):
+${existingRulesText}
+
+AVAILABLE TRIGGER TYPES:
+- "inactive_days": Student goes inactive (no check-in for N days). Requires triggerValue (days, 7–90).
+- "credits_expiring_days": Credits expiring within N days. Requires triggerValue (days, 3–30).
+- "signup_no_attend": Signed up but never attended after N days. Requires triggerValue (days, 3–21).
+- "milestone_checkins": Student reaches N total check-ins. Requires triggerValue (count, 5–100).
+- "first_class_attended": First class within N days. Requires triggerValue (1–7).
+- "credits_depleted": Student uses all credits. No triggerValue needed (use 0).
+
+AVAILABLE ACTION TYPES:
+- "re_engagement_email": Warm re-engagement email
+- "credit_reminder_email": Credit expiry reminder
+- "milestone_email": Milestone celebration
+- "signup_nudge_email": Nudge to attend first class
+- "first_class_email": Celebrate first class
+- "credits_depleted_email": Buy-more-credits prompt
+
+Suggest 2–4 automation rules that would most benefit this studio based on the data. Prioritize what the data shows is a real problem. Do not suggest rules that already exist.
+
+Return ONLY valid JSON (no markdown):
+{
+  "summary": "2-sentence explanation of why these rules were chosen based on the data",
+  "suggestions": [
+    {
+      "name": "short rule name",
+      "triggerType": "inactive_days",
+      "triggerValue": 21,
+      "actionType": "re_engagement_email",
+      "cooldownDays": 30,
+      "reasoning": "one sentence why this specific rule will help"
+    }
+  ]
+}`;
+
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    generationConfig: { responseMimeType: "application/json", temperature: 0.4 },
+  });
+
+  const result = await model.generateContent(prompt);
+  const text = result.response.text().trim();
+  let parsed: { suggestions?: AutomationSuggestion[]; summary?: string };
+  try {
+    parsed = parseAiResponse<typeof parsed>(text);
+  } catch {
+    throw new Error("AI returned an unexpected response format. Please try again.");
+  }
+  if (!Array.isArray(parsed.suggestions) || !parsed.summary) throw new Error("AI response missing required fields.");
+  return {
+    suggestions: parsed.suggestions,
+    summary: String(parsed.summary).trim(),
+  };
+}

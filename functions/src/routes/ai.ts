@@ -1212,6 +1212,122 @@ app.get("/promo-triggers", async (req, res) => {
   }
 });
 
+// POST /booking-message
+app.post("/booking-message", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const { studentName, instructorName, date, startTime, endTime, notes } = (req.body || {}) as {
+      studentName?: unknown;
+      instructorName?: unknown;
+      date?: unknown;
+      startTime?: unknown;
+      endTime?: unknown;
+      notes?: unknown;
+    };
+    if (!studentName || typeof studentName !== "string") {
+      return sendErrorResponse(req, res, 400, "Validation Error", "studentName is required");
+    }
+    if (!instructorName || typeof instructorName !== "string") {
+      return sendErrorResponse(req, res, 400, "Validation Error", "instructorName is required");
+    }
+    if (!date || typeof date !== "string") {
+      return sendErrorResponse(req, res, 400, "Validation Error", "date is required");
+    }
+    if (!startTime || typeof startTime !== "string" || !endTime || typeof endTime !== "string") {
+      return sendErrorResponse(req, res, 400, "Validation Error", "startTime and endTime are required");
+    }
+
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
+    }
+
+    const db = getFirestore();
+    const studioDoc = await db.collection("users").doc(studioOwnerId).get();
+    const studioName = studioDoc.exists ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string || "Your Studio") : "Your Studio";
+
+    const { message } = await aiService.generateBookingConfirmationMessage({
+      studioName,
+      studentName: String(studentName).slice(0, 100),
+      instructorName: String(instructorName).slice(0, 100),
+      date: String(date).slice(0, 50),
+      startTime: String(startTime).slice(0, 20),
+      endTime: String(endTime).slice(0, 20),
+      notes: notes ? String(notes).slice(0, 500) : undefined,
+    }) as { message: string };
+
+    sendJsonResponse(req, res, 200, { message });
+  } catch (error) {
+    console.error("Error generating booking message:", error);
+    handleError(req, res, error);
+  }
+});
+
+// POST /suggest-automations
+app.post("/suggest-automations", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
+    }
+
+    const db = getFirestore();
+
+    // Fetch studio name
+    const studioDoc = await db.collection("users").doc(studioOwnerId).get();
+    const studioName = studioDoc.exists ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string || "Your Studio") : "Your Studio";
+
+    // Fetch existing automation rules
+    const rulesSnap = await db.collection("campaignRules")
+      .where("studioOwnerId", "==", studioOwnerId)
+      .get();
+    const existingRules = rulesSnap.docs.map((d) => {
+      const data = d.data() as Record<string, unknown>;
+      return {
+        name: String(data["name"] || ""),
+        triggerType: String(data["triggerType"] || ""),
+        actionType: String(data["actionType"] || ""),
+      };
+    });
+
+    // Fetch engagement data for context
+    const engagementData = (await insightsService.getEngagementData(studioOwnerId)) as unknown as {
+      atRisk: Array<{ daysSinceAttendance: number | null; credits: number; neverAttended?: boolean }>;
+      mostActive: unknown[];
+      stats: { totalStudents: number; atRiskCount: number; studentsWithCredits: number };
+    };
+    const { atRisk, stats } = engagementData;
+
+    const neverAttended = atRisk?.filter((s) => s.daysSinceAttendance == null || s.neverAttended).length ?? 0;
+    const daysList = atRisk
+      ?.map((s) => s.daysSinceAttendance)
+      .filter((d): d is number => d != null);
+    const avgDays = daysList && daysList.length > 0
+      ? daysList.reduce((a, b) => a + b, 0) / daysList.length
+      : null;
+
+    const { suggestions, summary } = await aiService.generateAutomationSuggestions({
+      studioName,
+      existingRules,
+      atRiskStudentCount: stats?.atRiskCount ?? 0,
+      totalStudents: stats?.totalStudents ?? 0,
+      studentsWithCredits: stats?.studentsWithCredits ?? 0,
+      studentsNeverAttended: neverAttended,
+      avgDaysSinceAttendance: avgDays,
+    }) as { suggestions: import("../services/ai.service").AutomationSuggestion[]; summary: string };
+
+    sendJsonResponse(req, res, 200, { suggestions, summary, generatedAt: new Date().toISOString() });
+  } catch (error) {
+    console.error("Error suggesting automations:", error);
+    handleError(req, res, error);
+  }
+});
+
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => handleError(_req, res, err));
 
 export const ai = functions.https.onRequest(app);

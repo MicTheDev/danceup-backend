@@ -9,6 +9,7 @@ interface InstructorAvailabilityData {
 
 interface PublicInstructorData {
   id: string;
+  studioOwnerId: string | null;
   firstName: string;
   lastName: string;
   photoURL: string | null;
@@ -97,6 +98,7 @@ export class InstructorsService {
 
     const publicData: PublicInstructorData = {
       id: doc.id,
+      studioOwnerId: (d["studioOwnerId"] as string | undefined) ?? null,
       firstName: (d["firstName"] as string) || "",
       lastName: (d["lastName"] as string) || "",
       photoURL: (d["photoURL"] as string | null) ?? (d["photoUrl"] as string | null) ?? null,
