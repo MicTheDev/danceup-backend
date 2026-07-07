@@ -115,7 +115,7 @@ async function resolveDiscount(
   const trimmed = code.trim();
   const normalized = trimmed.toUpperCase();
 
-  const promoCodes = await stripe.promotionCodes.list({ code: trimmed, active: true, limit: 1 });
+  const promoCodes = await stripe.promotionCodes.list({ code: normalized, active: true, limit: 1 });
   if (promoCodes.data.length > 0) {
     return { promotionCodeId: promoCodes.data[0]!.id };
   }
