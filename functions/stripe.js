@@ -54,8 +54,9 @@ applySecurityMiddleware(app);
 app.use(express.urlencoded({extended: true}));
 app.set("trust proxy", 1);
 
-// /validate-promo-code and /create-checkout-session are unauthenticated and call the Stripe
-// API — rate-limit them to prevent brute-force/cost-amplification against Stripe.
+// /validate-promo-code, /create-checkout-session, and /create-payment-link are
+// unauthenticated and call the Stripe API — rate-limit them to prevent
+// brute-force/cost-amplification against Stripe.
 const promoCodeLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -573,6 +574,8 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
       const promoCodes = await stripe.promotionCodes.list({ code: promotionCode.trim().toUpperCase(), active: true, limit: 1 });
       if (promoCodes.data.length > 0) {
         promotionCodeId = promoCodes.data[0].id;
+      } else {
+        return sendErrorResponse(req, res, 404, "Not Found", "Invalid or expired promotion code");
       }
     }
 
@@ -612,7 +615,7 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
  * Create a Payment Link for subscription checkout (no-code solution)
  * No authentication required (for sign-up flow)
  */
-app.post("/create-payment-link", async (req, res) => {
+app.post("/create-payment-link", promoCodeLimiter, async (req, res) => {
   try {
     const {membership, priceId, email} = req.body;
 

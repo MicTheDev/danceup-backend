@@ -53,8 +53,9 @@ applySecurityMiddleware(app);
 app.use(express.urlencoded({ extended: true }));
 app.set("trust proxy", 1);
 
-// Both endpoints below are unauthenticated and call resolveDiscount(), which hits the Stripe
-// API — rate-limit them to prevent brute-force/cost-amplification against Stripe.
+// Unauthenticated endpoints that hit the Stripe API (validate-promo-code and
+// create-checkout-session call resolveDiscount; create-payment-link creates billable
+// Stripe objects) — rate-limit them to prevent brute-force/cost-amplification.
 const promoCodeLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -78,17 +79,25 @@ let couponCacheRefresh: Promise<import("stripe").default.Coupon[]> | null = null
 async function fetchAllCoupons(stripe: import("stripe").default): Promise<import("stripe").default.Coupon[]> {
   const coupons: import("stripe").default.Coupon[] = [];
   let startingAfter: string | undefined;
-  let scanned = 0;
-  let hasMoreAfterCap = false;
-  while (scanned < MAX_COUPONS_TO_SCAN) {
+  let truncated = false;
+  while (true) {
     const page = await stripe.coupons.list({ limit: 100, starting_after: startingAfter });
+    if (page.data.length === 0) break;
     coupons.push(...page.data);
-    scanned += page.data.length;
-    if (!page.has_more || page.data.length === 0) break;
+
+    if (coupons.length > MAX_COUPONS_TO_SCAN) {
+      coupons.length = MAX_COUPONS_TO_SCAN;
+      truncated = true;
+      break;
+    }
+    if (coupons.length === MAX_COUPONS_TO_SCAN) {
+      truncated = page.has_more;
+      break;
+    }
+    if (!page.has_more) break;
     startingAfter = page.data[page.data.length - 1]!.id;
-    hasMoreAfterCap = scanned >= MAX_COUPONS_TO_SCAN && page.has_more;
   }
-  if (hasMoreAfterCap) {
+  if (truncated) {
     console.warn(`[resolveDiscount] Coupon scan hit MAX_COUPONS_TO_SCAN (${MAX_COUPONS_TO_SCAN}); some coupons won't be matchable by name.`);
   }
   return coupons;
@@ -547,6 +556,9 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
       let couponId: string | undefined;
       if (promotionCode) {
         ({ promotionCodeId, couponId } = await resolveDiscount(stripe, promotionCode));
+        if (!promotionCodeId && !couponId) {
+          return sendErrorResponse(req, res, 404, "Not Found", "Invalid or expired promotion code");
+        }
       }
 
       const result = await stripeService.createSubscriptionCheckout(
@@ -579,7 +591,7 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
 });
 
 // POST /create-payment-link
-app.post("/create-payment-link", async (req, res) => {
+app.post("/create-payment-link", promoCodeLimiter, async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
     const priceId = body["priceId"] as string | undefined;

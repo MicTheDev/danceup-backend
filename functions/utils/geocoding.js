@@ -4,6 +4,9 @@ const {getSecret} = require("./secret-manager");
 const GOOGLE_GEOCODE_BASE = "https://maps.googleapis.com/maps/api/geocode/json";
 const NOMINATIM_BASE_URL = "https://nominatim.openstreetmap.org";
 const RATE_LIMIT_MS = 1100;
+// Nominatim's usage policy requires a User-Agent that identifies the app and provides
+// contact info: https://operations.osmfoundation.org/policies/nominatim/
+const NOMINATIM_USER_AGENT = "DanceUp/1.0 (+https://danceup.app; info@danceup.app)";
 
 let lastNominatimRequest = 0;
 
@@ -59,7 +62,7 @@ async function geocodeWithNominatim(addressLine, city, state, zip) {
   const query = encodeURIComponent(`${addressLine}, ${city}, ${state} ${zip}, USA`);
   const url = `${NOMINATIM_BASE_URL}/search?q=${query}&format=json&limit=1&countrycodes=us`;
   const results = await fetchJson(url, {
-    "User-Agent": "CodeBlack-DanceUp/1.0",
+    "User-Agent": NOMINATIM_USER_AGENT,
     "Accept": "application/json",
   });
 
@@ -72,7 +75,7 @@ async function geocodeWithNominatim(addressLine, city, state, zip) {
   const fallbackQuery = encodeURIComponent(`${city}, ${state} ${zip}, USA`);
   const fallbackUrl = `${NOMINATIM_BASE_URL}/search?q=${fallbackQuery}&format=json&limit=1&countrycodes=us`;
   const fallbackResults = await fetchJson(fallbackUrl, {
-    "User-Agent": "CodeBlack-DanceUp/1.0",
+    "User-Agent": NOMINATIM_USER_AGENT,
     "Accept": "application/json",
   });
 
@@ -113,7 +116,7 @@ async function reverseGeocode(lat, lng) {
 
     const url = `${NOMINATIM_BASE_URL}/reverse?lat=${lat}&lon=${lng}&format=json`;
     const result = await fetchJson(url, {
-      "User-Agent": "CodeBlack-DanceUp/1.0",
+      "User-Agent": NOMINATIM_USER_AGENT,
       "Accept": "application/json",
     });
 

@@ -36,6 +36,9 @@ if (!admin.apps.length) {
 
 const NOMINATIM_BASE_URL = "https://nominatim.openstreetmap.org";
 const RATE_LIMIT_MS = 1200; // slightly over 1 s to be safe
+// Nominatim's usage policy requires a User-Agent that identifies the app and provides
+// contact info: https://operations.osmfoundation.org/policies/nominatim/
+const NOMINATIM_USER_AGENT = "DanceUp/1.0 (+https://danceup.app; info@danceup.app)";
 
 let lastRequestTime = 0;
 
@@ -54,7 +57,7 @@ function fetchJson(url) {
   return new Promise((resolve, reject) => {
     const options = {
       headers: {
-        "User-Agent": "CodeBlack-DanceUp-Backfill/1.0",
+        "User-Agent": NOMINATIM_USER_AGENT,
         "Accept": "application/json",
       },
     };

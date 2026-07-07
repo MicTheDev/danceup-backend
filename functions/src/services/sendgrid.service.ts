@@ -257,48 +257,65 @@ export function buildConfirmationEmail(opts: {
       break;
     }
 
-    case "package":
-      subject = `Package Purchase Confirmed — ${details.packageName}`;
+    case "package": {
+      const rawPackageName = String(details.packageName ?? "");
+      const packageName = escapeHtml(rawPackageName);
+      const studioName = escapeHtml(String(details.studioName ?? ""));
+      const creditsAdded = escapeHtml(String(details.creditsAdded ?? ""));
+      const expirationDate = escapeHtml(String(details.expirationDate ?? ""));
+      const amountPaid = escapeHtml(String(details.amountPaid ?? ""));
+      subject = `Package Purchase Confirmed — ${sanitizeForSubject(rawPackageName)}`;
       bodyLines = [
         `<h2 style="color:#1e293b;margin:0 0 16px">Package Purchase Confirmed!</h2>`,
         `<p>Your package has been purchased successfully.</p>`,
         `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
-        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Package</td><td style="padding:8px 0;font-weight:600">${details.packageName}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${details.studioName}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Credits Added</td><td style="padding:8px 0;font-weight:600">${details.creditsAdded}</td></tr>`,
-        details.expirationDate ? `<tr><td style="padding:8px 0;color:#64748b">Expires</td><td style="padding:8px 0">${details.expirationDate}</td></tr>` : "",
-        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${details.amountPaid}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Package</td><td style="padding:8px 0;font-weight:600">${packageName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${studioName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Credits Added</td><td style="padding:8px 0;font-weight:600">${creditsAdded}</td></tr>`,
+        details.expirationDate ? `<tr><td style="padding:8px 0;color:#64748b">Expires</td><td style="padding:8px 0">${expirationDate}</td></tr>` : "",
+        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${amountPaid}</td></tr>`,
         `</table>`,
         `<p style="color:#475569">Your credits are ready to use. Book a class and use credits at checkout.</p>`,
       ];
       break;
+    }
 
-    case "class":
-      subject = `Class Registration Confirmed — ${details.itemName}`;
+    case "class": {
+      const rawItemName = String(details.itemName ?? "");
+      const itemName = escapeHtml(rawItemName);
+      const studioName = escapeHtml(String(details.studioName ?? ""));
+      const amountPaid = escapeHtml(String(details.amountPaid ?? ""));
+      subject = `Class Registration Confirmed — ${sanitizeForSubject(rawItemName)}`;
       bodyLines = [
         `<h2 style="color:#1e293b;margin:0 0 16px">Class Registration Confirmed!</h2>`,
         `<p>You're registered for the following class:</p>`,
         `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
-        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Class</td><td style="padding:8px 0;font-weight:600">${details.itemName}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${details.studioName}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${details.amountPaid}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Class</td><td style="padding:8px 0;font-weight:600">${itemName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${studioName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${amountPaid}</td></tr>`,
         `</table>`,
       ];
       break;
+    }
 
     case "event":
-    case "workshop":
-      subject = `Registration Confirmed — ${details.itemName}`;
+    case "workshop": {
+      const rawItemName = String(details.itemName ?? "");
+      const itemName = escapeHtml(rawItemName);
+      const studioName = escapeHtml(String(details.studioName ?? ""));
+      const amountPaid = escapeHtml(String(details.amountPaid ?? ""));
+      subject = `Registration Confirmed — ${sanitizeForSubject(rawItemName)}`;
       bodyLines = [
         `<h2 style="color:#1e293b;margin:0 0 16px">Registration Confirmed!</h2>`,
         `<p>You're registered for the following ${type}:</p>`,
         `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
-        `<tr><td style="padding:8px 0;color:#64748b;width:140px">${type === "event" ? "Event" : "Workshop"}</td><td style="padding:8px 0;font-weight:600">${details.itemName}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${details.studioName}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${details.amountPaid}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b;width:140px">${type === "event" ? "Event" : "Workshop"}</td><td style="padding:8px 0;font-weight:600">${itemName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${studioName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${amountPaid}</td></tr>`,
         `</table>`,
       ];
       break;
+    }
 
     default:
       subject = "Purchase Confirmation";
