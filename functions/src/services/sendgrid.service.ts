@@ -203,40 +203,51 @@ export function buildConfirmationEmail(opts: {
   let bodyLines: string[] = [];
 
   switch (type) {
-    case "private_lesson":
-      subject = `Private Lesson Request Received — ${details.instructorName}`;
+    case "private_lesson": {
+      const instructorName = escapeHtml(String(details.instructorName ?? ""));
+      const studioName = escapeHtml(String(details.studioName ?? ""));
+      const date = escapeHtml(String(details.date ?? ""));
+      const timeSlot = escapeHtml(String(details.timeSlot ?? ""));
+      const amountPaid = escapeHtml(String(details.amountPaid ?? ""));
+      subject = `Private Lesson Request Received — ${instructorName}`;
       bodyLines = [
         `<h2 style="color:#1e293b;margin:0 0 16px">Private Lesson Request Received</h2>`,
         `<p>Your payment was received and your private lesson request has been sent to the studio. You'll get another email once the studio confirms your booking.</p>`,
         `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
-        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Instructor</td><td style="padding:8px 0;font-weight:600">${details.instructorName}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${details.studioName}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Date</td><td style="padding:8px 0">${details.date}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Time</td><td style="padding:8px 0">${details.timeSlot}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${details.amountPaid}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Instructor</td><td style="padding:8px 0;font-weight:600">${instructorName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${studioName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Date</td><td style="padding:8px 0">${date}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Time</td><td style="padding:8px 0">${timeSlot}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Amount Paid</td><td style="padding:8px 0;font-weight:600">$${amountPaid}</td></tr>`,
         `<tr><td style="padding:8px 0;color:#64748b">Status</td><td style="padding:8px 0"><span style="background:#fef9c3;color:#854d0e;padding:2px 10px;border-radius:999px;font-size:13px;font-weight:600">Pending Confirmation</span></td></tr>`,
         `</table>`,
         `<p style="color:#475569">If you have questions in the meantime, contact the studio directly.</p>`,
       ];
       break;
+    }
 
-    case "private_lesson_confirmed":
-      subject = `Private Lesson Confirmed — ${details.instructorName}`;
+    case "private_lesson_confirmed": {
+      const instructorName = escapeHtml(String(details.instructorName ?? ""));
+      const studioName = escapeHtml(String(details.studioName ?? ""));
+      const date = escapeHtml(String(details.date ?? ""));
+      const timeSlot = escapeHtml(String(details.timeSlot ?? ""));
+      subject = `Private Lesson Confirmed — ${instructorName}`;
       bodyLines = [
         `<h2 style="color:#1e293b;margin:0 0 16px">Your Private Lesson is Confirmed!</h2>`,
         details.studioMessage
           ? `<div style="background:#f0fdf4;border-left:4px solid #22c55e;padding:14px 16px;border-radius:0 8px 8px 0;margin:0 0 20px"><p style="margin:0;color:#166534;font-size:15px">${escapeHtml(String(details.studioMessage)).replace(/\n/g, "<br>")}</p></div>`
           : `<p>Great news — your private lesson has been confirmed by the studio. See you there!</p>`,
         `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
-        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Instructor</td><td style="padding:8px 0;font-weight:600">${details.instructorName}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${details.studioName}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Date</td><td style="padding:8px 0">${details.date}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#64748b">Time</td><td style="padding:8px 0">${details.timeSlot}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b;width:140px">Instructor</td><td style="padding:8px 0;font-weight:600">${instructorName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Studio</td><td style="padding:8px 0">${studioName}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Date</td><td style="padding:8px 0">${date}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#64748b">Time</td><td style="padding:8px 0">${timeSlot}</td></tr>`,
         `<tr><td style="padding:8px 0;color:#64748b">Status</td><td style="padding:8px 0"><span style="background:#dcfce7;color:#166534;padding:2px 10px;border-radius:999px;font-size:13px;font-weight:600">Confirmed</span></td></tr>`,
         `</table>`,
         `<p style="color:#475569">If you have any questions, contact the studio directly.</p>`,
       ];
       break;
+    }
 
     case "package":
       subject = `Package Purchase Confirmed — ${details.packageName}`;

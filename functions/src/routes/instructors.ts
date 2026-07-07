@@ -236,8 +236,10 @@ app.get("/public/:id/available-slots", async (req, res) => {
     });
 
     const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+    const now = new Date();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
     const result: Record<string, DaySlot[]> = {};
     for (let day = 1; day <= lastDay; day++) {
@@ -253,7 +255,10 @@ app.get("/public/:id/available-slots", async (req, res) => {
       if (allSlots.length === 0) continue;
 
       const booked = bookedByDate.get(dateStr) ?? new Set<string>();
-      const open = allSlots.filter((s) => !booked.has(`${s.startTime}-${s.endTime}`));
+      let open = allSlots.filter((s) => !booked.has(`${s.startTime}-${s.endTime}`));
+      if (date.getTime() === today.getTime()) {
+        open = open.filter((s) => parseTimeToMinutes(s.startTime) > nowMinutes);
+      }
       if (open.length > 0) result[dateStr] = open;
     }
 

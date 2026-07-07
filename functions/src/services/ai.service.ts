@@ -1140,7 +1140,7 @@ export async function generateBookingConfirmationMessage(data: {
   const genAI = await getClient();
   const { studioName, studentName, instructorName, date, startTime, endTime, notes } = data;
 
-  const notesSection = notes?.trim() ? `\nStudent notes: "${notes.trim()}"` : "";
+  const notesSection = notes?.trim() ? `\nStudent notes: ${JSON.stringify(notes.trim())}` : "";
 
   const prompt = `You are a warm, professional studio manager at "${studioName}", a dance studio.
 

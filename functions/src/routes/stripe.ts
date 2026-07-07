@@ -51,6 +51,33 @@ app.use(express.json());
 applySecurityMiddleware(app);
 app.use(express.urlencoded({ extended: true }));
 
+// Cache of all coupons, keyed by name lookup, so unauthenticated callers (validate-promo-code,
+// create-checkout-session) can't force a burst of Stripe list calls on every request.
+const COUPON_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_COUPONS_TO_SCAN = 500;
+let couponCache: { coupons: import("stripe").default.Coupon[]; expiresAt: number } | null = null;
+
+async function getCachedCoupons(stripe: import("stripe").default): Promise<import("stripe").default.Coupon[]> {
+  const now = Date.now();
+  if (couponCache && couponCache.expiresAt > now) {
+    return couponCache.coupons;
+  }
+
+  const coupons: import("stripe").default.Coupon[] = [];
+  let startingAfter: string | undefined;
+  let scanned = 0;
+  while (scanned < MAX_COUPONS_TO_SCAN) {
+    const page = await stripe.coupons.list({ limit: 100, starting_after: startingAfter });
+    coupons.push(...page.data);
+    scanned += page.data.length;
+    if (!page.has_more || page.data.length === 0) break;
+    startingAfter = page.data[page.data.length - 1]!.id;
+  }
+
+  couponCache = { coupons, expiresAt: now + COUPON_CACHE_TTL_MS };
+  return coupons;
+}
+
 // Resolves a user-supplied code string to a Stripe discount reference.
 // Tries: promotion code → coupon ID → coupon name.
 async function resolveDiscount(
@@ -71,17 +98,9 @@ async function resolveDiscount(
     // not found by ID
   }
 
-  const MAX_COUPONS_TO_SCAN = 1000;
-  let startingAfter: string | undefined;
-  let scanned = 0;
-  while (scanned < MAX_COUPONS_TO_SCAN) {
-    const page = await stripe.coupons.list({ limit: 100, starting_after: startingAfter });
-    const byName = page.data.find((c) => c.name?.toUpperCase() === normalized && c.valid);
-    if (byName) return { couponId: byName.id };
-    scanned += page.data.length;
-    if (!page.has_more || page.data.length === 0) break;
-    startingAfter = page.data[page.data.length - 1]!.id;
-  }
+  const coupons = await getCachedCoupons(stripe);
+  const byName = coupons.find((c) => c.name?.toUpperCase() === normalized && c.valid);
+  if (byName) return { couponId: byName.id };
 
   return {};
 }
@@ -343,9 +362,9 @@ app.post("/account-session", async (req, res) => {
 app.post("/validate-promo-code", async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
-    const code = body["code"] as string | undefined;
+    const code = body["code"];
 
-    if (!code || !code.trim()) {
+    if (typeof code !== "string" || !code.trim()) {
       return sendErrorResponse(req, res, 400, "Validation Error", "Promotion code is required");
     }
 
@@ -388,7 +407,8 @@ app.post("/create-checkout-session", async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
     const priceId = body["priceId"] as string | undefined;
-    const promotionCode = body["promotionCode"] as string | undefined;
+    const rawPromotionCode = body["promotionCode"];
+    const promotionCode = typeof rawPromotionCode === "string" && rawPromotionCode.trim() ? rawPromotionCode : undefined;
     let userEmail = body["email"] as string | undefined;
 
     if (!priceId) {

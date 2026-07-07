@@ -503,7 +503,7 @@ app.patch("/:bookingId/confirm", async (req, res) => {
     const bookingId = req.params["bookingId"] as string;
 
     const rawStudioMessage = (req.body as Record<string, unknown> | undefined)?.["message"];
-    const studioMessage = typeof rawStudioMessage === "string" ? rawStudioMessage : undefined;
+    const studioMessage = typeof rawStudioMessage === "string" ? rawStudioMessage.trim().slice(0, 500) || undefined : undefined;
     const booking = await bookingsService.confirmBooking(bookingId, studioOwnerId);
 
     try {
@@ -528,7 +528,7 @@ app.patch("/:bookingId/confirm", async (req, res) => {
         const timeLabel = bookingTs ? `${bookingTs["startTime"] as string} – ${bookingTs["endTime"] as string}` : "";
         const pushTitle = "Private Lesson Confirmed!";
         const defaultBody = `Your lesson${bookingDate ? ` on ${bookingDate}` : ""}${timeLabel ? ` at ${timeLabel}` : ""} has been confirmed.`;
-        const pushBody = studioMessage?.trim() ? studioMessage.trim().slice(0, 500) : defaultBody;
+        const pushBody = studioMessage ?? defaultBody;
         await db.collection("studentNotifications").add({
           authUid: studentAuthUid,
           type: "booking_confirmed",
@@ -568,7 +568,7 @@ app.patch("/:bookingId/confirm", async (req, res) => {
               studioName,
               date: bookingDate ?? "",
               timeSlot: timeLabel,
-              studioMessage: studioMessage?.trim() || undefined,
+              studioMessage,
             });
           }
         } catch (emailErr) { console.error("[confirm booking] Confirmation email error:", emailErr); }
