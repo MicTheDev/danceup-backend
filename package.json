@@ -12,7 +12,7 @@
     "dev": "firebase emulators:start",
     "dev:functions": "firebase emulators:start --only functions",
     "serve": "firebase emulators:start --only functions",
-    "deploy:dev": "firebase deploy --only functions --project dev",
+    "deploy:dev": "firebase deploy --only functions,firestore:indexes --project dev",
     "deploy:staging": "firebase deploy --only functions --project staging",
     "deploy:production": "firebase deploy --only functions --project production"
   },
