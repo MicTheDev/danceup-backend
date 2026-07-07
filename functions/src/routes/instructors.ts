@@ -18,6 +18,8 @@ import {
 
 const app = express();
 
+const isDevOrEmulator = process.env["NODE_ENV"] === "development" || process.env["FUNCTIONS_EMULATOR"] === "true";
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && isAllowedOrigin(origin)) {
@@ -145,17 +147,30 @@ type DayConfig = {
   endTime?: string;
 };
 
+function parseTimeToMinutes(time: string): number {
+  const [hourStr, minuteStr] = time.split(":");
+  const hour = parseInt(hourStr ?? "0", 10);
+  const minute = parseInt(minuteStr ?? "0", 10);
+  return hour * 60 + minute;
+}
+
+function formatMinutesAsTime(totalMinutes: number): string {
+  const hour = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
 function getSlotsForDayConfig(dayConfig: DayConfig): DaySlot[] {
   if (dayConfig.timeSlots && dayConfig.timeSlots.length > 0) return dayConfig.timeSlots;
   // Legacy format: expand startTime–endTime range into 1-hour blocks
   if (dayConfig.startTime && dayConfig.endTime) {
-    const startHour = parseInt(dayConfig.startTime.split(":")[0] ?? "0", 10);
-    const endHour = parseInt(dayConfig.endTime.split(":")[0] ?? "0", 10);
+    const startMinutes = parseTimeToMinutes(dayConfig.startTime);
+    const endMinutes = parseTimeToMinutes(dayConfig.endTime);
     const slots: DaySlot[] = [];
-    for (let h = startHour; h < endHour; h++) {
+    for (let m = startMinutes; m + 60 <= endMinutes; m += 60) {
       slots.push({
-        startTime: `${String(h).padStart(2, "0")}:00`,
-        endTime: `${String(h + 1).padStart(2, "0")}:00`,
+        startTime: formatMinutesAsTime(m),
+        endTime: formatMinutesAsTime(m + 60),
       });
     }
     return slots;
@@ -180,15 +195,21 @@ app.get("/public/:id/available-slots", async (req, res) => {
 
     const instructor = await instructorsService.getPublicInstructorById(instructorId);
     if (!instructor) return sendErrorResponse(req, res, 404, "Not Found", "Instructor not found");
-    console.log(`[available-slots] instructorId=${instructorId} availableForPrivates=${instructor.availability?.availableForPrivates} availabilityType=${typeof instructor.availability?.availability} availabilityLength=${Array.isArray(instructor.availability?.availability) ? (instructor.availability!.availability as unknown[]).length : "N/A"}`);
+    if (isDevOrEmulator) {
+      console.log(`[available-slots] instructorId=${instructorId} availableForPrivates=${instructor.availability?.availableForPrivates} availabilityType=${typeof instructor.availability?.availability} availabilityLength=${Array.isArray(instructor.availability?.availability) ? (instructor.availability!.availability as unknown[]).length : "N/A"}`);
+    }
     if (!instructor.availability?.availableForPrivates) return sendJsonResponse(req, res, 200, {});
 
     const availabilityConfig = instructor.availability.availability as DayConfig[] | undefined;
     if (!availabilityConfig || availabilityConfig.length === 0) {
-      console.log(`[available-slots] Early exit: availabilityConfig=${JSON.stringify(availabilityConfig)}`);
+      if (isDevOrEmulator) {
+        console.log(`[available-slots] Early exit: availabilityConfig=${JSON.stringify(availabilityConfig)}`);
+      }
       return sendJsonResponse(req, res, 200, {});
     }
-    console.log(`[available-slots] Processing ${availabilityConfig.length} day configs for ${year}-${month}`);
+    if (isDevOrEmulator) {
+      console.log(`[available-slots] Processing ${availabilityConfig.length} day configs for ${year}-${month}`);
+    }
 
     // Build date range strings
     const pad = (n: number) => String(n).padStart(2, "0");
@@ -236,7 +257,9 @@ app.get("/public/:id/available-slots", async (req, res) => {
       if (open.length > 0) result[dateStr] = open;
     }
 
-    console.log(`[available-slots] Result keys: ${Object.keys(result).join(", ") || "(none)"}`);
+    if (isDevOrEmulator) {
+      console.log(`[available-slots] Result keys: ${Object.keys(result).join(", ") || "(none)"}`);
+    }
     sendJsonResponse(req, res, 200, result);
   } catch (error) {
     console.error("Error getting available slots:", error);

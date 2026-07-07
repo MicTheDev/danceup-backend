@@ -502,7 +502,8 @@ app.patch("/:bookingId/confirm", async (req, res) => {
     const studioOwnerId = userDoc.id;
     const bookingId = req.params["bookingId"] as string;
 
-    const { message: studioMessage } = (req.body || {}) as { message?: string };
+    const rawStudioMessage = (req.body as Record<string, unknown> | undefined)?.["message"];
+    const studioMessage = typeof rawStudioMessage === "string" ? rawStudioMessage : undefined;
     const booking = await bookingsService.confirmBooking(bookingId, studioOwnerId);
 
     try {

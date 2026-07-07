@@ -59,7 +59,7 @@ async function resolveDiscount(
 ): Promise<{ promotionCodeId?: string; couponId?: string }> {
   const normalized = code.trim().toUpperCase();
 
-  const promoCodes = await stripe.promotionCodes.list({ code: normalized, limit: 1 });
+  const promoCodes = await stripe.promotionCodes.list({ code: normalized, active: true, limit: 1 });
   if (promoCodes.data.length > 0) {
     return { promotionCodeId: promoCodes.data[0]!.id };
   }
@@ -71,9 +71,17 @@ async function resolveDiscount(
     // not found by ID
   }
 
-  const allCoupons = await stripe.coupons.list({ limit: 100 });
-  const byName = allCoupons.data.find((c) => c.name?.toUpperCase() === normalized && c.valid);
-  if (byName) return { couponId: byName.id };
+  const MAX_COUPONS_TO_SCAN = 1000;
+  let startingAfter: string | undefined;
+  let scanned = 0;
+  while (scanned < MAX_COUPONS_TO_SCAN) {
+    const page = await stripe.coupons.list({ limit: 100, starting_after: startingAfter });
+    const byName = page.data.find((c) => c.name?.toUpperCase() === normalized && c.valid);
+    if (byName) return { couponId: byName.id };
+    scanned += page.data.length;
+    if (!page.has_more || page.data.length === 0) break;
+    startingAfter = page.data[page.data.length - 1]!.id;
+  }
 
   return {};
 }

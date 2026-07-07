@@ -4,6 +4,15 @@ import { getSecret } from "../utils/secret-manager";
 let apiKeySet = false;
 let cachedApiKey: string | null = null;
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 interface CategoryMetrics {
   delivered: number;
   opens: number;
@@ -216,7 +225,7 @@ export function buildConfirmationEmail(opts: {
       bodyLines = [
         `<h2 style="color:#1e293b;margin:0 0 16px">Your Private Lesson is Confirmed!</h2>`,
         details.studioMessage
-          ? `<div style="background:#f0fdf4;border-left:4px solid #22c55e;padding:14px 16px;border-radius:0 8px 8px 0;margin:0 0 20px"><p style="margin:0;color:#166534;font-size:15px">${String(details.studioMessage).replace(/\n/g, "<br>")}</p></div>`
+          ? `<div style="background:#f0fdf4;border-left:4px solid #22c55e;padding:14px 16px;border-radius:0 8px 8px 0;margin:0 0 20px"><p style="margin:0;color:#166534;font-size:15px">${escapeHtml(String(details.studioMessage)).replace(/\n/g, "<br>")}</p></div>`
           : `<p>Great news — your private lesson has been confirmed by the studio. See you there!</p>`,
         `<table style="width:100%;border-collapse:collapse;margin:16px 0">`,
         `<tr><td style="padding:8px 0;color:#64748b;width:140px">Instructor</td><td style="padding:8px 0;font-weight:600">${details.instructorName}</td></tr>`,

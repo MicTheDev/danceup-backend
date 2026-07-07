@@ -556,9 +556,9 @@ app.post("/create-checkout-session", async (req, res) => {
     // by Stripe.js validation when the secret contains base64 '/' characters.
     // Resolve promotion code string to a Stripe promotion code ID
     let promotionCodeId = null;
-    if (promotionCode) {
+    if (promotionCode && typeof promotionCode === "string" && promotionCode.trim()) {
       const stripe = await stripeService.getStripeClient();
-      const promoCodes = await stripe.promotionCodes.list({ code: promotionCode, active: true, limit: 1 });
+      const promoCodes = await stripe.promotionCodes.list({ code: promotionCode.trim().toUpperCase(), active: true, limit: 1 });
       if (promoCodes.data.length > 0) {
         promotionCodeId = promoCodes.data[0].id;
       }
