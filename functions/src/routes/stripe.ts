@@ -63,8 +63,11 @@ const promoCodeLimiter = rateLimit({
   message: { error: "Too Many Requests", message: "Too many requests. Please try again in 15 minutes." },
 });
 
-// Cache of all coupons, keyed by name lookup, so unauthenticated callers (validate-promo-code,
-// create-checkout-session) can't force a burst of Stripe list calls on every request.
+// Cache of coupons used for name-based lookup in resolveDiscount(), so unauthenticated
+// callers (validate-promo-code, create-checkout-session) can't force a burst of Stripe
+// list calls on every request. The scan is capped at MAX_COUPONS_TO_SCAN — accounts with
+// more coupons than the cap will fail to match by name on coupons beyond it. Raise the
+// cap (or move name matching to promotion codes only) if that becomes a real problem.
 const COUPON_CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_COUPONS_TO_SCAN = 500;
 let couponCache: { coupons: import("stripe").default.Coupon[]; expiresAt: number } | null = null;
@@ -76,12 +79,17 @@ async function fetchAllCoupons(stripe: import("stripe").default): Promise<import
   const coupons: import("stripe").default.Coupon[] = [];
   let startingAfter: string | undefined;
   let scanned = 0;
+  let hasMoreAfterCap = false;
   while (scanned < MAX_COUPONS_TO_SCAN) {
     const page = await stripe.coupons.list({ limit: 100, starting_after: startingAfter });
     coupons.push(...page.data);
     scanned += page.data.length;
     if (!page.has_more || page.data.length === 0) break;
     startingAfter = page.data[page.data.length - 1]!.id;
+    hasMoreAfterCap = scanned >= MAX_COUPONS_TO_SCAN && page.has_more;
+  }
+  if (hasMoreAfterCap) {
+    console.warn(`[resolveDiscount] Coupon scan hit MAX_COUPONS_TO_SCAN (${MAX_COUPONS_TO_SCAN}); some coupons won't be matchable by name.`);
   }
   return coupons;
 }

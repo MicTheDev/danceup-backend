@@ -548,9 +548,10 @@ app.patch("/:bookingId/confirm", async (req, res) => {
             .where("authUid", "==", studentAuthUid)
             .limit(1)
             .get();
-          const studentEmail = studentProfileSnap.empty
-            ? null
-            : (studentProfileSnap.docs[0]!.data() as Record<string, unknown>)["email"] as string | undefined;
+          const rawStudentEmail = studentProfileSnap.empty
+            ? undefined
+            : (studentProfileSnap.docs[0]!.data() as Record<string, unknown>)["email"];
+          const studentEmail = typeof rawStudentEmail === "string" ? rawStudentEmail.trim() : "";
 
           if (studentEmail) {
             const instructorId = bookingData["instructorId"] as string | undefined;

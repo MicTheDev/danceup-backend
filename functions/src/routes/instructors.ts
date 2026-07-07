@@ -200,7 +200,8 @@ app.get("/public/:id/available-slots", async (req, res) => {
     }
     if (!instructor.availability?.availableForPrivates) return sendJsonResponse(req, res, 200, {});
 
-    const availabilityConfig = instructor.availability.availability as DayConfig[] | undefined;
+    const rawAvailabilityConfig = instructor.availability.availability;
+    const availabilityConfig = Array.isArray(rawAvailabilityConfig) ? rawAvailabilityConfig as DayConfig[] : undefined;
     if (!availabilityConfig || availabilityConfig.length === 0) {
       if (isDevOrEmulator) {
         console.log(`[available-slots] Early exit: availabilityConfig=${JSON.stringify(availabilityConfig)}`);
