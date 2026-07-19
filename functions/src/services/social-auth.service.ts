@@ -17,7 +17,7 @@ export interface SocialSignInResult {
   idToken: string;
   refreshToken: string;
   expiresIn: string;
-  user: { uid: string; email: string; studentProfileId: string | null };
+  user: { uid: string; email: string; studentProfileId: string | null; autoCheckInClassIds: string[] };
 }
 
 /**
@@ -98,6 +98,7 @@ export async function completeSocialSignIn(profile: SocialProfile): Promise<Soci
   const customToken = await authService.createCustomToken(uid);
   const tokenResponse = await authService.exchangeCustomTokenForIdToken(customToken, apiKey);
 
+  const studentData = studentDoc?.data() as Record<string, unknown> | undefined;
   return {
     idToken: tokenResponse.idToken,
     refreshToken: tokenResponse.refreshToken,
@@ -106,6 +107,7 @@ export async function completeSocialSignIn(profile: SocialProfile): Promise<Soci
       uid,
       email,
       studentProfileId: studentDoc ? (studentDoc as unknown as { id: string }).id : null,
+      autoCheckInClassIds: (studentData?.["autoCheckInClassIds"] as string[]) || [],
     },
   };
 }

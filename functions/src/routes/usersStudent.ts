@@ -155,7 +155,7 @@ app.post("/register", async (req, res) => {
         console.error("FIREBASE_WEB_API_KEY not configured:", (error as Error).message);
         return sendJsonResponse(req, res, 201, {
           customToken,
-          user: { uid: userRecord.uid, email: userRecord.email, studentProfileId },
+          user: { uid: userRecord.uid, email: userRecord.email, studentProfileId, autoCheckInClassIds: [] },
         });
       }
 
@@ -167,7 +167,7 @@ app.post("/register", async (req, res) => {
         idToken: tokenResponse.idToken,
         refreshToken: tokenResponse.refreshToken,
         expiresIn: tokenResponse.expiresIn,
-        user: { uid: userRecord.uid, email: userRecord.email, studentProfileId },
+        user: { uid: userRecord.uid, email: userRecord.email, studentProfileId, autoCheckInClassIds: [] },
       });
     } catch (error) {
       if (userRecord) {
@@ -265,9 +265,10 @@ app.post("/login", async (req, res) => {
       return sendErrorResponse(req, res, 401, "Authentication Failed", "User not found");
     }
 
-    let studentDoc: { id: string } | null;
+    let studentDoc: { id: string; data: () => Record<string, unknown> } | null;
     try {
-      studentDoc = await authService.getStudentProfileByAuthUid(userRecord.uid) as { id: string } | null;
+      studentDoc = await authService.getStudentProfileByAuthUid(userRecord.uid) as
+        { id: string; data: () => Record<string, unknown> } | null;
     } catch (error) {
       console.error("Student login — Firestore profile lookup failed:", (error as Error).message, error);
       return sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred");
@@ -275,6 +276,7 @@ app.post("/login", async (req, res) => {
     if (!studentDoc) {
       return sendErrorResponse(req, res, 401, "Authentication Failed", "Student profile not found");
     }
+    const studentData = studentDoc.data();
 
     let tokenResponse: { idToken: string; refreshToken: string; expiresIn: string };
     try {
@@ -291,7 +293,12 @@ app.post("/login", async (req, res) => {
       idToken: tokenResponse.idToken,
       refreshToken: tokenResponse.refreshToken,
       expiresIn: tokenResponse.expiresIn,
-      user: { uid: userRecord.uid, email: userRecord.email, studentProfileId: studentDoc.id },
+      user: {
+        uid: userRecord.uid,
+        email: userRecord.email,
+        studentProfileId: studentDoc.id,
+        autoCheckInClassIds: (studentData["autoCheckInClassIds"] as string[]) || [],
+      },
     });
   } catch (error) {
     console.error("Student login error:", error);
