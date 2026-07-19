@@ -2,6 +2,7 @@ import * as admin from "firebase-admin";
 if (!admin.apps.length) { admin.initializeApp(); }
 
 export { ai } from "./routes/ai";
+export { assistant } from "./routes/assistant";
 export { analytics } from "./routes/analytics";
 export { retentionTriggers } from "./routes/retention";
 export { campaigns } from "./routes/campaigns";

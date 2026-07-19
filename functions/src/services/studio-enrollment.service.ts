@@ -3,6 +3,7 @@ import authService from "./auth.service";
 import studentsService from "./students.service";
 import { ensureStudiosStructure } from "../utils/studio-enrollment.utils";
 import { getFirestore } from "../utils/firestore";
+import { normalizeEmail } from "../utils/validation";
 import type { StudiosMap } from "../types/firebase";
 
 export class StudioEnrollmentService {
@@ -27,15 +28,33 @@ export class StudioEnrollmentService {
     if (!studentProfileDoc) throw new Error("Student profile not found. Please complete your profile first.");
 
     const studentProfileData = studentProfileDoc.data() as Record<string, unknown> | undefined;
+    const email = normalizeEmail(studentProfileData?.["email"]);
     const studentData = {
       firstName: (studentProfileData?.["firstName"] as string) || "",
       lastName: (studentProfileData?.["lastName"] as string) || "",
-      email: (studentProfileData?.["email"] as string | null) ?? null,
+      email: email ?? ((studentProfileData?.["email"] as string | null) ?? null),
       phone: (studentProfileData?.["phone"] as string | null) ?? null,
       authUid,
     };
 
-    const studentId = await studentsService.createStudent(studentData, studioOwnerId);
+    // If this studio already has a placeholder roster row for this email (e.g. imported via
+    // CSV before this person signed up), claim it instead of creating a duplicate — this
+    // preserves any attendance/credit/purchase history already recorded against that row.
+    const placeholder = email ? await this.findUnclaimedPlaceholder(studioOwnerId, email) : null;
+
+    let studentId: string;
+    if (placeholder) {
+      await db.collection("students").doc(placeholder.id).update({
+        authUid,
+        firstName: studentData.firstName || placeholder.data["firstName"],
+        lastName: studentData.lastName || placeholder.data["lastName"],
+        phone: studentData.phone ?? placeholder.data["phone"] ?? null,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      studentId = placeholder.id;
+    } else {
+      studentId = await studentsService.createStudent(studentData, studioOwnerId);
+    }
 
     const userProfileRef = db.collection("usersStudentProfiles").doc(studentProfileDoc.id);
     const userProfileDoc = await userProfileRef.get();
@@ -100,6 +119,68 @@ export class StudioEnrollmentService {
       .limit(1)
       .get();
     return !snapshot.empty;
+  }
+
+  private async findUnclaimedPlaceholder(
+    studioOwnerId: string, email: string,
+  ): Promise<{ id: string; data: Record<string, unknown> } | null> {
+    const db = getFirestore();
+    const snapshot = await db.collection("students")
+      .where("studioOwnerId", "==", studioOwnerId)
+      .where("email", "==", email)
+      .limit(5)
+      .get();
+    const unclaimed = snapshot.docs.find((doc) => !doc.data()["authUid"]);
+    if (!unclaimed) return null;
+    return { id: unclaimed.id, data: unclaimed.data() as Record<string, unknown> };
+  }
+
+  /**
+   * Called right after a student account is created (registration or Google sign-in).
+   * Finds every placeholder `students` row across all studios matching this email
+   * (e.g. rows created via CSV import before this person had an account), claims
+   * them by setting authUid, and adds each of those studios to the profile's
+   * `studios` map — so the student already sees every studio that imported them
+   * without needing to separately "join" each one.
+   */
+  async claimPlaceholderStudentsForAuthUid(authUid: string, email: string | null | undefined): Promise<void> {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) return;
+
+    const db = getFirestore();
+    const snapshot = await db.collection("students")
+      .where("email", "==", normalizedEmail)
+      .get();
+
+    const unclaimed = snapshot.docs.filter((doc) => !doc.data()["authUid"]);
+    if (unclaimed.length === 0) return;
+
+    await Promise.allSettled(
+      unclaimed.map((doc) => doc.ref.update({
+        authUid,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      })),
+    );
+
+    const studentProfileDoc = await authService.getStudentProfileByAuthUid(authUid);
+    if (!studentProfileDoc) return;
+
+    const userProfileRef = db.collection("usersStudentProfiles").doc(studentProfileDoc.id);
+    const currentData = (await userProfileRef.get()).data() as Record<string, unknown> | undefined;
+    const studios = ensureStudiosStructure(currentData);
+
+    let changed = false;
+    unclaimed.forEach((doc) => {
+      const studioOwnerId = (doc.data() as Record<string, unknown>)["studioOwnerId"] as string | undefined;
+      if (studioOwnerId && !studios[studioOwnerId]) {
+        studios[studioOwnerId] = {};
+        changed = true;
+      }
+    });
+
+    if (changed) {
+      await userProfileRef.update({ studios, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    }
   }
 }
 

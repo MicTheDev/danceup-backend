@@ -429,6 +429,49 @@ export async function sendWelcomeEmail(to: string, firstName: string): Promise<v
   });
 }
 
+export async function sendStudentImportInviteEmail(
+  to: string, firstName: string, studioName: string,
+): Promise<void> {
+  if (!to) {
+    console.warn("[SendGrid] sendStudentImportInviteEmail: no recipient email, skipping");
+    return;
+  }
+
+  const name = firstName ? firstName.trim() : "there";
+  const studio = studioName ? studioName.trim() : "your studio";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">${studio} added you on DanceUp, ${name}!</h2>
+        <p style="color:#64748b;margin:0 0 20px">Your instructor is now tracking your classes, credits, and payments on DanceUp. Create your free account using this email address (${to}) to see your history at ${studio} and book your next class.</p>
+        <a href="https://danceup.app/register" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          Create Your Account →
+        </a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because ${studio} added you as a student on DanceUp. If this wasn't expected, you can safely ignore this email.</p>
+      </div>
+    </div>`;
+
+  const text = [
+    `${studio} added you on DanceUp, ${name}!`,
+    ``,
+    `Your instructor is now tracking your classes, credits, and payments on DanceUp.`,
+    `Create your free account using this email address (${to}) to see your history at ${studio} and book your next class.`,
+    ``,
+    `Create your account: https://danceup.app/register`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `${studio} added you on DanceUp`,
+    html,
+    text,
+    categories: ["student-import-invite"],
+  });
+}
+
 export async function sendStudioOwnerWelcomeEmail(
   to: string, firstName: string, studioName: string,
 ): Promise<void> {

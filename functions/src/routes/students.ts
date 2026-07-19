@@ -3,10 +3,16 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import studentsService from "../services/students.service";
 import creditTrackingService from "../services/credit-tracking.service";
+import authService from "../services/auth.service";
+import { sendStudentImportInviteEmail } from "../services/sendgrid.service";
 import { logAuditEvent } from "../services/audit.service";
 import { getFirestore } from "../utils/firestore";
 import { verifyToken } from "../utils/auth";
-import { validateCreateStudentPayload, validateUpdateStudentPayload } from "../utils/validation";
+import {
+  validateCreateStudentPayload,
+  validateUpdateStudentPayload,
+  validateBulkImportStudentsPayload,
+} from "../utils/validation";
 import {
   sendJsonResponse,
   sendErrorResponse,
@@ -88,6 +94,54 @@ app.post("/", async (req, res) => {
     sendJsonResponse(req, res, 201, { id: studentId, message: "Student created successfully" });
   } catch (error) {
     console.error("Error creating student:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.post("/bulk-import", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const validation = validateBulkImportStudentsPayload(req.body);
+    if (!validation.valid) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid import data", {
+        errors: (validation as { valid: false; errors: unknown[] }).errors,
+      });
+    }
+
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const rows = (req.body as { rows: Array<Record<string, unknown>> }).rows;
+    const result = await studentsService.bulkImportStudents(rows, studioOwnerId);
+
+    if (result.newPlaceholders.length > 0) {
+      const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
+      const userData = userDoc?.data() as Record<string, unknown> | undefined;
+      const studioName = (userData?.["studioName"] as string) || "your studio";
+      Promise.allSettled(
+        result.newPlaceholders.map((p) => sendStudentImportInviteEmail(p.email, p.firstName, studioName)),
+      ).catch((err) => console.error("Error sending student import invite emails:", err));
+    }
+
+    logAuditEvent(user.uid, studioOwnerId, "students_bulk_imported", "student", "bulk", {
+      created: result.created,
+      updated: result.updated,
+      linked: result.linked,
+      errorCount: result.errors.length,
+    });
+
+    sendJsonResponse(req, res, 200, {
+      created: result.created,
+      updated: result.updated,
+      linked: result.linked,
+      errors: result.errors,
+    });
+  } catch (error) {
+    console.error("Error bulk-importing students:", error);
     handleError(req, res, error);
   }
 });

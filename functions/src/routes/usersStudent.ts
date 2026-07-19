@@ -23,9 +23,11 @@ import {
   getStripeClient,
 } from "../services/stripe.service";
 import { sendWelcomeEmail, sendPasswordResetEmail } from "../services/sendgrid.service";
+import { completeSocialSignIn } from "../services/social-auth.service";
 import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
 import { getFirebaseApiKey } from "../utils/firebase-api-key";
+import { verifyGoogleIdToken, verifyAppleIdToken } from "../utils/social-token-verify";
 import {
   validateStudentRegistrationPayload,
   validateLoginPayload,
@@ -118,6 +120,12 @@ app.post("/register", async (req, res) => {
       const studentProfileId = await authService.createStudentProfileDocument(userRecord.uid, userData) as string;
 
       try {
+        await studioEnrollmentService.claimPlaceholderStudentsForAuthUid(userRecord.uid, userRecord.email);
+      } catch (claimError) {
+        console.error("Error claiming placeholder student rows during registration:", claimError);
+      }
+
+      try {
         const stripeCustomer = await createCustomer(email, {
           uid: userRecord.uid,
           studentProfileId,
@@ -181,76 +189,46 @@ app.post("/google-signin", async (req, res) => {
       return sendErrorResponse(req, res, 400, "Validation Error", "idToken is required");
     }
 
-    let decodedToken: admin.auth.DecodedIdToken;
+    let verified;
     try {
-      decodedToken = await admin.auth().verifyIdToken(googleIdToken);
-    } catch {
+      verified = await verifyGoogleIdToken(googleIdToken);
+    } catch (err) {
+      console.error("Google ID token verification failed:", err);
       return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid or expired Google ID token");
     }
 
-    const { uid, email, name, picture } = decodedToken as admin.auth.DecodedIdToken & { name?: string; picture?: string };
-
-    let studentDoc = await authService.getStudentProfileByAuthUid(uid);
-
-    if (!studentDoc) {
-      const nameParts = (name || "").trim().split(" ");
-      const firstName = nameParts[0] || "";
-      const lastName = nameParts.slice(1).join(" ") || "";
-
-      const profileData = {
-        email: email || "",
-        firstName, lastName,
-        city: "", state: "", zip: "",
-        phone: null,
-        danceGenres: [],
-        subscribeToNewsletter: false,
-        photoURL: picture || null,
-        provider: "google",
-      };
-
-      const studentProfileId = await authService.createStudentProfileDocument(uid, profileData) as string;
-      studentDoc = await authService.getStudentProfileByAuthUid(uid);
-
-      try {
-        const stripeCustomer = await createCustomer(email || "", {
-          uid,
-          studentProfileId,
-          name: `${firstName} ${lastName}`.trim(),
-        }) as { id: string; email: string };
-        const db = getFirestore();
-        await db.collection("usersStudentProfiles").doc(studentProfileId).update({
-          stripeCustomerId: stripeCustomer.id,
-          stripeEmail: stripeCustomer.email,
-        });
-      } catch (stripeError) {
-        console.error("Error creating Stripe customer for Google sign-in:", stripeError);
-      }
-    }
-
-    let apiKey: string;
-    try {
-      apiKey = await getFirebaseApiKey() as string;
-    } catch {
-      return sendErrorResponse(req, res, 500, "Configuration Error", "Server configuration error");
-    }
-
-    const customToken = await authService.createCustomToken(uid) as string;
-    const tokenResponse = await authService.exchangeCustomTokenForIdToken(customToken, apiKey) as {
-      idToken: string; refreshToken: string; expiresIn: string;
-    };
-
-    sendJsonResponse(req, res, 200, {
-      idToken: tokenResponse.idToken,
-      refreshToken: tokenResponse.refreshToken,
-      expiresIn: tokenResponse.expiresIn,
-      user: {
-        uid,
-        email: email || "",
-        studentProfileId: studentDoc ? (studentDoc as { id: string }).id : null,
-      },
-    });
+    const result = await completeSocialSignIn({ ...verified, provider: "google" });
+    sendJsonResponse(req, res, 200, result);
   } catch (error) {
     console.error("Google sign-in error:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.post("/apple-signin", async (req, res) => {
+  try {
+    const { idToken: appleIdToken, firstName, lastName } = req.body as {
+      idToken?: string; firstName?: string; lastName?: string;
+    };
+    if (!appleIdToken) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "idToken is required");
+    }
+
+    let verified;
+    try {
+      // firstName/lastName only ever arrive from the client on the user's
+      // very first Apple authorization — Apple never sends a name in the
+      // token itself, and never resends it on later sign-ins.
+      verified = await verifyAppleIdToken(appleIdToken, { firstName, lastName });
+    } catch (err) {
+      console.error("Apple ID token verification failed:", err);
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Invalid or expired Apple ID token");
+    }
+
+    const result = await completeSocialSignIn({ ...verified, provider: "apple" });
+    sendJsonResponse(req, res, 200, result);
+  } catch (error) {
+    console.error("Apple sign-in error:", error);
     handleError(req, res, error);
   }
 });

@@ -10,6 +10,12 @@ export function isValidEmail(email: unknown): boolean {
   return emailRegex.test(email.trim().toLowerCase());
 }
 
+export function normalizeEmail(email: unknown): string | null {
+  if (!email || typeof email !== "string") return null;
+  const trimmed = email.trim().toLowerCase();
+  return isValidEmail(trimmed) ? trimmed : null;
+}
+
 export function validatePassword(password: unknown): ValidationResult {
   if (!password || typeof password !== "string") {
     return { valid: false, message: "Password is required" };
@@ -1384,6 +1390,30 @@ export function validateUpdateStudentPayload(payload: Record<string, unknown>): 
       errors.push({ field: "credits", message: "Credits must be a non-negative number" });
     }
   }
+
+  return { valid: errors.length === 0, errors };
+}
+
+// Only validates the overall payload shape. Per-row content issues (missing
+// name, malformed email) are validated inside bulkImportStudents() and reported
+// per-row in the response, rather than rejecting the whole import over one bad row.
+export function validateBulkImportStudentsPayload(payload: Record<string, unknown>): ValidationErrors {
+  const errors: ValidationErrorList = [];
+  const rows = payload["rows"];
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    errors.push({ field: "rows", message: "rows must be a non-empty array" });
+    return { valid: false, errors };
+  }
+  if (rows.length > 2000) {
+    errors.push({ field: "rows", message: "A single import is limited to 2000 rows" });
+    return { valid: false, errors };
+  }
+  rows.forEach((row, index) => {
+    if (!row || typeof row !== "object") {
+      errors.push({ field: `rows[${index}]`, message: "Row must be an object" });
+    }
+  });
 
   return { valid: errors.length === 0, errors };
 }
