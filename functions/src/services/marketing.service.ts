@@ -3,7 +3,7 @@ import * as admin from "firebase-admin";
 import { getFirestore } from "../utils/firestore";
 import authService from "./auth.service";
 import studentsService from "./students.service";
-import { getApiKey } from "./sendgrid.service";
+import { getApiKey, sendEmail } from "./sendgrid.service";
 
 const TOKEN_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 export const CAMPAIGNS_COLLECTION = "marketingCampaigns";
@@ -136,6 +136,109 @@ export async function createCampaign(
   if (bodyHtml) doc["bodyHtml"] = bodyHtml;
   await ref.set(doc);
   return { campaignId, category };
+}
+
+export interface SendCampaignParams {
+  subject: string;
+  bodyHtml?: string;
+  bodyText?: string;
+  templateId?: string;
+  bodyContent?: string;
+  recipientIds?: string[];
+  sendToAll?: boolean;
+}
+
+export interface SendCampaignOptions {
+  fromEmail: string;
+  fromName: string;
+  unsubscribeBaseUrl: string;
+}
+
+/**
+ * Sends a campaign to the studio's subscribed recipients and logs it to marketingCampaigns.
+ * Extracted from the `/marketing/send` route so other callers (the assistant approval flow)
+ * can trigger a real send without duplicating this orchestration.
+ */
+export async function sendCampaignToRecipients(
+  studioOwnerId: string,
+  params: SendCampaignParams,
+  opts: SendCampaignOptions,
+): Promise<{ campaignId: string; recipientCount: number }> {
+  const { subject, bodyHtml, bodyText, templateId, bodyContent, recipientIds, sendToAll } = params;
+
+  if (!subject || typeof subject !== "string" || !subject.trim()) {
+    throw new Error("Validation Error: subject is required");
+  }
+  const hasTemplate = typeof templateId === "string" && !!templateId.trim();
+  const hasHtml = bodyHtml != null && typeof bodyHtml === "string";
+  const hasText = bodyText != null && typeof bodyText === "string";
+  if (!hasTemplate && !hasHtml && !hasText) {
+    throw new Error("Validation Error: templateId or bodyHtml/bodyText is required");
+  }
+
+  const allRecipients = await getSubscribedRecipients(studioOwnerId);
+  let toSend = allRecipients;
+  if (!sendToAll && Array.isArray(recipientIds) && recipientIds.length > 0) {
+    const idSet = new Set(recipientIds);
+    toSend = allRecipients.filter((r) => idSet.has(r.id));
+  }
+  if (toSend.length === 0) {
+    throw new Error("Validation Error: No recipients selected or no subscribed students");
+  }
+
+  const campaignResult = await createCampaign(
+    studioOwnerId,
+    subject.trim(),
+    toSend.length,
+    hasTemplate ? undefined : (hasText ? bodyText : undefined),
+    hasTemplate ? undefined : (hasHtml ? bodyHtml : undefined),
+  );
+  const { campaignId, category: categoryId } = campaignResult;
+
+  const from = { email: opts.fromEmail, name: opts.fromName };
+
+  for (const recipient of toSend) {
+    const token = await createUnsubscribeToken(recipient.authUid);
+    const unsubscribeUrl = `${opts.unsubscribeBaseUrl}/unsubscribe?token=${encodeURIComponent(token)}`;
+
+    let msg: Record<string, unknown>;
+    if (hasTemplate) {
+      const firstName = recipient.firstName || "";
+      msg = {
+        to: recipient.email,
+        from,
+        templateId: (templateId as string).trim(),
+        dynamicTemplateData: {
+          firstName,
+          subject: subject.trim(),
+          bodyContent: bodyContent || "",
+          unsubscribeUrl,
+        },
+        categories: [categoryId],
+      };
+    } else {
+      const footerHtml = `<p style="margin-top:24px;font-size:12px;color:#666;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}">unsubscribe here</a>.</p>`;
+      const footerText = `\n\nIf you no longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
+      const html = hasHtml ? (bodyHtml as string) + footerHtml : null;
+      const text = hasText ? (bodyText as string) + footerText : null;
+      msg = {
+        to: recipient.email,
+        from,
+        subject: subject.trim(),
+        categories: [categoryId],
+      };
+      if (html) msg["html"] = html;
+      if (text) msg["text"] = text;
+    }
+
+    try {
+      await sendEmail(msg as unknown as Parameters<typeof sendEmail>[0]);
+    } catch (sendErr) {
+      console.error("SendGrid error for", recipient.email, sendErr);
+    }
+  }
+
+  return { campaignId, recipientCount: toSend.length };
 }
 
 export async function listCampaigns(studioOwnerId: string): Promise<Array<Record<string, unknown>>> {

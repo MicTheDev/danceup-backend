@@ -136,6 +136,17 @@ export function extractPathParams(url: string, pattern: string): Record<string, 
   return params;
 }
 
+export function getFunctionBaseUrl(functionName: string, req: Request): string {
+  const project = process.env["GCLOUD_PROJECT"] || process.env["GCP_PROJECT"];
+  const region = process.env["FUNCTION_REGION"] || "us-central1";
+  if (project) {
+    return `https://${region}-${project}.cloudfunctions.net/${functionName}`;
+  }
+  const host = req.get("host");
+  const protocol = req.protocol || "https";
+  return host ? `${protocol}://${host}/${functionName}` : "";
+}
+
 export function applySecurityMiddleware(app: Application): void {
   app.use(
     helmet({

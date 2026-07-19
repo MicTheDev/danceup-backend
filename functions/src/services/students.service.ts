@@ -3,6 +3,8 @@ import authService from "./auth.service";
 import creditTrackingService from "./credit-tracking.service";
 import attendanceService from "./attendance.service";
 import { getFirestore } from "../utils/firestore";
+import { normalizeEmail, validatePhone } from "../utils/validation";
+import { ensureStudiosStructure } from "../utils/studio-enrollment.utils";
 
 interface GetStudentsOptions {
   limit?: number;
@@ -13,6 +15,32 @@ interface GetStudentsResult {
   students: Array<Record<string, unknown> & { id: string; credits: number }>;
   nextCursor: string | null;
   hasMore: boolean;
+}
+
+export interface BulkImportRowError {
+  row: number; // 1-based index into the submitted rows array
+  message: string;
+}
+
+export interface BulkImportResult {
+  created: number;
+  updated: number;
+  linked: number;
+  errors: BulkImportRowError[];
+  newPlaceholders: Array<{ email: string; firstName: string }>;
+}
+
+interface ValidBulkImportRow {
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  phone: string | null;
+}
+
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
 
 const DAY_MAP: Record<string, number> = {
@@ -120,6 +148,149 @@ export class StudentsService {
       throw new Error("Access denied: Student does not belong to this studio owner");
     }
     await ref.delete();
+  }
+
+  async bulkImportStudents(
+    rows: Array<Record<string, unknown>>, studioOwnerId: string,
+  ): Promise<BulkImportResult> {
+    const db = getFirestore();
+    const errors: BulkImportRowError[] = [];
+    const seenEmails = new Set<string>();
+    const validRows: ValidBulkImportRow[] = [];
+
+    rows.forEach((row, index) => {
+      const rowNum = index + 1;
+      const firstName = typeof row["firstName"] === "string" ? (row["firstName"] as string).trim() : "";
+      const lastName = typeof row["lastName"] === "string" ? (row["lastName"] as string).trim() : "";
+      if (!firstName) { errors.push({ row: rowNum, message: "Missing first name" }); return; }
+      if (!lastName) { errors.push({ row: rowNum, message: "Missing last name" }); return; }
+
+      let email: string | null = null;
+      const rawEmail = row["email"];
+      if (rawEmail !== undefined && rawEmail !== null && String(rawEmail).trim() !== "") {
+        email = normalizeEmail(rawEmail);
+        if (!email) { errors.push({ row: rowNum, message: "Invalid email format" }); return; }
+        if (seenEmails.has(email)) {
+          errors.push({ row: rowNum, message: `Duplicate email in file: ${email}` });
+          return;
+        }
+        seenEmails.add(email);
+      }
+
+      let phone: string | null = null;
+      const rawPhone = row["phone"];
+      if (rawPhone !== undefined && rawPhone !== null && String(rawPhone).trim() !== "") {
+        const phoneStr = String(rawPhone).trim();
+        const pv = validatePhone(phoneStr);
+        if (!pv.valid) { errors.push({ row: rowNum, message: pv.message || "Invalid phone number" }); return; }
+        phone = phoneStr;
+      }
+
+      validRows.push({ firstName, lastName, email, phone });
+    });
+
+    if (validRows.length === 0) {
+      return { created: 0, updated: 0, linked: 0, errors, newPlaceholders: [] };
+    }
+
+    const emailsToLookup = validRows.map((r) => r.email).filter((e): e is string => !!e);
+    const existingStudentByEmail = new Map<string, { id: string; hasAuthUid: boolean }>();
+    const profileByEmail = new Map<string, { profileId: string; authUid: string }>();
+
+    for (const emailChunk of chunkArray(emailsToLookup, 30)) {
+      if (emailChunk.length === 0) continue;
+      const snap = await db.collection("students")
+        .where("studioOwnerId", "==", studioOwnerId)
+        .where("email", "in", emailChunk)
+        .get();
+      snap.forEach((doc) => {
+        const data = doc.data() as Record<string, unknown>;
+        const email = data["email"] as string | undefined;
+        if (email) existingStudentByEmail.set(email, { id: doc.id, hasAuthUid: !!data["authUid"] });
+      });
+    }
+
+    for (const emailChunk of chunkArray(emailsToLookup, 30)) {
+      if (emailChunk.length === 0) continue;
+      const snap = await db.collection("usersStudentProfiles")
+        .where("email", "in", emailChunk)
+        .get();
+      snap.forEach((doc) => {
+        const data = doc.data() as Record<string, unknown>;
+        const email = data["email"] as string | undefined;
+        const authUid = data["authUid"] as string | undefined;
+        if (email && authUid) profileByEmail.set(email, { profileId: doc.id, authUid });
+      });
+    }
+
+    let created = 0;
+    let updated = 0;
+    let linked = 0;
+    const newPlaceholders: Array<{ email: string; firstName: string }> = [];
+    const studioUpdatesByProfileId = new Map<string, string>();
+
+    for (const rowChunk of chunkArray(validRows, 490)) {
+      const batch = db.batch();
+      for (const row of rowChunk) {
+        const existing = row.email ? existingStudentByEmail.get(row.email) : undefined;
+        const profileMatch = row.email ? profileByEmail.get(row.email) : undefined;
+        const willLink = !!profileMatch && !existing?.hasAuthUid;
+
+        if (existing) {
+          const ref = db.collection("students").doc(existing.id);
+          const updateData: Record<string, unknown> = {
+            firstName: row.firstName,
+            lastName: row.lastName,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          };
+          if (row.email) updateData["email"] = row.email;
+          if (row.phone) updateData["phone"] = row.phone;
+          if (willLink && profileMatch) updateData["authUid"] = profileMatch.authUid;
+          batch.update(ref, updateData as FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData>);
+          if (willLink) linked++; else updated++;
+        } else {
+          const ref = db.collection("students").doc();
+          batch.set(ref, {
+            firstName: row.firstName,
+            lastName: row.lastName,
+            email: row.email,
+            phone: row.phone,
+            authUid: profileMatch?.authUid ?? null,
+            studioOwnerId,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          if (profileMatch) {
+            linked++;
+          } else {
+            created++;
+            if (row.email) newPlaceholders.push({ email: row.email, firstName: row.firstName });
+          }
+        }
+
+        if (willLink && profileMatch) {
+          studioUpdatesByProfileId.set(profileMatch.profileId, profileMatch.authUid);
+        }
+      }
+      await batch.commit();
+    }
+
+    await Promise.all(Array.from(studioUpdatesByProfileId.keys()).map(async (profileId) => {
+      try {
+        const ref = db.collection("usersStudentProfiles").doc(profileId);
+        const doc = await ref.get();
+        const currentData = doc.data() as Record<string, unknown> | undefined;
+        const studios = ensureStudiosStructure(currentData);
+        if (!studios[studioOwnerId]) {
+          studios[studioOwnerId] = {};
+          await ref.update({ studios, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        }
+      } catch (err) {
+        console.error(`Error updating studios map for profile ${profileId}:`, err);
+      }
+    }));
+
+    return { created, updated, linked, errors, newPlaceholders };
   }
 
   async getEnrolledStudios(authUid: string): Promise<string[]> {

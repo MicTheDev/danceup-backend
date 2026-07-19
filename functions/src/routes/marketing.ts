@@ -13,6 +13,7 @@ import {
   corsOptions,
   isAllowedOrigin,
   applySecurityMiddleware,
+  getFunctionBaseUrl,
 } from "../utils/http";
 
 const app = express();
@@ -36,17 +37,6 @@ app.options("*", cors(corsOptions));
 app.use(express.json());
 applySecurityMiddleware(app);
 app.use(express.urlencoded({ extended: true }));
-
-function getUnsubscribeBaseUrl(req: Request): string {
-  const project = process.env["GCLOUD_PROJECT"] || process.env["GCP_PROJECT"];
-  const region = process.env["FUNCTION_REGION"] || "us-central1";
-  if (project) {
-    return `https://${region}-${project}.cloudfunctions.net/marketing`;
-  }
-  const host = req.get("host");
-  const protocol = req.protocol || "https";
-  return host ? `${protocol}://${host}` : "";
-}
 
 const DEFAULT_FROM_EMAIL = process.env["SENDGRID_FROM_EMAIL"] || "info@danceup.app";
 const DEFAULT_FROM_NAME = process.env["SENDGRID_FROM_NAME"] || "DanceUp";
@@ -156,91 +146,20 @@ app.post("/send", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
-    const { subject, bodyHtml, bodyText, templateId, bodyContent, recipientIds, sendToAll } = (req.body || {}) as {
-      subject?: string;
-      bodyHtml?: string;
-      bodyText?: string;
-      templateId?: string;
-      bodyContent?: string;
-      recipientIds?: string[];
-      sendToAll?: boolean;
-    };
+    const params = (req.body || {}) as marketingService.SendCampaignParams;
 
-    if (!subject || typeof subject !== "string" || !subject.trim()) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "subject is required");
-    }
-    const hasTemplate = typeof templateId === "string" && !!templateId.trim();
-    const hasHtml = bodyHtml != null && typeof bodyHtml === "string";
-    const hasText = bodyText != null && typeof bodyText === "string";
-    if (!hasTemplate && !hasHtml && !hasText) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "templateId or bodyHtml/bodyText is required");
-    }
+    const result = await marketingService.sendCampaignToRecipients(studioOwnerId, params, {
+      fromEmail: DEFAULT_FROM_EMAIL,
+      fromName: DEFAULT_FROM_NAME,
+      unsubscribeBaseUrl: getFunctionBaseUrl("marketing", req),
+    });
 
-    const allRecipients = await marketingService.getSubscribedRecipients(studioOwnerId) as Array<Record<string, unknown>>;
-    let toSend = allRecipients;
-    if (!sendToAll && Array.isArray(recipientIds) && recipientIds.length > 0) {
-      const idSet = new Set(recipientIds);
-      toSend = allRecipients.filter((r) => idSet.has(r["id"] as string));
-    }
-    if (toSend.length === 0) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "No recipients selected or no subscribed students");
-    }
-
-    const baseUrl = getUnsubscribeBaseUrl(req);
-    const campaignResult = await marketingService.createCampaign(
-      studioOwnerId,
-      subject.trim(),
-      toSend.length,
-      hasTemplate ? undefined : (hasText ? bodyText : undefined),
-      hasTemplate ? undefined : (hasHtml ? bodyHtml : undefined),
-    ) as { campaignId: string; category: string };
-    const { campaignId, category: categoryId } = campaignResult;
-
-    const from = { email: DEFAULT_FROM_EMAIL, name: DEFAULT_FROM_NAME };
-
-    for (const recipient of toSend) {
-      const token = await marketingService.createUnsubscribeToken(recipient["authUid"] as string) as string;
-      const unsubscribeUrl = `${baseUrl}/unsubscribe?token=${encodeURIComponent(token)}`;
-
-      let msg: Record<string, unknown>;
-      if (hasTemplate) {
-        const firstName = (recipient["firstName"] as string) || (recipient["name"] as string | undefined)?.split(" ")?.[0] || "";
-        msg = {
-          to: recipient["email"],
-          from,
-          templateId: (templateId as string).trim(),
-          dynamicTemplateData: {
-            firstName,
-            subject: subject.trim(),
-            bodyContent: bodyContent || "",
-            unsubscribeUrl,
-          },
-          categories: [categoryId],
-        };
-      } else {
-        const footerHtml = `<p style="margin-top:24px;font-size:12px;color:#666;">If you no longer wish to receive these emails, <a href="${unsubscribeUrl}">unsubscribe here</a>.</p>`;
-        const footerText = `\n\nIf you no longer wish to receive these emails, unsubscribe here: ${unsubscribeUrl}`;
-        const html = hasHtml ? (bodyHtml as string) + footerHtml : null;
-        const text = hasText ? (bodyText as string) + footerText : null;
-        msg = {
-          to: recipient["email"],
-          from,
-          subject: subject.trim(),
-          categories: [categoryId],
-        };
-        if (html) msg["html"] = html;
-        if (text) msg["text"] = text;
-      }
-
-      try {
-        await sendgridService.sendEmail(msg as unknown as Parameters<typeof sendgridService.sendEmail>[0]);
-      } catch (sendErr) {
-        console.error("SendGrid error for", recipient["email"], sendErr);
-      }
-    }
-
-    sendJsonResponse(req, res, 201, { campaignId, recipientCount: toSend.length });
+    sendJsonResponse(req, res, 201, result);
   } catch (error) {
+    const msg = (error as Error).message || "";
+    if (msg.startsWith("Validation Error")) {
+      return sendErrorResponse(req, res, 400, "Validation Error", msg.replace(/^Validation Error:\s*/, ""));
+    }
     console.error("Error sending campaign:", error);
     handleError(req, res, error);
   }

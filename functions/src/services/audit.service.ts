@@ -3,13 +3,19 @@ import { getFirestore } from "../utils/firestore";
 
 export type AuditAction =
   | "student_deleted"
+  | "students_bulk_imported"
   | "instructor_created"
   | "instructor_updated"
   | "instructor_deleted"
   | "subscription_cancelled"
   | "subscription_plan_changed"
   | "payment_method_deleted"
-  | "payment_method_set_default";
+  | "payment_method_set_default"
+  | "assistant_email_campaign_sent"
+  | "assistant_automation_rule_created"
+  | "assistant_class_created"
+  | "assistant_class_updated"
+  | "assistant_package_updated";
 
 async function writeAuditLog(
   actorUid: string,
