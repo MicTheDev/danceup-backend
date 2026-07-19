@@ -1410,7 +1410,7 @@ export function validateBulkImportStudentsPayload(payload: Record<string, unknow
     return { valid: false, errors };
   }
   rows.forEach((row, index) => {
-    if (!row || typeof row !== "object") {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
       errors.push({ field: `rows[${index}]`, message: "Row must be an object" });
     }
   });

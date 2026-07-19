@@ -45,7 +45,11 @@ async function findOrCreateFirebaseUser(email: string): Promise<admin.auth.UserR
  * apart from being matched by authUid.
  */
 export async function completeSocialSignIn(profile: SocialProfile): Promise<SocialSignInResult> {
-  const { email, firstName, lastName, picture, provider } = profile;
+  const { firstName, lastName, picture, provider } = profile;
+  // Normalize the same way users-app normalizes email/password sign-ups (trim + lowercase)
+  // so a Google/Apple identity matches the same Firebase user and student profile
+  // regardless of casing/whitespace differences in what the provider returns.
+  const email = profile.email.trim().toLowerCase();
 
   const firebaseUser = await findOrCreateFirebaseUser(email);
   const uid = firebaseUser.uid;

@@ -437,14 +437,17 @@ export async function sendStudentImportInviteEmail(
     return;
   }
 
-  const name = firstName ? firstName.trim() : "there";
-  const studio = studioName ? studioName.trim() : "your studio";
+  const rawName = firstName ? firstName.trim() : "there";
+  const rawStudio = studioName ? studioName.trim() : "your studio";
+  const name = escapeHtml(rawName);
+  const studio = escapeHtml(rawStudio);
+  const toHtml = escapeHtml(to);
 
   const html = `
     <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
       <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
         <h2 style="color:#1e293b;margin:0 0 8px">${studio} added you on DanceUp, ${name}!</h2>
-        <p style="color:#64748b;margin:0 0 20px">Your instructor is now tracking your classes, credits, and payments on DanceUp. Create your free account using this email address (${to}) to see your history at ${studio} and book your next class.</p>
+        <p style="color:#64748b;margin:0 0 20px">Your instructor is now tracking your classes, credits, and payments on DanceUp. Create your free account using this email address (${toHtml}) to see your history at ${studio} and book your next class.</p>
         <a href="https://danceup.app/register" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
           Create Your Account →
         </a>
@@ -454,10 +457,10 @@ export async function sendStudentImportInviteEmail(
     </div>`;
 
   const text = [
-    `${studio} added you on DanceUp, ${name}!`,
+    `${rawStudio} added you on DanceUp, ${rawName}!`,
     ``,
     `Your instructor is now tracking your classes, credits, and payments on DanceUp.`,
-    `Create your free account using this email address (${to}) to see your history at ${studio} and book your next class.`,
+    `Create your free account using this email address (${to}) to see your history at ${rawStudio} and book your next class.`,
     ``,
     `Create your account: https://danceup.app/register`,
   ].join("\n");
@@ -465,7 +468,7 @@ export async function sendStudentImportInviteEmail(
   await sendEmail({
     to,
     from: { email: "info@danceup.app", name: "DanceUp" },
-    subject: `${studio} added you on DanceUp`,
+    subject: `${sanitizeForSubject(rawStudio)} added you on DanceUp`,
     html,
     text,
     categories: ["student-import-invite"],

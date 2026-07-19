@@ -625,11 +625,22 @@ export async function approveProposal(
 
   switch (data.actionType) {
     case "email_campaign": {
-      const sendResult = await marketingService.sendCampaignToRecipients(
-        studioOwnerId,
-        mergedPayload as unknown as marketingService.SendCampaignParams,
-        approveOptions,
-      );
+      let sendResult: Awaited<ReturnType<typeof marketingService.sendCampaignToRecipients>>;
+      try {
+        sendResult = await marketingService.sendCampaignToRecipients(
+          studioOwnerId,
+          mergedPayload as unknown as marketingService.SendCampaignParams,
+          approveOptions,
+        );
+      } catch (sendError) {
+        const msg = (sendError as Error).message || "";
+        if (msg.startsWith("Validation Error")) {
+          const err = new Error(msg.replace(/^Validation Error:\s*/, "")) as Error & { status?: number };
+          err.status = 400;
+          throw err;
+        }
+        throw sendError;
+      }
       resultResourceId = sendResult.campaignId;
       message = `Email sent to ${sendResult.recipientCount} recipient(s).`;
       logAuditEvent(actorUid, studioOwnerId, "assistant_email_campaign_sent", "marketingCampaign", resultResourceId, { subject: mergedPayload["subject"] });

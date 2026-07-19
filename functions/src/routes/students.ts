@@ -122,9 +122,13 @@ app.post("/bulk-import", async (req, res) => {
       const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
       const userData = userDoc?.data() as Record<string, unknown> | undefined;
       const studioName = (userData?.["studioName"] as string) || "your studio";
-      Promise.allSettled(
+      // Cloud Functions can freeze/terminate the process shortly after the response is sent,
+      // so this must be awaited here (not fired-and-forgotten) to give the sends a chance to
+      // complete. Promise.allSettled never rejects, so a per-email failure still won't fail
+      // the overall import response.
+      await Promise.allSettled(
         result.newPlaceholders.map((p) => sendStudentImportInviteEmail(p.email, p.firstName, studioName)),
-      ).catch((err) => console.error("Error sending student import invite emails:", err));
+      );
     }
 
     logAuditEvent(user.uid, studioOwnerId, "students_bulk_imported", "student", "bulk", {

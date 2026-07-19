@@ -180,9 +180,10 @@ export class StudentsService {
       let phone: string | null = null;
       const rawPhone = row["phone"];
       if (rawPhone !== undefined && rawPhone !== null && String(rawPhone).trim() !== "") {
-        const pv = validatePhone(rawPhone);
+        const phoneStr = String(rawPhone).trim();
+        const pv = validatePhone(phoneStr);
         if (!pv.valid) { errors.push({ row: rowNum, message: pv.message || "Invalid phone number" }); return; }
-        phone = String(rawPhone).trim();
+        phone = phoneStr;
       }
 
       validRows.push({ firstName, lastName, email, phone });
