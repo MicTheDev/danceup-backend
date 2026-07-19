@@ -197,8 +197,8 @@ export class StudentsService {
     const existingStudentByEmail = new Map<string, { id: string; hasAuthUid: boolean }>();
     const profileByEmail = new Map<string, { profileId: string; authUid: string }>();
 
-    await Promise.all(chunkArray(emailsToLookup, 30).map(async (emailChunk) => {
-      if (emailChunk.length === 0) return;
+    for (const emailChunk of chunkArray(emailsToLookup, 30)) {
+      if (emailChunk.length === 0) continue;
       const snap = await db.collection("students")
         .where("studioOwnerId", "==", studioOwnerId)
         .where("email", "in", emailChunk)
@@ -208,10 +208,10 @@ export class StudentsService {
         const email = data["email"] as string | undefined;
         if (email) existingStudentByEmail.set(email, { id: doc.id, hasAuthUid: !!data["authUid"] });
       });
-    }));
+    }
 
-    await Promise.all(chunkArray(emailsToLookup, 30).map(async (emailChunk) => {
-      if (emailChunk.length === 0) return;
+    for (const emailChunk of chunkArray(emailsToLookup, 30)) {
+      if (emailChunk.length === 0) continue;
       const snap = await db.collection("usersStudentProfiles")
         .where("email", "in", emailChunk)
         .get();
@@ -221,7 +221,7 @@ export class StudentsService {
         const authUid = data["authUid"] as string | undefined;
         if (email && authUid) profileByEmail.set(email, { profileId: doc.id, authUid });
       });
-    }));
+    }
 
     let created = 0;
     let updated = 0;

@@ -144,7 +144,7 @@ export function getFunctionBaseUrl(functionName: string, req: Request): string {
   }
   const host = req.get("host");
   const protocol = req.protocol || "https";
-  return host ? `${protocol}://${host}` : "";
+  return host ? `${protocol}://${host}/${functionName}` : "";
 }
 
 export function applySecurityMiddleware(app: Application): void {

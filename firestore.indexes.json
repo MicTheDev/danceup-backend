@@ -15,6 +15,20 @@
       ]
     },
     {
+      "collectionGroup": "assistantMessages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "studioOwnerId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "assistantProposals",
       "queryScope": "COLLECTION",
       "fields": [

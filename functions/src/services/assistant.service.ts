@@ -237,13 +237,24 @@ async function persistMessage(
   await db.collection(MESSAGES_COLLECTION).add(doc);
 }
 
-async function loadMessages(studioOwnerId: string): Promise<AssistantMessage[]> {
+interface LoadMessagesOptions {
+  order?: "asc" | "desc";
+  limit?: number;
+}
+
+async function loadMessages(
+  studioOwnerId: string, options: LoadMessagesOptions = {},
+): Promise<AssistantMessage[]> {
+  const { order = "asc", limit } = options;
   const db = getFirestore();
-  const snap = await db.collection(MESSAGES_COLLECTION)
+  let query = db.collection(MESSAGES_COLLECTION)
     .where("studioOwnerId", "==", studioOwnerId)
-    .orderBy("createdAt", "asc")
-    .get();
-  return snap.docs.map((doc) => {
+    .orderBy("createdAt", order) as FirebaseFirestore.Query;
+  if (limit) {
+    query = query.limit(limit);
+  }
+  const snap = await query.get();
+  const messages = snap.docs.map((doc) => {
     const d = doc.data() as Record<string, unknown>;
     return {
       id: doc.id,
@@ -254,6 +265,9 @@ async function loadMessages(studioOwnerId: string): Promise<AssistantMessage[]> 
       createdAt: tsToIso(d["createdAt"]),
     };
   });
+  // A "desc" fetch is used to cheaply grab the most recent N messages —
+  // reverse back to chronological order so callers always get oldest-first.
+  return order === "desc" ? messages.reverse() : messages;
 }
 
 function hydrateProposal(doc: FirebaseFirestore.QueryDocumentSnapshot | FirebaseFirestore.DocumentSnapshot): AssistantProposal {
@@ -483,7 +497,7 @@ export async function handleAssistantMessage(studioOwnerId: string, userText: st
   await persistMessage(studioOwnerId, "user", userText);
 
   const [allMessages, studioName] = await Promise.all([
-    loadMessages(studioOwnerId),
+    loadMessages(studioOwnerId, { order: "desc", limit: MAX_HISTORY_MESSAGES + 1 }),
     getStudioName(studioOwnerId),
   ]);
 
