@@ -124,7 +124,7 @@ Return ONLY a valid JSON object with exactly these two keys (no markdown fences,
 {"subject": "subject line here", "htmlBody": "complete html string here"}`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.8 },
   });
 
@@ -254,7 +254,7 @@ Return ONLY a valid JSON object with exactly one key (no markdown fences, no ext
 {"description": "the description text here"}`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.7 },
   });
 
@@ -320,7 +320,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 }`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.4 },
   });
 
@@ -360,7 +360,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 }`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.4 },
   });
 
@@ -426,7 +426,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 }`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.5 },
   });
 
@@ -478,7 +478,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 {"suggestedResponse": "the response text here"}`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.6 },
   });
 
@@ -550,7 +550,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 }`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.4 },
   });
 
@@ -609,7 +609,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 {"subject": "subject line", "body": "email body text (plain text, no HTML, 3–5 short paragraphs)"}`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.7 },
   });
 
@@ -668,7 +668,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 }`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.4 },
   });
 
@@ -721,7 +721,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 {"report": "full report text as plain paragraphs separated by \\n\\n"}`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.7 },
   });
 
@@ -794,7 +794,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 }`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.4 },
   });
 
@@ -858,7 +858,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 {"instagram": "...", "facebook": "...", "emailSubject": "...", "promoBlurb": "..."}`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.8 },
   });
 
@@ -934,7 +934,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 }`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.3 },
   });
 
@@ -996,7 +996,7 @@ Return ONLY valid JSON (no markdown):
 {"summary": "...", "insights": ["💎 ...", "💡 ..."]}`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.4 },
   });
 
@@ -1049,7 +1049,7 @@ Return ONLY valid JSON (no markdown):
 {"triggers": [{"classId": "id", "suggestion": "...", "urgency": "high|medium|low"}]}`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.5 },
   });
 
@@ -1105,7 +1105,7 @@ Return ONLY a valid JSON object (no markdown, no extra text):
 }`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.4 },
   });
 
@@ -1164,7 +1164,7 @@ Return ONLY a valid JSON object:
 {"message": "..."}`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.6 },
   });
 
@@ -1256,7 +1256,7 @@ Return ONLY valid JSON (no markdown):
 }`;
 
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", temperature: 0.4 },
   });
 

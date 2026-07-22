@@ -27,7 +27,7 @@ const MESSAGES_COLLECTION = "assistantMessages";
 const PROPOSALS_COLLECTION = "assistantProposals";
 const MAX_TOOL_ITERATIONS = 5;
 const MAX_HISTORY_MESSAGES = 40;
-const MODEL_NAME = "gemini-2.5-flash";
+const MODEL_NAME = "gemini-3.6-flash";
 
 export type AssistantRole = "user" | "model" | "system";
 export type ProposalActionType = "email_campaign" | "automation_rule" | "class_create" | "class_update" | "package_update";
