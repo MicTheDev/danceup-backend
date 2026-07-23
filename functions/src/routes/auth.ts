@@ -1,6 +1,7 @@
 import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
 import express, { Request, Response, NextFunction } from "express";
+// force-rebuild: fixes corrupted Cloud Run image reference (2026-07-21)
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import authService from "../services/auth.service";
