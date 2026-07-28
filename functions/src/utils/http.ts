@@ -16,6 +16,9 @@ const ALLOWED_ORIGINS = new Set([
   // Production
   "https://danceup-users-production--production-danceup.us-east4.hosted.app",
   "https://danceup-studio-owners--production-danceup.us-east4.hosted.app",
+  // Production custom domains
+  "https://danceup.app",
+  "https://studios.danceup.app",
 ]);
 
 export function isAllowedOrigin(origin: string): boolean {

@@ -27,7 +27,7 @@ const MESSAGES_COLLECTION = "assistantMessages";
 const PROPOSALS_COLLECTION = "assistantProposals";
 const MAX_TOOL_ITERATIONS = 5;
 const MAX_HISTORY_MESSAGES = 40;
-const MODEL_NAME = "gemini-2.5-flash";
+const MODEL_NAME = "gemini-3.6-flash";
 
 export type AssistantRole = "user" | "model" | "system";
 export type ProposalActionType = "email_campaign" | "automation_rule" | "class_create" | "class_update" | "package_update";
@@ -512,21 +512,29 @@ export async function handleAssistantMessage(studioOwnerId: string, userText: st
   }));
 
   const genAI = await getClient();
-  // systemInstruction must be set here (not in startChat's params) — ChatSession.sendMessage()
-  // forwards startChat's systemInstruction to the API as-is with no string->Content normalization,
-  // while GenerativeModel's constructor does run it through formatSystemInstruction().
-  const model = genAI.getGenerativeModel({ model: MODEL_NAME, systemInstruction: systemInstructionFor(studioName) });
-  const chat = model.startChat({
-    history,
+  const model = genAI.getGenerativeModel({
+    model: MODEL_NAME,
+    systemInstruction: systemInstructionFor(studioName),
     tools: [{ functionDeclarations: [...READ_TOOLS, ...DRAFT_TOOLS] }],
     toolConfig: { functionCallingConfig: { mode: FunctionCallingMode.AUTO } },
   });
 
-  let result = await chat.sendMessage(userText);
+  // Managed by hand (rather than model.startChat()) because the SDK's ChatSession
+  // hardcodes role: "function" for function-response turns, which gemini-3.x's API
+  // rejects — this model generation expects those turns as role: "user" instead, and
+  // requires each function-call part's thoughtSignature to be echoed back verbatim on
+  // later turns. Pushing the raw response.candidates[0].content (rather than
+  // reconstructing parts from response.functionCalls()) preserves that signature as-is.
+  const contents: Content[] = [...history, { role: "user", parts: [{ text: userText }] }];
+
   const raisedProposals: AssistantProposal[] = [];
   let finalText = "";
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    const result = await model.generateContent({ contents });
+    const candidateContent = result.response.candidates?.[0]?.content;
+    if (candidateContent) contents.push(candidateContent);
+
     const calls = result.response.functionCalls();
     if (!calls || calls.length === 0) {
       finalText = result.response.text();
@@ -570,7 +578,7 @@ export async function handleAssistantMessage(studioOwnerId: string, userText: st
           functionResponse: { name: call.name, response: { data: await executeReadTool(call.name, studioOwnerId) } },
         })),
       );
-      result = await chat.sendMessage([...invalidResponseParts, ...readResponseParts]);
+      contents.push({ role: "user", parts: [...invalidResponseParts, ...readResponseParts] });
       continue;
     }
 
@@ -580,7 +588,7 @@ export async function handleAssistantMessage(studioOwnerId: string, userText: st
         functionResponse: { name: call.name, response: { data: await executeReadTool(call.name, studioOwnerId) } },
       })),
     );
-    result = await chat.sendMessage(responseParts);
+    contents.push({ role: "user", parts: responseParts });
   }
 
   if (!finalText) {

@@ -71,20 +71,6 @@ export class PackagePurchaseService {
 
     const studentDoc = await studentsService.getStudentById(studentId, studioOwnerId);
     if (!studentDoc) throw new Error("Student not found");
-    const authUid = studentDoc["authUid"] as string | undefined;
-    if (!authUid) throw new Error("Student record does not have an associated auth UID");
-
-    const studentProfileDoc = await authService.getStudentProfileByAuthUid(authUid);
-    if (!studentProfileDoc) throw new Error("Student profile not found");
-
-    // Verify studios structure (ensure student is enrolled)
-    const db = getFirestore();
-    const userProfileRef = db.collection("usersStudentProfiles").doc(studentProfileDoc.id);
-    const userProfileData = (await userProfileRef.get()).data() as Record<string, unknown> | undefined;
-    const studios = ensureStudiosStructure(userProfileData);
-    if (!studios[studioOwnerId]) {
-      studios[studioOwnerId] = {};
-    }
 
     const expirationDays = (packageData["expirationDays"] as number) || 365;
     const creditsToAdd = (packageData["credits"] as number) || 0;
