@@ -1238,10 +1238,57 @@ app.get("/student/:studentId", async (req, res) => {
       }
     }
 
-    const purchasesSnapshot = await purchasesQuery.get();
+    // Cash payments (recorded via /packagePurchases/cash-for-student and the
+    // manual /purchases/cash endpoint) live in a separate "cashPurchases"
+    // collection, so they're invisible to purchase history / LTV unless
+    // merged in here.
+    let cashQuery = db.collection("cashPurchases")
+      .where("studentId", "==", studentId)
+      .where("studioOwnerId", "==", studioOwnerId) as FirebaseFirestore.Query;
+
+    if (purchaseType) {
+      cashQuery = cashQuery.where("purchaseType", "==", purchaseType);
+    }
+
+    const [purchasesSnapshot, cashSnapshot] = await Promise.all([
+      purchasesQuery.get(),
+      cashQuery.get(),
+    ]);
+
     const purchases = purchasesSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 
-    sendJsonResponse(req, res, 200, purchases);
+    const cashPurchases = cashSnapshot.docs.map((doc) => {
+      const data = doc.data() as Record<string, unknown>;
+      return {
+        id: doc.id,
+        studentId: data["studentId"],
+        studioOwnerId: data["studioOwnerId"],
+        purchaseType: (data["purchaseType"] as string) || "other",
+        itemId: data["itemId"] ?? null,
+        itemName: (data["itemName"] as string) || (data["description"] as string) || "Cash Payment",
+        price: (data["amount"] as number) || 0,
+        status: (data["status"] as string) || "completed",
+        paymentMethod: "cash",
+        createdAt: data["createdAt"],
+      };
+    });
+
+    const toMillis = (v: unknown): number => {
+      if (v && typeof v === "object" && "toMillis" in v) {
+        return (v as FirebaseFirestore.Timestamp).toMillis();
+      }
+      return 0;
+    };
+
+    const merged = [...purchases, ...cashPurchases]
+      .sort((a, b) => {
+        const aTime = toMillis((a as Record<string, unknown>)["createdAt"]);
+        const bTime = toMillis((b as Record<string, unknown>)["createdAt"]);
+        return bTime - aTime;
+      })
+      .slice(0, limitNum);
+
+    sendJsonResponse(req, res, 200, merged);
   } catch (error) {
     console.error("Get student purchase history error:", error);
     handleError(req, res, error);
