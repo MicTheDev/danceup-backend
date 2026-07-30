@@ -49,10 +49,16 @@ function parseMinutes(time: string): number {
   return (Number(parts[0] ?? 0)) * 60 + Number(parts[1] ?? 0);
 }
 
-function isInWindow(nowUtcMinutes: number, startTime: string, endTime: string, offsetMinutes: number): boolean {
-  const startUtc = parseMinutes(startTime) - offsetMinutes;
-  const endUtc = parseMinutes(endTime) - offsetMinutes;
-  return nowUtcMinutes >= startUtc - 30 && nowUtcMinutes <= endUtc;
+// Compares against the studio's own local minutes-of-day (see localMinutes
+// below) — both sides are already in the same local frame, so no UTC
+// conversion happens here. Converting the class's local time to a UTC
+// minutes-of-day value (the previous approach) breaks the moment that
+// conversion crosses a UTC calendar-day boundary, which it does for every
+// evening class west of UTC.
+function isInWindow(localMinutes: number, startTime: string, endTime: string): boolean {
+  const start = parseMinutes(startTime);
+  const end = parseMinutes(endTime);
+  return localMinutes >= start - 30 && localMinutes <= end;
 }
 
 async function sendFcmNotification(token: string, title: string, body: string): Promise<void> {
@@ -78,16 +84,9 @@ export const autoCheckIn = onSchedule(
   async (_event) => {
     const db = getFirestore();
     const now = new Date();
-    const todayDow = now.getUTCDay();
-    const nowUtcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
     const epochMs = now.getTime();
 
-    const y = now.getUTCFullYear();
-    const mo = String(now.getUTCMonth() + 1).padStart(2, "0");
-    const d = String(now.getUTCDate()).padStart(2, "0");
-    const instanceDateStr = `${y}-${mo}-${d}T12:00:00.000Z`;
-
-    console.log(`[AutoCheckIn] Running at ${now.toISOString()} DOW=${todayDow} nowUtcMinutes=${nowUtcMinutes}`);
+    console.log(`[AutoCheckIn] Running at ${now.toISOString()}`);
 
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const attendanceService = require("../../services/attendance.service");
@@ -148,10 +147,6 @@ export const autoCheckIn = onSchedule(
             ? getStudioOffsetMinutes(lat, lng, epochMs)
             : null;
 
-          console.log(`[AutoCheckIn] Class "${className}" DOW=${classDow}(${dayOfWeekName}) ${startTime}-${endTime} | todayDow=${todayDow} nowUtc=${nowUtcMinutes} studioLat=${lat} studioLng=${lng} offset=${offsetMinutes}`);
-
-          if (classDow !== todayDow) continue;
-
           if (offsetMinutes == null) {
             // Unknown timezone (missing studio lat/lng, or lookup failed) — skip rather than
             // assume UTC, which would silently check students in hours before/after class.
@@ -159,7 +154,32 @@ export const autoCheckIn = onSchedule(
             continue;
           }
 
-          if (!isInWindow(nowUtcMinutes, startTime, endTime, offsetMinutes)) {
+          // Derive the studio's own local day-of-week and minutes-of-day from
+          // its offset, rather than comparing the class's local day/time
+          // against UTC's. Comparing "today" as `now.getUTCDay()` against a
+          // class stored in local time is wrong every evening west of UTC —
+          // UTC's calendar date rolls over hours before local midnight, so a
+          // class scheduled for tonight gets compared against tomorrow's UTC
+          // day and skipped (see incident: auto check-in never fired for any
+          // evening class once the timezone-fallback fix above went in,
+          // 2026-07-29).
+          const localNow = new Date(epochMs + offsetMinutes * 60000);
+          const localDow = localNow.getUTCDay();
+          const localMinutes = localNow.getUTCHours() * 60 + localNow.getUTCMinutes();
+
+          // Label the attendance record with the studio's local calendar date
+          // (also derived from localNow), not UTC's — otherwise an evening
+          // check-in west of UTC gets stamped with tomorrow's date.
+          const localY = localNow.getUTCFullYear();
+          const localMo = String(localNow.getUTCMonth() + 1).padStart(2, "0");
+          const localD = String(localNow.getUTCDate()).padStart(2, "0");
+          const instanceDateStr = `${localY}-${localMo}-${localD}T12:00:00.000Z`;
+
+          console.log(`[AutoCheckIn] Class "${className}" DOW=${classDow}(${dayOfWeekName}) ${startTime}-${endTime} | studioLocalDow=${localDow} studioLocalMinutes=${localMinutes} studioLat=${lat} studioLng=${lng} offset=${offsetMinutes}`);
+
+          if (classDow !== localDow) continue;
+
+          if (!isInWindow(localMinutes, startTime, endTime)) {
             console.log(`[AutoCheckIn] Outside time window for "${className}"`);
             continue;
           }
