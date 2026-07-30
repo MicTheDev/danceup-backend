@@ -8,9 +8,13 @@ const DAY_NAME_TO_NUM: Record<string, number> = {
 };
 
 // Cache timezone offsets (lat/lng key → offset minutes) for the duration of a single run.
-const timezoneCache = new Map<string, number>();
+// A cached `null` means the offset is unknown for that key — distinct from a real UTC (0) offset.
+const timezoneCache = new Map<string, number | null>();
 
-function getStudioOffsetMinutes(lat: number, lng: number, epochMs: number): number {
+// Returns null when the studio's timezone can't be determined — callers must treat that as
+// "unknown," not as UTC, since silently assuming UTC caused classes to check in hours early
+// for studios without a resolvable location (see incident: Staging Test Account, 2026-07-28).
+function getStudioOffsetMinutes(lat: number, lng: number, epochMs: number): number | null {
   const key = `${lat.toFixed(2)},${lng.toFixed(2)}`;
   if (timezoneCache.has(key)) return timezoneCache.get(key)!;
 
@@ -19,7 +23,10 @@ function getStudioOffsetMinutes(lat: number, lng: number, epochMs: number): numb
     const { find } = require("geo-tz") as { find: (lat: number, lng: number) => string[] };
     const zones = find(lat, lng);
     const zone = zones[0];
-    if (!zone) return 0;
+    if (!zone) {
+      timezoneCache.set(key, null);
+      return null;
+    }
 
     // Compute UTC offset in minutes for this zone at this epoch.
     const date = new Date(epochMs);
@@ -32,7 +39,8 @@ function getStudioOffsetMinutes(lat: number, lng: number, epochMs: number): numb
     return offsetMinutes;
   } catch (e) {
     console.warn("[AutoCheckIn] Timezone lookup failed:", (e as Error).message);
-    return 0;
+    timezoneCache.set(key, null);
+    return null;
   }
 }
 
@@ -138,11 +146,19 @@ export const autoCheckIn = onSchedule(
 
           const offsetMinutes = (lat != null && lng != null)
             ? getStudioOffsetMinutes(lat, lng, epochMs)
-            : 0;
+            : null;
 
           console.log(`[AutoCheckIn] Class "${className}" DOW=${classDow}(${dayOfWeekName}) ${startTime}-${endTime} | todayDow=${todayDow} nowUtc=${nowUtcMinutes} studioLat=${lat} studioLng=${lng} offset=${offsetMinutes}`);
 
           if (classDow !== todayDow) continue;
+
+          if (offsetMinutes == null) {
+            // Unknown timezone (missing studio lat/lng, or lookup failed) — skip rather than
+            // assume UTC, which would silently check students in hours before/after class.
+            console.warn(`[AutoCheckIn] Unknown timezone for studio "${studioName}" (studioOwnerId=${studioOwnerId}, lat=${lat}, lng=${lng}) — skipping "${className}"`);
+            continue;
+          }
+
           if (!isInWindow(nowUtcMinutes, startTime, endTime, offsetMinutes)) {
             console.log(`[AutoCheckIn] Outside time window for "${className}"`);
             continue;
