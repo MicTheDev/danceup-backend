@@ -6,6 +6,13 @@ import { sendJsonResponse, sendErrorResponse, handleError, isAllowedOrigin, appl
 
 const app = express();
 
+function resolveSource(origin: string | undefined): string {
+  if (!origin) return "unknown";
+  if (origin.includes("studio-owners") || origin.includes("studios.danceup.app")) return "studio-owners-app";
+  if (origin.includes("danceup-users") || origin === "https://danceup.app") return "users-app";
+  return "unknown";
+}
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && isAllowedOrigin(origin)) {
@@ -58,7 +65,7 @@ app.post("/", async (req, res) => {
       subject: subject!.trim(),
       message: message!.trim(),
       status: "new",
-      source: "users-app",
+      source: resolveSource(req.headers.origin as string | undefined),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
