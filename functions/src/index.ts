@@ -42,3 +42,4 @@ export { danceupAdminHealth } from "./routes/danceup-admin-health";
 export { danceupAdminComms } from "./routes/danceup-admin-comms";
 export { danceupAdminOverview } from "./routes/danceup-admin-overview";
 export { danceupAdminModeration } from "./routes/danceup-admin-moderation";
+export { danceupAdminInquiries } from "./routes/danceup-admin-inquiries";

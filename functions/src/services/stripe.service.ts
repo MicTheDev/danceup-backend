@@ -2,11 +2,13 @@ import Stripe from "stripe";
 import { getSecret } from "../utils/secret-manager";
 
 export function platformFeeCents(amountCents: number): number {
-  return 30 + Math.round(amountCents * 0.015);
+  return Math.round(amountCents * 0.015);
 }
 
-export function platformFeePercent(amountCents: number): number {
-  return Math.round((1 + (25 / amountCents) * 100) * 100) / 100;
+// Flat rate — Stripe subscriptions take a percentage (application_fee_percent) rather
+// than a cents amount, so this mirrors platformFeeCents' 1.5% for the subscription path.
+export function platformFeePercent(): number {
+  return 1.5;
 }
 
 let stripeClient: Stripe | null = null;
@@ -712,61 +714,6 @@ export async function chargePaymentMethodDirectly(
 }
 
 /**
- * Destination charge: charge a platform-level customer/payment-method and transfer
- * funds to the studio's connected account. Use this when the customer and payment
- * method live on the platform (not the connected account) — the common case when a
- * studio owner charges a student's saved card on their behalf.
- *
- * Stripe docs: https://stripe.com/docs/connect/destination-charges
- */
-export async function chargePlatformCardForConnectedAccount(
-  platformCustomerId: string,
-  platformPaymentMethodId: string,
-  amountCents: number,
-  metadata: Record<string, string>,
-  connectedAccountId: string | null,
-  idempotencyKey?: string,
-): Promise<Stripe.PaymentIntent> {
-  if (!connectedAccountId) {
-    throw new Error("Connected Stripe account required. Please complete Stripe Connect setup.");
-  }
-
-  const stripe = await getStripeClient();
-  const params: Stripe.PaymentIntentCreateParams = {
-    amount: amountCents,
-    currency: "usd",
-    customer: platformCustomerId,
-    payment_method: platformPaymentMethodId,
-    confirm: true,
-    off_session: true,
-    application_fee_amount: platformFeeCents(amountCents),
-    transfer_data: { destination: connectedAccountId },
-    metadata,
-  };
-
-  const requestOptions: Stripe.RequestOptions | undefined = idempotencyKey ? { idempotencyKey } : undefined;
-
-  try {
-    return await stripe.paymentIntents.create(params, requestOptions);
-  } catch (error) {
-    const err = error as Stripe.errors.StripeError & { payment_intent?: Stripe.PaymentIntent };
-    console.error("[chargePlatformCardForConnectedAccount] Stripe error:", {
-      type: err.type, code: err.code, message: err.message, connectedAccountId,
-    });
-    if (err.code === "authentication_required" && err.payment_intent) {
-      return err.payment_intent;
-    }
-    if (error instanceof Stripe.errors.StripeCardError || error instanceof Stripe.errors.StripeInvalidRequestError) {
-      const appError = new Error(err.message || "Payment could not be completed") as Error & { status?: number; error?: string };
-      appError.status = error instanceof Stripe.errors.StripeCardError ? 402 : 400;
-      appError.error = error instanceof Stripe.errors.StripeCardError ? "Payment Failed" : "Bad Request";
-      throw appError;
-    }
-    throw new Error(`Failed to charge payment method: ${err.message}`);
-  }
-}
-
-/**
  * Direct charge: create a subscription with a saved card on the connected account.
  * connectedCustomerId and connectedPmId must belong to the connected account.
  * priceParams will be used to create the price on the connected account.
@@ -789,7 +736,7 @@ export async function createSubscriptionWithSavedCard(
     items: [{ price: price.id }],
     default_payment_method: connectedPmId,
     application_fee_percent: priceParams.unit_amount && priceParams.unit_amount > 0
-      ? platformFeePercent(priceParams.unit_amount)
+      ? platformFeePercent()
       : undefined,
     metadata,
     expand: ["latest_invoice.payment_intent"],

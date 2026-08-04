@@ -153,7 +153,8 @@ app.post("/charge-card-for-student", async (req, res) => {
     }
 
     const profileDoc = await authService.getStudentProfileByAuthUid(student["authUid"] as string);
-    const stripeCustomerId = profileDoc ? (profileDoc.data() as Record<string, unknown>)["stripeCustomerId"] as string : null;
+    const profileData = profileDoc ? (profileDoc.data() as Record<string, unknown>) : null;
+    const stripeCustomerId = profileData ? (profileData["stripeCustomerId"] as string) : null;
     if (!stripeCustomerId) {
       return sendErrorResponse(req, res, 400, "Bad Request", "Student does not have a saved payment method. Please ask them to add one from their dashboard.");
     }
@@ -171,10 +172,35 @@ app.post("/charge-card-for-student", async (req, res) => {
     const db = getFirestore();
     const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
     const connectedAccountId = studioOwnerDoc.exists ? ((studioOwnerDoc.data() as Record<string, unknown>)["stripeAccountId"] as string) || null : null;
+    if (!connectedAccountId) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "This studio has not completed Stripe Connect setup.");
+    }
 
-    const paymentIntent = await stripeService.chargePlatformCardForConnectedAccount(
+    // Direct charge on the connected account — the studio (not DanceUp) bears Stripe's
+    // processing fee, consistent with how package/subscription charges already work.
+    const studentName = `${(student["firstName"] as string) || ""} ${(student["lastName"] as string) || ""}`.trim();
+    const studentEmail = (profileData?.["email"] as string) || "";
+    const { customer: connectedCustomerObj } = await stripeService.findOrCreateConnectedCustomer(
+      studentEmail,
       stripeCustomerId,
-      paymentMethodId,
+      connectedAccountId,
+      studentName || undefined,
+    );
+    const connectedCustomerId = connectedCustomerObj.id;
+
+    let connectedPm = await stripeService.findConnectedPaymentMethod(paymentMethodId, connectedCustomerId, connectedAccountId);
+    if (!connectedPm) {
+      connectedPm = await stripeService.clonePaymentMethodToConnectedAccount(
+        paymentMethodId,
+        stripeCustomerId,
+        connectedCustomerId,
+        connectedAccountId,
+      );
+    }
+
+    const paymentIntent = await stripeService.chargePaymentMethodDirectly(
+      connectedCustomerId,
+      connectedPm.id,
       Math.round((packageData["price"] as number) * 100),
       { purchaseType: "package", itemId: packageId, studioOwnerId, studentId, chargedBy: "studio_owner" },
       connectedAccountId,

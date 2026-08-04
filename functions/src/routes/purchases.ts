@@ -268,7 +268,7 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
         { stripeAccount: connectedAccountId },
       );
 
-      const appFeePercent = stripeService.platformFeePercent(Math.round(chargePrice * 100));
+      const appFeePercent = stripeService.platformFeePercent();
       const subscriptionMetadata: Record<string, string> = {
         ...metadata,
         price: String(itemDetails.price),

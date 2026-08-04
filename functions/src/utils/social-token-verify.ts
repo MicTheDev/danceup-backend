@@ -79,6 +79,16 @@ export async function verifyAppleIdToken(
   idToken: string,
   fallbackName?: { firstName?: string; lastName?: string }
 ): Promise<VerifiedSocialToken> {
+  // Fail fast on empty/malformed input with a distinct error rather than
+  // letting it reach jwt.verify() and come back as an opaque "jwt malformed"
+  // — seen in production from a client that hadn't yet guarded against
+  // Apple's native bridge returning an empty string instead of nil for
+  // identityToken. Older app versions can still send this, so this check
+  // stays even though the client now guards against it too.
+  if (!idToken || idToken.split(".").length !== 3) {
+    throw new Error("Apple ID token is empty or malformed");
+  }
+
   const payload = await new Promise<jwt.JwtPayload>((resolve, reject) => {
     jwt.verify(
       idToken,
