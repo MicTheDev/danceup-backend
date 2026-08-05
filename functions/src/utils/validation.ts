@@ -229,7 +229,7 @@ function validateISODateTime(dateTime: unknown): ValidationResult {
 }
 
 function validateEventType(type: unknown): ValidationResult {
-  const validTypes = ["social", "festival", "congress"];
+  const validTypes = ["social", "festival", "congress", "competition", "recital", "showcase"];
   if (!type || !validTypes.includes((type as string).toLowerCase())) {
     return { valid: false, message: `Event type must be one of: ${validTypes.join(", ")}` };
   }
