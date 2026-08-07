@@ -43,3 +43,8 @@ export { danceupAdminComms } from "./routes/danceup-admin-comms";
 export { danceupAdminOverview } from "./routes/danceup-admin-overview";
 export { danceupAdminModeration } from "./routes/danceup-admin-moderation";
 export { danceupAdminInquiries } from "./routes/danceup-admin-inquiries";
+export { danceupAdminClasses } from "./routes/danceup-admin-classes";
+export { danceupAdminWorkshops } from "./routes/danceup-admin-workshops";
+export { danceupAdminEvents } from "./routes/danceup-admin-events";
+export { danceupAdminNotifications } from "./routes/danceup-admin-notifications";
+export { danceupAdminAudit } from "./routes/danceup-admin-audit";

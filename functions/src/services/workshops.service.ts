@@ -3,6 +3,7 @@ import authService from "./auth.service";
 import { getFirestore } from "../utils/firestore";
 import { geocodeAddress } from "../utils/geocoding";
 import { haversineDistance } from "../utils/distance";
+import { AdminStudioInfo, batchGetStudios, toIso } from "../utils/admin-studio-enrichment";
 
 interface WorkshopFilters {
   level?: string | null;
@@ -129,6 +130,143 @@ export class WorkshopsService {
       throw new Error("Access denied: Workshop does not belong to this studio owner");
     }
     await ref.delete();
+  }
+
+  // ─── Admin (cross-studio) ─────────────────────────────────────────────────
+  // Unlike the owner-scoped methods above, these operate on any workshop
+  // regardless of which studio owns it — callers (danceup-admin-workshops.ts)
+  // already gate on user.isAdmin before reaching here.
+
+  async getAllWorkshopsForAdmin(
+    studioOwnerId?: string,
+  ): Promise<Array<Record<string, unknown> & { id: string; studio: AdminStudioInfo | null }>> {
+    const db = getFirestore();
+    let query: FirebaseFirestore.Query = db.collection("workshops");
+    if (studioOwnerId) query = query.where("studioOwnerId", "==", studioOwnerId);
+    const snapshot = await query.get();
+
+    const workshops: Array<Record<string, unknown> & { id: string }> = snapshot.docs.map((doc) => {
+      const data = doc.data() as Record<string, unknown>;
+      return {
+        id: doc.id,
+        ...data,
+        createdAt: toIso(data["createdAt"]),
+        updatedAt: toIso(data["updatedAt"]),
+        lastModifiedByAdminAt: toIso(data["lastModifiedByAdminAt"]),
+      };
+    });
+
+    const studiosMap = await batchGetStudios(workshops.map((w) => w["studioOwnerId"] as string));
+    return workshops.map((w) => ({ ...w, studio: studiosMap.get(w["studioOwnerId"] as string) ?? null }));
+  }
+
+  async getWorkshopByIdForAdmin(
+    workshopId: string,
+  ): Promise<(Record<string, unknown> & { id: string; studio: AdminStudioInfo | null }) | null> {
+    const db = getFirestore();
+    const doc = await db.collection("workshops").doc(workshopId).get();
+    if (!doc.exists) return null;
+    const workshopData = doc.data() as Record<string, unknown>;
+
+    const studiosMap = await batchGetStudios([workshopData["studioOwnerId"] as string]);
+
+    return {
+      id: doc.id,
+      ...workshopData,
+      createdAt: toIso(workshopData["createdAt"]),
+      updatedAt: toIso(workshopData["updatedAt"]),
+      lastModifiedByAdminAt: toIso(workshopData["lastModifiedByAdminAt"]),
+      studio: studiosMap.get(workshopData["studioOwnerId"] as string) ?? null,
+    };
+  }
+
+  async createWorkshopForAdmin(
+    workshopData: Record<string, unknown>, studioOwnerId: string, adminUid: string,
+  ): Promise<string> {
+    const db = getFirestore();
+    let coords: { lat: number; lng: number } | null = null;
+    if (workshopData["addressLine1"] && workshopData["city"] && workshopData["state"]) {
+      coords = await geocodeAddress(
+        workshopData["addressLine1"] as string,
+        workshopData["city"] as string,
+        workshopData["state"] as string,
+        (workshopData["zip"] as string) || "",
+      );
+    }
+    const docRef = await db.collection("workshops").add({
+      ...workshopData,
+      ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
+      studioOwnerId,
+      lastModifiedByAdminUid: adminUid,
+      lastModifiedByAdminAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return docRef.id;
+  }
+
+  async updateWorkshopForAdmin(
+    workshopId: string, workshopData: Record<string, unknown>, adminUid: string,
+  ): Promise<void> {
+    const db = getFirestore();
+    const ref = db.collection("workshops").doc(workshopId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new Error("Workshop not found");
+
+    // Ownership only changes via reassignWorkshop()/POST /:id/assign.
+    const { studioOwnerId: _ignored, ...fields } = workshopData;
+
+    let coords: { lat: number; lng: number } | null = null;
+    if (fields["addressLine1"] && fields["city"] && fields["state"]) {
+      coords = await geocodeAddress(
+        fields["addressLine1"] as string,
+        fields["city"] as string,
+        fields["state"] as string,
+        (fields["zip"] as string) || "",
+      );
+    }
+
+    await ref.update({
+      ...fields,
+      ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
+      lastModifiedByAdminUid: adminUid,
+      lastModifiedByAdminAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  async deleteWorkshopForAdmin(workshopId: string): Promise<void> {
+    const db = getFirestore();
+    const ref = db.collection("workshops").doc(workshopId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new Error("Workshop not found");
+    await ref.delete();
+  }
+
+  async reassignWorkshop(
+    workshopId: string, newStudioOwnerId: string, adminUid: string,
+  ): Promise<{ fromStudioOwnerId: string; toStudioOwnerId: string }> {
+    const db = getFirestore();
+    const ref = db.collection("workshops").doc(workshopId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new Error("Workshop not found");
+    const existingData = doc.data() as Record<string, unknown>;
+    const fromStudioOwnerId = existingData["studioOwnerId"] as string;
+
+    const targetDoc = await db.collection("users").doc(newStudioOwnerId).get();
+    if (!targetDoc.exists) throw new Error("Target studio not found");
+
+    // Unlike classes, workshops don't reference instructors/rooms by ID (schedule
+    // slots store free-text instructor names), so there's nothing studio-scoped
+    // to clear on reassignment.
+    await ref.update({
+      studioOwnerId: newStudioOwnerId,
+      lastModifiedByAdminUid: adminUid,
+      lastModifiedByAdminAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return { fromStudioOwnerId, toStudioOwnerId: newStudioOwnerId };
   }
 
   async getAllPublicWorkshops(filters: WorkshopFilters = {}): Promise<Array<Record<string, unknown>>> {
