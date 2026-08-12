@@ -540,8 +540,8 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
     const isOneTime = price.type === "one_time";
 
     let subscriptionId: string | null = null;
-    let paymentIntentId: string;
-    let clientSecret: string;
+    let paymentIntentId: string | null;
+    let clientSecret: string | null;
 
     if (isOneTime) {
       const result = await stripeService.createOneTimePaymentCheckout(
@@ -569,7 +569,7 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
         membership,
         promotionCodeId,
         couponId,
-      ) as { subscriptionId: string; paymentIntentId: string; clientSecret: string };
+      ) as { subscriptionId: string; paymentIntentId: string | null; clientSecret: string | null };
       subscriptionId = result.subscriptionId;
       paymentIntentId = result.paymentIntentId;
       clientSecret = result.clientSecret;
@@ -577,9 +577,9 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
 
     if (userId) {
       const pendingUpdate: Record<string, unknown> = {
-        pendingPaymentIntentId: paymentIntentId,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       };
+      if (paymentIntentId) pendingUpdate["pendingPaymentIntentId"] = paymentIntentId;
       if (subscriptionId) pendingUpdate["pendingSubscriptionId"] = subscriptionId;
       await db.collection("users").doc(userId).update(pendingUpdate);
     }
@@ -1366,15 +1366,17 @@ app.post("/subscription-payment-success", async (req, res) => {
 
     const body = req.body as Record<string, unknown>;
     const paymentIntentId = body["paymentIntentId"] as string | undefined;
+    const freeSubscriptionId = body["subscriptionId"] as string | undefined;
 
-    if (!paymentIntentId) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "paymentIntentId is required");
+    if (!paymentIntentId && !freeSubscriptionId) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "paymentIntentId or subscriptionId is required");
     }
 
     const db = getFirestore();
 
-    // Idempotency: return early if this payment intent was already processed
-    const processedRef = db.collection("processedStripeEvents").doc(`pi_${paymentIntentId}`);
+    // Idempotency: return early if this payment/subscription was already processed
+    const idempotencyKey = paymentIntentId ? `pi_${paymentIntentId}` : `sub_${freeSubscriptionId}`;
+    const processedRef = db.collection("processedStripeEvents").doc(idempotencyKey);
     const processedDoc = await processedRef.get();
     if (processedDoc.exists) {
       const data = processedDoc.data() as Record<string, unknown>;
@@ -1387,20 +1389,37 @@ app.post("/subscription-payment-success", async (req, res) => {
     }
 
     const stripe = await stripeService.getStripeClient() as import("stripe").default;
-    const pi = await stripe.paymentIntents.retrieve(paymentIntentId, {
-      expand: ["invoice.subscription"],
-    });
 
-    if (pi.status !== "succeeded") {
-      return sendErrorResponse(req, res, 400, "Validation Error", `Payment not completed (status: ${pi.status})`);
+    let subscription: import("stripe").default.Subscription | null | undefined;
+    let customerId: string | import("stripe").default.Customer | import("stripe").default.DeletedCustomer | null;
+    let userId: string | undefined;
+    let membership: string | undefined;
+
+    if (paymentIntentId) {
+      const pi = await stripe.paymentIntents.retrieve(paymentIntentId, {
+        expand: ["invoice.subscription"],
+      });
+
+      if (pi.status !== "succeeded") {
+        return sendErrorResponse(req, res, 400, "Validation Error", `Payment not completed (status: ${pi.status})`);
+      }
+
+      const invoice = pi.invoice as (import("stripe").default.Invoice & { subscription?: import("stripe").default.Subscription }) | null;
+      subscription = invoice?.subscription as import("stripe").default.Subscription | null | undefined;
+      customerId = pi.customer;
+
+      // One-time payments don't have a subscription — read metadata from the PaymentIntent directly.
+      userId = subscription?.metadata?.["userId"] ?? pi.metadata?.["userId"];
+      membership = subscription?.metadata?.["membership"] ?? pi.metadata?.["membership"];
+    } else {
+      // Free ($0) subscription — created moments earlier by /create-checkout-session with
+      // no PaymentIntent to confirm (Stripe skips it when there's nothing to collect), so
+      // the subscription itself — just created server-side — is proof enough to activate.
+      subscription = await stripe.subscriptions.retrieve(freeSubscriptionId as string);
+      customerId = subscription.customer;
+      userId = subscription.metadata?.["userId"];
+      membership = subscription.metadata?.["membership"];
     }
-
-    const invoice = pi.invoice as (import("stripe").default.Invoice & { subscription?: import("stripe").default.Subscription }) | null;
-    const subscription = invoice?.subscription as import("stripe").default.Subscription | null | undefined;
-
-    // One-time payments don't have a subscription — read metadata from the PaymentIntent directly.
-    const userId = subscription?.metadata?.["userId"] ?? pi.metadata?.["userId"];
-    const membership = subscription?.metadata?.["membership"] ?? pi.metadata?.["membership"];
 
     if (!userId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "User ID not found in subscription metadata");
@@ -1418,7 +1437,7 @@ app.post("/subscription-payment-success", async (req, res) => {
     }
 
     const updateData: Record<string, unknown> = {
-      stripeCustomerId: pi.customer,
+      stripeCustomerId: customerId,
       membership: membership || userData["membership"],
       pendingPaymentIntentId: admin.firestore.FieldValue.delete(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),

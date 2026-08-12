@@ -1031,7 +1031,7 @@ export async function createSubscriptionCheckout(
   membership: string,
   promotionCodeId?: string,
   couponId?: string,
-): Promise<{ subscriptionId: string; paymentIntentId: string; clientSecret: string }> {
+): Promise<{ subscriptionId: string; paymentIntentId: string | null; clientSecret: string | null }> {
   const stripe = await getStripeClient();
   try {
     const subscriptionParams: Stripe.SubscriptionCreateParams = {
@@ -1053,7 +1053,14 @@ export async function createSubscriptionCheckout(
 
     const invoice = subscription.latest_invoice as Stripe.Invoice & { payment_intent?: Stripe.PaymentIntent } | null;
     const paymentIntent = invoice?.payment_intent;
+
     if (!paymentIntent?.client_secret) {
+      // Stripe doesn't create a PaymentIntent when the invoice has nothing to
+      // collect (a free $0 plan, or a 100%-off coupon) — the subscription is
+      // already active and there's no payment step to confirm.
+      if (invoice && invoice.amount_due === 0) {
+        return { subscriptionId: subscription.id, paymentIntentId: null, clientSecret: null };
+      }
       throw new Error("Subscription did not produce a pending PaymentIntent");
     }
 
