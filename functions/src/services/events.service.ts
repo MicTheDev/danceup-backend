@@ -3,6 +3,7 @@ import authService from "./auth.service";
 import { getFirestore } from "../utils/firestore";
 import { geocodeAddress } from "../utils/geocoding";
 import { haversineDistance } from "../utils/distance";
+import { AdminStudioInfo, batchGetStudios, toIso } from "../utils/admin-studio-enrichment";
 
 interface EventFilters {
   type?: string | null;
@@ -129,6 +130,143 @@ export class EventsService {
       throw new Error("Access denied: Event does not belong to this studio owner");
     }
     await ref.delete();
+  }
+
+  // ─── Admin (cross-studio) ─────────────────────────────────────────────────
+  // Unlike the owner-scoped methods above, these operate on any event
+  // regardless of which studio owns it — callers (danceup-admin-events.ts)
+  // already gate on user.isAdmin before reaching here.
+
+  async getAllEventsForAdmin(
+    studioOwnerId?: string,
+  ): Promise<Array<Record<string, unknown> & { id: string; studio: AdminStudioInfo | null }>> {
+    const db = getFirestore();
+    let query: FirebaseFirestore.Query = db.collection("events");
+    if (studioOwnerId) query = query.where("studioOwnerId", "==", studioOwnerId);
+    const snapshot = await query.get();
+
+    const events: Array<Record<string, unknown> & { id: string }> = snapshot.docs.map((doc) => {
+      const data = doc.data() as Record<string, unknown>;
+      return {
+        id: doc.id,
+        ...data,
+        createdAt: toIso(data["createdAt"]),
+        updatedAt: toIso(data["updatedAt"]),
+        lastModifiedByAdminAt: toIso(data["lastModifiedByAdminAt"]),
+      };
+    });
+
+    const studiosMap = await batchGetStudios(events.map((e) => e["studioOwnerId"] as string));
+    return events.map((e) => ({ ...e, studio: studiosMap.get(e["studioOwnerId"] as string) ?? null }));
+  }
+
+  async getEventByIdForAdmin(
+    eventId: string,
+  ): Promise<(Record<string, unknown> & { id: string; studio: AdminStudioInfo | null }) | null> {
+    const db = getFirestore();
+    const doc = await db.collection("events").doc(eventId).get();
+    if (!doc.exists) return null;
+    const eventData = doc.data() as Record<string, unknown>;
+
+    const studiosMap = await batchGetStudios([eventData["studioOwnerId"] as string]);
+
+    return {
+      id: doc.id,
+      ...eventData,
+      createdAt: toIso(eventData["createdAt"]),
+      updatedAt: toIso(eventData["updatedAt"]),
+      lastModifiedByAdminAt: toIso(eventData["lastModifiedByAdminAt"]),
+      studio: studiosMap.get(eventData["studioOwnerId"] as string) ?? null,
+    };
+  }
+
+  async createEventForAdmin(
+    eventData: Record<string, unknown>, studioOwnerId: string, adminUid: string,
+  ): Promise<string> {
+    const db = getFirestore();
+    let coords: { lat: number; lng: number } | null = null;
+    if (eventData["addressLine1"] && eventData["city"] && eventData["state"]) {
+      coords = await geocodeAddress(
+        eventData["addressLine1"] as string,
+        eventData["city"] as string,
+        eventData["state"] as string,
+        (eventData["zip"] as string) || "",
+      );
+    }
+    const docRef = await db.collection("events").add({
+      ...eventData,
+      ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
+      studioOwnerId,
+      lastModifiedByAdminUid: adminUid,
+      lastModifiedByAdminAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return docRef.id;
+  }
+
+  async updateEventForAdmin(
+    eventId: string, eventData: Record<string, unknown>, adminUid: string,
+  ): Promise<void> {
+    const db = getFirestore();
+    const ref = db.collection("events").doc(eventId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new Error("Event not found");
+
+    // Ownership only changes via reassignEvent()/POST /:id/assign.
+    const { studioOwnerId: _ignored, ...fields } = eventData;
+
+    let coords: { lat: number; lng: number } | null = null;
+    if (fields["addressLine1"] && fields["city"] && fields["state"]) {
+      coords = await geocodeAddress(
+        fields["addressLine1"] as string,
+        fields["city"] as string,
+        fields["state"] as string,
+        (fields["zip"] as string) || "",
+      );
+    }
+
+    await ref.update({
+      ...fields,
+      ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
+      lastModifiedByAdminUid: adminUid,
+      lastModifiedByAdminAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  async deleteEventForAdmin(eventId: string): Promise<void> {
+    const db = getFirestore();
+    const ref = db.collection("events").doc(eventId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new Error("Event not found");
+    await ref.delete();
+  }
+
+  async reassignEvent(
+    eventId: string, newStudioOwnerId: string, adminUid: string,
+  ): Promise<{ fromStudioOwnerId: string; toStudioOwnerId: string }> {
+    const db = getFirestore();
+    const ref = db.collection("events").doc(eventId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new Error("Event not found");
+    const existingData = doc.data() as Record<string, unknown>;
+    const fromStudioOwnerId = existingData["studioOwnerId"] as string;
+
+    const targetDoc = await db.collection("users").doc(newStudioOwnerId).get();
+    if (!targetDoc.exists) throw new Error("Target studio not found");
+
+    // Like workshops, events don't reference instructors/rooms by ID (schedule
+    // slots store free-text instructor names), so there's nothing studio-scoped
+    // to clear on reassignment.
+    await ref.update({
+      studioOwnerId: newStudioOwnerId,
+      lastModifiedByAdminUid: adminUid,
+      lastModifiedByAdminAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return { fromStudioOwnerId, toStudioOwnerId: newStudioOwnerId };
   }
 
   async getAllPublicEvents(filters: EventFilters = {}): Promise<Array<Record<string, unknown>>> {

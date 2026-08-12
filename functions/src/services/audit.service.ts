@@ -15,7 +15,20 @@ export type AuditAction =
   | "assistant_automation_rule_created"
   | "assistant_class_created"
   | "assistant_class_updated"
-  | "assistant_package_updated";
+  | "assistant_package_updated"
+  | "placeholder_studio_created"
+  | "class_admin_created"
+  | "class_admin_updated"
+  | "class_admin_deleted"
+  | "class_reassigned"
+  | "workshop_admin_created"
+  | "workshop_admin_updated"
+  | "workshop_admin_deleted"
+  | "workshop_reassigned"
+  | "event_admin_created"
+  | "event_admin_updated"
+  | "event_admin_deleted"
+  | "event_reassigned";
 
 async function writeAuditLog(
   actorUid: string,

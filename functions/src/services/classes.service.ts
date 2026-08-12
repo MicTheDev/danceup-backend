@@ -4,6 +4,7 @@ import { getFirestore } from "../utils/firestore";
 import { geocodeAddress } from "../utils/geocoding";
 import { haversineDistance } from "../utils/distance";
 import { sendWaitlistNotificationEmail } from "./sendgrid.service";
+import { AdminStudioInfo, batchGetStudios, toIso } from "../utils/admin-studio-enrichment";
 
 interface StudioInfo {
   id: string;
@@ -151,6 +152,182 @@ export class ClassesService {
       throw new Error("Access denied: Class does not belong to this studio owner");
     }
     await ref.delete();
+  }
+
+  // ─── Admin (cross-studio) ─────────────────────────────────────────────────
+  // Unlike the owner-scoped methods above, these operate on any class regardless
+  // of which studio owns it — callers (danceup-admin-classes.ts) already gate on
+  // user.isAdmin before reaching here.
+
+  async getAllClassesForAdmin(
+    studioOwnerId?: string,
+  ): Promise<Array<Record<string, unknown> & { id: string; studio: AdminStudioInfo | null }>> {
+    const db = getFirestore();
+    let query: FirebaseFirestore.Query = db.collection("classes");
+    if (studioOwnerId) query = query.where("studioOwnerId", "==", studioOwnerId);
+    const snapshot = await query.get();
+
+    const classes: Array<Record<string, unknown> & { id: string }> = snapshot.docs.map((doc) => {
+      const data = doc.data() as Record<string, unknown>;
+      return {
+        id: doc.id,
+        ...data,
+        maxCapacity: (data["maxCapacity"] as number) ?? 20,
+        createdAt: toIso(data["createdAt"]),
+        updatedAt: toIso(data["updatedAt"]),
+        lastModifiedByAdminAt: toIso(data["lastModifiedByAdminAt"]),
+      };
+    });
+
+    const studiosMap = await batchGetStudios(classes.map((c) => c["studioOwnerId"] as string));
+    return classes.map((c) => ({ ...c, studio: studiosMap.get(c["studioOwnerId"] as string) ?? null }));
+  }
+
+  async getClassByIdForAdmin(
+    classId: string,
+  ): Promise<(Record<string, unknown> & { id: string; studio: AdminStudioInfo | null; instructors: Array<Record<string, unknown>> }) | null> {
+    const db = getFirestore();
+    const doc = await db.collection("classes").doc(classId).get();
+    if (!doc.exists) return null;
+    const classData = doc.data() as Record<string, unknown>;
+
+    const studiosMap = await batchGetStudios([classData["studioOwnerId"] as string]);
+
+    const instructors: Array<Record<string, unknown>> = [];
+    const instructorIds = classData["instructorIds"] as string[] | undefined;
+    if (Array.isArray(instructorIds) && instructorIds.length > 0) {
+      for (let i = 0; i < instructorIds.length; i += 10) {
+        const batch = instructorIds.slice(i, i + 10);
+        const snap = await db.collection("instructors")
+          .where(admin.firestore.FieldPath.documentId(), "in", batch)
+          .get();
+        snap.forEach((instructorDoc) => {
+          instructors.push({ id: instructorDoc.id, ...(instructorDoc.data() as Record<string, unknown>) });
+        });
+      }
+    }
+
+    return {
+      id: doc.id,
+      ...classData,
+      maxCapacity: (classData["maxCapacity"] as number) ?? 20,
+      createdAt: toIso(classData["createdAt"]),
+      updatedAt: toIso(classData["updatedAt"]),
+      lastModifiedByAdminAt: toIso(classData["lastModifiedByAdminAt"]),
+      studio: studiosMap.get(classData["studioOwnerId"] as string) ?? null,
+      instructors,
+    };
+  }
+
+  async createClassForAdmin(
+    classData: Record<string, unknown>, studioOwnerId: string, adminUid: string,
+  ): Promise<string> {
+    const db = getFirestore();
+    const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
+
+    let imageUrl = classData["imageUrl"] as string | undefined;
+    let coords: { lat: number; lng: number } | null = null;
+    if (studioOwnerDoc.exists) {
+      const sd = studioOwnerDoc.data() as Record<string, unknown>;
+      if (!imageUrl) imageUrl = (sd["studioImageUrl"] as string | undefined) || STUDIO_PLACEHOLDER_IMAGE;
+      if (sd["studioAddressLine1"] && sd["city"] && sd["state"]) {
+        coords = await geocodeAddress(
+          sd["studioAddressLine1"] as string,
+          sd["city"] as string,
+          sd["state"] as string,
+          (sd["zip"] as string) || "",
+        );
+      }
+    }
+    if (!imageUrl) imageUrl = STUDIO_PLACEHOLDER_IMAGE;
+
+    const cost = typeof classData["cost"] === "number" ? classData["cost"] as number : 0;
+
+    const docRef = await db.collection("classes").add({
+      ...classData,
+      cost,
+      studioOwnerId,
+      imageUrl,
+      ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
+      lastModifiedByAdminUid: adminUid,
+      lastModifiedByAdminAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return docRef.id;
+  }
+
+  async updateClassForAdmin(
+    classId: string, classData: Record<string, unknown>, adminUid: string,
+  ): Promise<void> {
+    const db = getFirestore();
+    const ref = db.collection("classes").doc(classId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new Error("Class not found");
+    const existingData = doc.data() as Record<string, unknown>;
+
+    // Ownership only changes via reassignClass()/POST /:id/assign — strip it here
+    // even if present in the body, so there's exactly one code path for that.
+    const { studioOwnerId: _ignored, ...fields } = classData;
+
+    let coords: { lat: number; lng: number } | null = null;
+    const studioOwnerDoc = await db.collection("users").doc(existingData["studioOwnerId"] as string).get();
+    if (studioOwnerDoc.exists) {
+      const sd = studioOwnerDoc.data() as Record<string, unknown>;
+      if (sd["studioAddressLine1"] && sd["city"] && sd["state"]) {
+        coords = await geocodeAddress(
+          sd["studioAddressLine1"] as string,
+          sd["city"] as string,
+          sd["state"] as string,
+          (sd["zip"] as string) || "",
+        );
+      }
+    }
+
+    await ref.update({
+      ...fields,
+      ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
+      lastModifiedByAdminUid: adminUid,
+      lastModifiedByAdminAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  async deleteClassForAdmin(classId: string): Promise<void> {
+    const db = getFirestore();
+    const ref = db.collection("classes").doc(classId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new Error("Class not found");
+    await ref.delete();
+  }
+
+  async reassignClass(
+    classId: string, newStudioOwnerId: string, adminUid: string,
+  ): Promise<{ fromStudioOwnerId: string; toStudioOwnerId: string; clearedInstructorsAndRoom: boolean }> {
+    const db = getFirestore();
+    const ref = db.collection("classes").doc(classId);
+    const doc = await ref.get();
+    if (!doc.exists) throw new Error("Class not found");
+    const existingData = doc.data() as Record<string, unknown>;
+    const fromStudioOwnerId = existingData["studioOwnerId"] as string;
+
+    const targetDoc = await db.collection("users").doc(newStudioOwnerId).get();
+    if (!targetDoc.exists) throw new Error("Target studio not found");
+
+    // Instructors and rooms are studio-scoped — carrying them across a transfer
+    // would leave a dangling reference to the previous studio's roster with no
+    // way to clear it from the new studio's instructor list.
+    const changingStudio = fromStudioOwnerId !== newStudioOwnerId;
+
+    await ref.update({
+      studioOwnerId: newStudioOwnerId,
+      ...(changingStudio ? { instructorIds: [], room: "" } : {}),
+      lastModifiedByAdminUid: adminUid,
+      lastModifiedByAdminAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return { fromStudioOwnerId, toStudioOwnerId: newStudioOwnerId, clearedInstructorsAndRoom: changingStudio };
   }
 
   async getAllPublicClasses(filters: ClassFilters = {}): Promise<Array<Record<string, unknown>>> {
