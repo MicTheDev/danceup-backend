@@ -158,15 +158,24 @@ export class BookingsService {
     await ref.update({ status: "cancelled", updatedAt: admin.firestore.FieldValue.serverTimestamp() });
   }
 
+  /**
+   * Confirms a booking on behalf of either the studio owner (via studioOwnerId)
+   * or the assigned instructor themself (via instructorId) — same booking,
+   * same status transition, two different people allowed to trigger it, kept
+   * in sync since it's the one Firestore doc either caller is updating.
+   */
   async confirmBooking(
-    bookingId: string, studioOwnerId: string,
+    bookingId: string, caller: { studioOwnerId?: string; instructorId?: string },
   ): Promise<Record<string, unknown> & { id: string }> {
     const db = getFirestore();
     const ref = db.collection("privateLessonBookings").doc(bookingId);
     const doc = await ref.get();
     if (!doc.exists) throw new Error("Booking not found");
     const bookingData = doc.data() as Record<string, unknown>;
-    if (bookingData["studioId"] !== studioOwnerId) {
+
+    const isStudioOwner = caller.studioOwnerId && bookingData["studioId"] === caller.studioOwnerId;
+    const isAssignedInstructor = caller.instructorId && bookingData["instructorId"] === caller.instructorId;
+    if (!isStudioOwner && !isAssignedInstructor) {
       throw new Error("Access denied: Booking does not belong to this studio");
     }
     if (bookingData["status"] === "confirmed") throw new Error("Booking is already confirmed");

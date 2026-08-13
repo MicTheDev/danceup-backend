@@ -3,6 +3,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import instructorsService from "../services/instructors.service";
 import storageService from "../services/storage.service";
+import instructorLinkingService from "../services/instructor-linking.service";
 import { logAuditEvent } from "../services/audit.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateInstructorPayload, validateUpdateInstructorPayload } from "../utils/validation";
@@ -93,6 +94,14 @@ app.post("/", async (req, res) => {
     const payload = photoUrl ? { ...instructorData, photoUrl } : instructorData;
     const instructorId = await instructorsService.createInstructor(payload, studioOwnerId);
     logAuditEvent(user.uid, studioOwnerId, "instructor_created", "instructor", instructorId);
+
+    try {
+      await instructorLinkingService.linkInstructorIfAccountExists(
+        instructorId, studioOwnerId, (instructorData as Record<string, unknown>)["email"] as string | undefined,
+      );
+    } catch (linkError) {
+      console.error("Error auto-linking instructor to existing users-app account:", linkError);
+    }
 
     sendJsonResponse(req, res, 201, { id: instructorId, message: "Instructor created successfully" });
   } catch (error) {
