@@ -9,8 +9,6 @@ import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
 import { getSecret } from "../utils/secret-manager";
 import * as stripeService from "../services/stripe.service";
-import bookingsService from "../services/bookings.service";
-import notificationsService from "../services/notifications.service";
 import { sendConfirmationEmail } from "../services/sendgrid.service";
 import authService from "../services/auth.service";
 import purchaseService from "../services/purchase.service";
@@ -1713,34 +1711,13 @@ app.post("/webhook", async (req, res) => {
           break;
         }
 
-        if (purchaseType === "private_lesson") {
-          try {
-            await bookingsService.createConfirmedBookingFromSession(session);
-
-            const customerDetails = session["customer_details"] as Record<string, unknown> | undefined;
-            const recipientEmail = (customerDetails?.["email"] as string) || sessionMeta["contactEmail"];
-            if (recipientEmail) {
-              await sendConfirmationEmail(recipientEmail, "private_lesson", {
-                instructorName: sessionMeta["instructorName"],
-                studioName: sessionMeta["studioName"],
-                date: sessionMeta["date"],
-                timeSlot: `${sessionMeta["timeSlotStart"]} – ${sessionMeta["timeSlotEnd"]}`,
-                amountPaid: sessionMeta["amountPaid"],
-              });
-            }
-
-            await notificationsService.createNotification(
-              sessionMeta["studioId"] || "",
-              null,
-              "private_lesson_booking",
-              "New Private Lesson Request",
-              `${sessionMeta["instructorName"]} has a new private lesson request for ${sessionMeta["date"]}. Payment received — confirm or cancel the booking.`,
-            );
-          } catch (err) {
-            console.error("[webhook] Error handling private_lesson checkout:", err);
-          }
-          break;
-        }
+        // Private lessons no longer use hosted Checkout — new cards go through
+        // POST /bookings/create-payment-intent + /confirm-payment (a direct-charge
+        // PaymentIntent confirmed synchronously client-side), same pattern as
+        // packages/events. That flow doesn't depend on this webhook at all, which
+        // is what caused the old bug: checkout.session.completed for a connected-
+        // account direct charge was never actually delivered here, so bookings
+        // never got created and notifications never fired.
 
         try {
           const customerDetails = session["customer_details"] as Record<string, unknown> | undefined;

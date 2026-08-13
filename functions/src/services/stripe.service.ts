@@ -942,56 +942,6 @@ export async function createAccountSession(accountId: string): Promise<Stripe.Ac
   });
 }
 
-interface PrivateLessonCheckoutOpts {
-  amountCents: number;
-  instructorName: string;
-  customerEmail?: string;
-  connectedAccountId?: string | null;
-  metadata: Record<string, string>;
-  successUrl: string;
-  cancelUrl: string;
-  applicationFeeAmount?: number | null;
-}
-
-export async function createPrivateLessonCheckoutSession(opts: PrivateLessonCheckoutOpts): Promise<Stripe.Checkout.Session> {
-  const { amountCents, instructorName, customerEmail, connectedAccountId, metadata, successUrl, cancelUrl, applicationFeeAmount = null } = opts;
-  const stripe = await getStripeClient();
-
-  const sessionParams: Stripe.Checkout.SessionCreateParams = {
-    mode: "payment",
-    line_items: [{
-      price_data: {
-        currency: "usd",
-        unit_amount: amountCents,
-        product_data: {
-          name: `Private Lesson — ${instructorName}`,
-          description: "1-hour private lesson",
-        },
-      },
-      quantity: 1,
-    }],
-    metadata,
-    payment_intent_data: { metadata },
-    payment_method_types: ["card"],
-    success_url: successUrl,
-    cancel_url: cancelUrl,
-  };
-
-  if (customerEmail) sessionParams.customer_email = customerEmail;
-
-  const requestOptions: Stripe.RequestOptions = {};
-
-  if (connectedAccountId) {
-    const pid = sessionParams.payment_intent_data as Record<string, unknown>;
-    const fee = applicationFeeAmount ?? platformFeeCents(amountCents);
-    if (fee > 0) pid["application_fee_amount"] = fee;
-    // Direct charge on the connected account — charges appear in the studio's
-    // Payments dashboard and balance, consistent with package/subscription charges.
-    requestOptions.stripeAccount = connectedAccountId;
-  }
-
-  return await stripe.checkout.sessions.create(sessionParams, requestOptions);
-}
 
 export async function createOneTimePaymentCheckout(
   customerId: string,
