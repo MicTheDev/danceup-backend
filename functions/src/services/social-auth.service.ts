@@ -1,6 +1,7 @@
 import * as admin from "firebase-admin";
 import authService from "./auth.service";
 import studioEnrollmentService from "./studio-enrollment.service";
+import instructorLinkingService from "./instructor-linking.service";
 import { createCustomer } from "./stripe.service";
 import { getFirestore } from "../utils/firestore";
 import { getFirebaseApiKey } from "../utils/firebase-api-key";
@@ -79,6 +80,12 @@ export async function completeSocialSignIn(profile: SocialProfile): Promise<Soci
     }
 
     try {
+      await instructorLinkingService.claimPlaceholderInstructorsForAuthUid(uid, email);
+    } catch (claimError) {
+      console.error(`Error claiming placeholder instructor rows during ${provider} sign-in:`, claimError);
+    }
+
+    try {
       const stripeCustomer = await createCustomer(email, {
         uid,
         studentProfileId,
@@ -91,6 +98,15 @@ export async function completeSocialSignIn(profile: SocialProfile): Promise<Soci
       });
     } catch (stripeError) {
       console.error(`Error creating Stripe customer for ${provider} sign-in:`, stripeError);
+    }
+  } else {
+    // Returning user — re-run the instructor claim on every sign-in (not just the
+    // first) so an instructor record added after this account already existed
+    // still gets linked on their next login, matching plain email/password login.
+    try {
+      await instructorLinkingService.claimPlaceholderInstructorsForAuthUid(uid, email);
+    } catch (claimError) {
+      console.error(`Error claiming placeholder instructor rows during returning ${provider} sign-in:`, claimError);
     }
   }
 

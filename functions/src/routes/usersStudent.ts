@@ -6,6 +6,7 @@ import cors from "cors";
 import authService from "../services/auth.service";
 import storageService from "../services/storage.service";
 import studioEnrollmentService from "../services/studio-enrollment.service";
+import instructorLinkingService from "../services/instructor-linking.service";
 import creditTrackingService from "../services/credit-tracking.service";
 import studentsService from "../services/students.service";
 import classesService from "../services/classes.service";
@@ -124,6 +125,12 @@ app.post("/register", async (req, res) => {
         await studioEnrollmentService.claimPlaceholderStudentsForAuthUid(userRecord.uid, userRecord.email);
       } catch (claimError) {
         console.error("Error claiming placeholder student rows during registration:", claimError);
+      }
+
+      try {
+        await instructorLinkingService.claimPlaceholderInstructorsForAuthUid(userRecord.uid, userRecord.email);
+      } catch (claimError) {
+        console.error("Error claiming placeholder instructor rows during registration:", claimError);
       }
 
       try {
@@ -279,6 +286,12 @@ app.post("/login", async (req, res) => {
     }
     const studentData = studentDoc.data();
 
+    try {
+      await instructorLinkingService.claimPlaceholderInstructorsForAuthUid(userRecord.uid, userRecord.email);
+    } catch (claimError) {
+      console.error("Error claiming placeholder instructor rows during login:", claimError);
+    }
+
     let tokenResponse: { idToken: string; refreshToken: string; expiresIn: string };
     try {
       const customToken = await authService.createCustomToken(userRecord.uid);
@@ -326,11 +339,26 @@ app.get("/me", async (req, res) => {
       studiosWithLiveCredits[studioId] = { credits };
     }
 
+    const instructorLinksRaw = (studentData["instructorLinks"] as Record<string, { instructorId: string }>) ?? {};
+    const instructorLinks = await Promise.all(
+      Object.entries(instructorLinksRaw).map(async ([studioOwnerId, link]) => {
+        let studioName = "Studio";
+        try {
+          const studioDoc = await getFirestore().collection("users").doc(studioOwnerId).get();
+          if (studioDoc.exists) {
+            studioName = ((studioDoc.data() as Record<string, unknown>)["studioName"] as string) || studioName;
+          }
+        } catch { /* fall back to default label */ }
+        return { studioOwnerId, instructorId: link.instructorId, studioName };
+      }),
+    );
+
     sendJsonResponse(req, res, 200, {
       uid: user.uid,
       email: user.email,
       studentProfileId: studentDoc.id,
       autoCheckInClassIds: (studentData["autoCheckInClassIds"] as string[]) || [],
+      instructorLinks,
       profile: {
         firstName: studentData["firstName"],
         lastName: studentData["lastName"],

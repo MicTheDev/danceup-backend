@@ -6,6 +6,7 @@ import bookingsService from "../services/bookings.service";
 import notificationsService from "../services/notifications.service";
 import instructorsService from "../services/instructors.service";
 import authService from "../services/auth.service";
+import instructorLinkingService from "../services/instructor-linking.service";
 import * as stripeService from "../services/stripe.service";
 import * as sendgridService from "../services/sendgrid.service";
 import { verifyToken } from "../utils/auth";
@@ -22,6 +23,88 @@ import {
 } from "../utils/http";
 
 const app = express();
+
+/**
+ * Sends the confirmation email + studio/instructor/student notifications for a
+ * newly paid private-lesson booking. The single place all paid-booking entry
+ * points (saved-card charge, new-card PaymentIntent confirm) call through, so
+ * they can't drift out of sync the way the old Checkout-webhook path did when
+ * it was never given the instructor-push logic added to the other two.
+ */
+async function notifyPrivateLessonBookingCreated(params: {
+  bookingId: string;
+  instructorId: string;
+  studioId: string;
+  studioName: string;
+  instructorName: string;
+  date: string;
+  timeSlot: { startTime: string; endTime: string };
+  amountPaid: number;
+  authUid: string;
+  studentEmail?: string | null;
+}): Promise<void> {
+  const { bookingId, instructorId, studioId, studioName, instructorName, date, timeSlot, amountPaid, authUid, studentEmail } = params;
+  const db = getFirestore();
+
+  try {
+    if (studentEmail) {
+      await sendgridService.sendConfirmationEmail(studentEmail, "private_lesson", {
+        instructorName,
+        studioName,
+        date,
+        timeSlot: `${timeSlot.startTime} – ${timeSlot.endTime}`,
+        amountPaid,
+      });
+    }
+  } catch (err) { console.error("[booking] Email error:", err); }
+
+  try {
+    await notificationsService.createNotification(
+      studioId,
+      bookingId,
+      "private_lesson_booking",
+      "New Private Lesson Request",
+      `${instructorName} has a new private lesson request for ${date}. Payment received — confirm or cancel the booking.`,
+    );
+  } catch (err) { console.error("[booking] Studio notification error:", err); }
+
+  try {
+    const instructorDoc = await db.collection("instructors").doc(instructorId).get();
+    const instructorAuthUid = instructorDoc.exists
+      ? (instructorDoc.data() as Record<string, unknown>)["authUid"] as string | undefined
+      : undefined;
+    if (instructorAuthUid) {
+      const pushTitle = "New private lesson request";
+      const pushBody = `New request for ${date} at ${timeSlot.startTime} — payment received.`;
+      await db.collection("studentNotifications").add({
+        authUid: instructorAuthUid,
+        context: "instructor",
+        type: "new_private_booking",
+        title: pushTitle,
+        body: pushBody,
+        bookingId,
+        read: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      await sendStudentPush(instructorAuthUid, pushTitle, pushBody);
+    }
+  } catch (err) { console.error("[booking] Instructor notification error:", err); }
+
+  try {
+    const pushTitle = "Private Lesson Payment Confirmed";
+    const pushBody = `${instructorName} at ${studioName} — ${date} · $${amountPaid}`;
+    await db.collection("studentNotifications").add({
+      authUid,
+      type: "payment",
+      title: pushTitle,
+      body: pushBody,
+      bookingId,
+      read: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await sendStudentPush(authUid, pushTitle, pushBody);
+  } catch (err) { console.error("[booking] Student notification error:", err); }
+}
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -95,6 +178,41 @@ app.post("/", async (req, res) => {
       );
     } catch (err) { console.error("Error creating notification:", err); }
 
+    try {
+      const instructorId = (req.body as Record<string, unknown>)["instructorId"] as string;
+      const instructorDoc = await getFirestore().collection("instructors").doc(instructorId).get();
+      const instructorAuthUid = instructorDoc.exists
+        ? (instructorDoc.data() as Record<string, unknown>)["authUid"] as string | undefined
+        : undefined;
+
+      // Only linked instructors have a mobile identity to notify — a no-op for
+      // instructors who haven't claimed a users-app account yet.
+      if (instructorAuthUid) {
+        const bookingDate = new Date((req.body as Record<string, unknown>)["date"] as string);
+        const timeSlot = (req.body as Record<string, unknown>)["timeSlot"] as Record<string, unknown> | undefined;
+        const formattedDate = bookingDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+        const studentProfileDoc = await getFirestore().collection("usersStudentProfiles").doc(studentId).get();
+        const studentName = studentProfileDoc.exists
+          ? `${(studentProfileDoc.data() as Record<string, unknown>)["firstName"] ?? ""} ${(studentProfileDoc.data() as Record<string, unknown>)["lastName"] ?? ""}`.trim()
+          : "A student";
+
+        const pushTitle = "New private lesson request";
+        const pushBody = `${studentName || "A student"} requested a private lesson on ${formattedDate}${timeSlot?.["startTime"] ? ` at ${timeSlot["startTime"] as string}` : ""}`;
+
+        await getFirestore().collection("studentNotifications").add({
+          authUid: instructorAuthUid,
+          context: "instructor",
+          type: "new_private_booking",
+          title: pushTitle,
+          body: pushBody,
+          bookingId,
+          read: false,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        await sendStudentPush(instructorAuthUid, pushTitle, pushBody);
+      }
+    } catch (err) { console.error("Error notifying instructor of new booking:", err); }
+
     sendJsonResponse(req, res, 201, booking);
   } catch (error) {
     console.error("Error creating booking:", error);
@@ -105,7 +223,7 @@ app.post("/", async (req, res) => {
   }
 });
 
-app.post("/create-checkout", async (req, res) => {
+app.post("/create-payment-intent", async (req, res) => {
   try {
     let user;
     try { user = await verifyToken(req); } catch {
@@ -119,11 +237,8 @@ app.post("/create-checkout", async (req, res) => {
     }
 
     const studentId = await bookingsService.getStudentId(user.uid);
-    const appOrigin = req.headers.origin || "https://danceup.com";
-    const successUrl = `${appOrigin}/bookings/confirmation`;
-    const cancelUrl = `${appOrigin}/studios/${studioId}/instructor/${instructorId}/book`;
 
-    const result = await bookingsService.createPrivateLessonCheckout(
+    const result = await bookingsService.createPrivateLessonPaymentIntent(
       {
         instructorId: instructorId as string,
         studioId: studioId as string,
@@ -134,16 +249,72 @@ app.post("/create-checkout", async (req, res) => {
       },
       { uid: user.uid, email: user.email },
       studentId,
-      successUrl as string,
-      cancelUrl as string,
     );
 
     sendJsonResponse(req, res, 200, result);
   } catch (error) {
-    console.error("Error creating private lesson checkout:", error);
+    console.error("Error creating private lesson payment intent:", error);
     if ((error as Error).message === "This time slot is no longer available") {
       return sendErrorResponse(req, res, 409, "Conflict", (error as Error).message);
     }
+    handleError(req, res, error);
+  }
+});
+
+app.post("/confirm-payment", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch {
+      return sendErrorResponse(req, res, 401, "Authentication Failed", "Login required to book a private lesson.");
+    }
+
+    const { paymentIntentId } = req.body as Record<string, unknown>;
+    if (!paymentIntentId || typeof paymentIntentId !== "string") {
+      return sendErrorResponse(req, res, 400, "Validation Error", "paymentIntentId is required");
+    }
+
+    const booking = await bookingsService.confirmPrivateLessonPayment(paymentIntentId, user.uid);
+    const bookingData = booking as Record<string, unknown>;
+
+    const instructor = await instructorsService.getPublicInstructorById(bookingData["instructorId"] as string) as Record<string, unknown> | null;
+    const instructorName = instructor ? [instructor["firstName"], instructor["lastName"]].filter(Boolean).join(" ") : "Instructor";
+    const studioOwnerDoc = await getFirestore().collection("users").doc(bookingData["studioId"] as string).get();
+    const studioName = studioOwnerDoc.exists
+      ? ((studioOwnerDoc.data() as Record<string, unknown>)["studioName"] as string) || "Studio"
+      : "Studio";
+
+    const profileDoc = await authService.getStudentProfileByAuthUid(user.uid);
+    const recipientEmail = profileDoc ? ((profileDoc.data() as Record<string, unknown>)["email"] as string) : user.email;
+
+    const timeSlot = bookingData["timeSlot"] as { startTime: string; endTime: string };
+    await notifyPrivateLessonBookingCreated({
+      bookingId: booking.id,
+      instructorId: bookingData["instructorId"] as string,
+      studioId: bookingData["studioId"] as string,
+      studioName,
+      instructorName,
+      date: bookingData["date"] as string,
+      timeSlot,
+      amountPaid: (bookingData["amountPaid"] as number) || 0,
+      authUid: user.uid,
+      studentEmail: recipientEmail,
+    });
+
+    sendJsonResponse(req, res, 200, {
+      success: true,
+      bookingId: booking.id,
+      instructorName,
+      studioName,
+      date: bookingData["date"],
+      timeSlot,
+      amountPaid: bookingData["amountPaid"],
+    });
+  } catch (error) {
+    console.error("Error confirming private lesson payment:", error);
+    const msg = (error as Error).message;
+    if (msg === "Payment record not found") return sendErrorResponse(req, res, 404, "Not Found", msg);
+    if (msg === "Access denied") return sendErrorResponse(req, res, 403, "Access Denied", msg);
+    if (msg === "Payment not completed") return sendErrorResponse(req, res, 400, "Validation Error", msg);
     handleError(req, res, error);
   }
 });
@@ -284,66 +455,36 @@ app.post("/charge-saved", async (req, res) => {
       return sendErrorResponse(req, res, 402, "Payment Failed", "Payment could not be completed. Please try a different card.");
     }
 
-    const bookingDoc = {
+    const booking = await bookingsService.createBookingRecord({
       studentId,
       authUid: user.uid,
-      instructorId,
-      studioId,
-      date,
-      timeSlot: { startTime: ts["startTime"], endTime: ts["endTime"] },
-      status: "pending",
-      paymentStatus: "paid",
-      stripePaymentIntentId: piData["id"],
-      stripeConnectedAccountId: connectedAccountId,
+      instructorId: instructorId as string,
+      studioId: studioId as string,
+      date: date as string,
+      timeSlot: { startTime: ts["startTime"] as string, endTime: ts["endTime"] as string },
       notes: (notes as string) || null,
-      amountPaid: instructor["privateRate"],
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
-    const bookingRef = await db.collection("privateLessonBookings").add(bookingDoc);
+      amountPaid: instructor["privateRate"] as number,
+      stripePaymentIntentId: piData["id"] as string,
+      stripeConnectedAccountId: connectedAccountId,
+    });
 
-    try {
-      const recipientEmail = profileDoc ? ((profileDoc.data() as Record<string, unknown>)["email"] as string) : user.email;
-      if (recipientEmail) {
-        await sendgridService.sendConfirmationEmail(recipientEmail, "private_lesson", {
-          instructorName,
-          studioName,
-          date: date as string,
-          timeSlot: `${ts["startTime"]} – ${ts["endTime"]}`,
-          amountPaid: instructor["privateRate"] as number,
-        });
-      }
-    } catch (emailErr) { console.error("[charge-saved booking] Email error:", emailErr); }
-
-    try {
-      await notificationsService.createNotification(
-        studioId as string,
-        bookingRef.id,
-        "private_lesson_booking",
-        "New Private Lesson Request",
-        `${instructorName} has a new private lesson request for ${date}. Payment received — confirm or cancel the booking.`,
-      );
-    } catch (notifyErr) { console.error("[charge-saved booking] Notification error:", notifyErr); }
-
-    try {
-      const db = getFirestore();
-      const pushTitle = "Private Lesson Payment Confirmed";
-      const pushBody = `${instructorName} at ${studioName} — ${date} · $${instructor["privateRate"] as number}`;
-      await db.collection("studentNotifications").add({
-        authUid: user.uid,
-        type: "payment",
-        title: pushTitle,
-        body: pushBody,
-        bookingId: bookingRef.id,
-        read: false,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      await sendStudentPush(user.uid, pushTitle, pushBody);
-    } catch (notifErr) { console.error("[charge-saved booking] Student notification error:", notifErr); }
+    const recipientEmail = profileDoc ? ((profileDoc.data() as Record<string, unknown>)["email"] as string) : user.email;
+    await notifyPrivateLessonBookingCreated({
+      bookingId: booking.id,
+      instructorId: instructorId as string,
+      studioId: studioId as string,
+      studioName,
+      instructorName,
+      date: date as string,
+      timeSlot: { startTime: ts["startTime"] as string, endTime: ts["endTime"] as string },
+      amountPaid: instructor["privateRate"] as number,
+      authUid: user.uid,
+      studentEmail: recipientEmail,
+    });
 
     sendJsonResponse(req, res, 200, {
       success: true,
-      bookingId: bookingRef.id,
+      bookingId: booking.id,
       instructorName,
       studioName,
       date,
@@ -358,7 +499,8 @@ app.post("/charge-saved", async (req, res) => {
 
 app.get("/instructor/:instructorId", async (req, res) => {
   try {
-    try { await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
     const instructorId = req.params["instructorId"] as string;
     const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
@@ -373,7 +515,27 @@ app.get("/instructor/:instructorId", async (req, res) => {
     }
 
     const bookings = await bookingsService.getBookingsByInstructor(instructorId, startDate, endDate);
-    sendJsonResponse(req, res, 200, bookings);
+
+    // This endpoint is legitimately called by ANY authenticated user browsing an
+    // instructor's public availability while booking a private lesson — it must stay
+    // open for that. What was actually missing was redaction: it was handing back other
+    // students' studentId/notes/contactInfo to anyone. Only the linked instructor
+    // themself (or the studio that owns them) gets the unredacted view; everyone else
+    // gets just enough to know a slot is taken.
+    const links = await instructorLinkingService.getInstructorLinksForAuthUid(user.uid);
+    const isThisInstructor = Object.values(links).some((link) => link.instructorId === instructorId);
+    const isOwningStudio = !isThisInstructor && await (async () => {
+      const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
+      if (!userDoc) return false;
+      const instructorData = await instructorsService.getInstructorById(instructorId, userDoc.id).catch(() => null);
+      return !!instructorData;
+    })();
+
+    const response = (isThisInstructor || isOwningStudio)
+      ? bookings
+      : bookings.map((b) => ({ id: b["id"], date: b["date"], timeSlot: b["timeSlot"], status: b["status"] }));
+
+    sendJsonResponse(req, res, 200, response);
   } catch (error) {
     console.error("Error getting instructor bookings:", error);
     handleError(req, res, error);
@@ -495,16 +657,23 @@ app.patch("/:bookingId/confirm", async (req, res) => {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
+    // Either the studio owner or the assigned instructor themself can confirm —
+    // resolve whichever identity this caller actually has.
     const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
-    if (!userDoc) {
-      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    const instructorLink = userDoc
+      ? null
+      : await instructorLinkingService.resolveLink(user.uid, req.query["studioOwnerId"] as string | undefined);
+    if (!userDoc && !instructorLink) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner or linked instructor access required");
     }
-    const studioOwnerId = userDoc.id;
     const bookingId = req.params["bookingId"] as string;
 
     const rawStudioMessage = (req.body as Record<string, unknown> | undefined)?.["message"];
     const studioMessage = typeof rawStudioMessage === "string" ? rawStudioMessage.trim().slice(0, 500) || undefined : undefined;
-    const booking = await bookingsService.confirmBooking(bookingId, studioOwnerId);
+    const booking = await bookingsService.confirmBooking(bookingId, userDoc
+      ? { studioOwnerId: userDoc.id }
+      : { instructorId: instructorLink!.instructorId });
+    const studioOwnerId = (booking["studioId"] as string) ?? userDoc?.id ?? instructorLink?.studioOwnerId;
 
     const db = getFirestore();
 

@@ -30,6 +30,7 @@ export { teams } from "./routes/teams";
 export { support } from "./routes/support";
 export { updateClassImages } from "./routes/updateClassImages";
 export { usersstudent } from "./routes/usersStudent";
+export { usersinstructor } from "./routes/usersInstructor";
 export { workshops } from "./routes/workshops";
 export { kioskSessions } from "./routes/kiosk-sessions";
 export { processAccountDeletions } from "./routes/account-deletion-scheduler";

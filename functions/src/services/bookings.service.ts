@@ -158,15 +158,24 @@ export class BookingsService {
     await ref.update({ status: "cancelled", updatedAt: admin.firestore.FieldValue.serverTimestamp() });
   }
 
+  /**
+   * Confirms a booking on behalf of either the studio owner (via studioOwnerId)
+   * or the assigned instructor themself (via instructorId) — same booking,
+   * same status transition, two different people allowed to trigger it, kept
+   * in sync since it's the one Firestore doc either caller is updating.
+   */
   async confirmBooking(
-    bookingId: string, studioOwnerId: string,
+    bookingId: string, caller: { studioOwnerId?: string; instructorId?: string },
   ): Promise<Record<string, unknown> & { id: string }> {
     const db = getFirestore();
     const ref = db.collection("privateLessonBookings").doc(bookingId);
     const doc = await ref.get();
     if (!doc.exists) throw new Error("Booking not found");
     const bookingData = doc.data() as Record<string, unknown>;
-    if (bookingData["studioId"] !== studioOwnerId) {
+
+    const isStudioOwner = caller.studioOwnerId && bookingData["studioId"] === caller.studioOwnerId;
+    const isAssignedInstructor = caller.instructorId && bookingData["instructorId"] === caller.instructorId;
+    if (!isStudioOwner && !isAssignedInstructor) {
       throw new Error("Access denied: Booking does not belong to this studio");
     }
     if (bookingData["status"] === "confirmed") throw new Error("Booking is already confirmed");
@@ -317,13 +326,18 @@ export class BookingsService {
     return { id: doc.id, ...bookingData, student: studentInfo, instructor: instructorInfo };
   }
 
-  async createPrivateLessonCheckout(
+  /**
+   * Creates a PaymentIntent directly on the studio's connected account for a new
+   * (non-saved) card — the self-hosted Payment Element flow, consistent with how
+   * packages/events/classes take payment. Replaces the old hosted Stripe Checkout
+   * redirect, whose fulfillment depended on a webhook that connected-account direct
+   * charges never reliably delivered.
+   */
+  async createPrivateLessonPaymentIntent(
     bookingData: BookingData,
     user: { uid: string; email?: string | null },
     studentId: string,
-    successUrl: string,
-    cancelUrl: string,
-  ): Promise<{ checkoutUrl: string; sessionId: string }> {
+  ): Promise<{ clientSecret: string; paymentIntentId: string; connectedAccountId: string }> {
     const isAvailable = await this.isTimeSlotAvailable(
       bookingData.instructorId,
       bookingData.date,
@@ -343,17 +357,17 @@ export class BookingsService {
     const studioOwnerDoc = await db.collection("users").doc(bookingData.studioId).get();
     const studioOwnerData = studioOwnerDoc.exists ? (studioOwnerDoc.data() as Record<string, unknown>) : {};
     const connectedAccountId = (studioOwnerData["stripeAccountId"] as string | null) ?? null;
-    const studioName = (studioOwnerData["studioName"] as string) || "Studio";
+    if (!connectedAccountId) throw new Error("This studio has not completed Stripe setup.");
 
     const instructorName = [instructor.firstName, instructor.lastName].filter(Boolean).join(" ");
     const amountCents = Math.round(privateRate * 100);
+    const applicationFeeAmount = stripeService.platformFeeCents(amountCents);
 
     const metadata: Record<string, string> = {
       purchaseType: "private_lesson",
       instructorId: bookingData.instructorId,
       instructorName,
       studioId: bookingData.studioId,
-      studioName,
       date: bookingData.date,
       timeSlotStart: bookingData.timeSlot.startTime,
       timeSlotEnd: bookingData.timeSlot.endTime,
@@ -362,74 +376,129 @@ export class BookingsService {
       authUid: user.uid,
       amountPaid: String(privateRate),
     };
-
-    if (connectedAccountId) metadata["stripeConnectedAccountId"] = connectedAccountId;
     if (bookingData.contactInfo?.email) metadata["contactEmail"] = bookingData.contactInfo.email;
     if (bookingData.contactInfo?.phone) metadata["contactPhone"] = bookingData.contactInfo.phone;
 
-    const timeLabel = encodeURIComponent(`${bookingData.timeSlot.startTime} - ${bookingData.timeSlot.endTime}`);
-    const fullSuccessUrl = `${successUrl}?session_id={CHECKOUT_SESSION_ID}` +
-      `&studioId=${encodeURIComponent(bookingData.studioId)}` +
-      `&instructorId=${encodeURIComponent(bookingData.instructorId)}` +
-      `&bookingDate=${encodeURIComponent(bookingData.date)}` +
-      `&bookingTime=${timeLabel}` +
-      `&instructorName=${encodeURIComponent(instructorName)}` +
-      `&studioName=${encodeURIComponent(studioName)}`;
-
-    const session = await stripeService.createPrivateLessonCheckoutSession({
+    const paymentIntent = await stripeService.createDirectPaymentIntent(
       amountCents,
-      instructorName,
-      customerEmail: user.email ?? undefined,
       connectedAccountId,
+      applicationFeeAmount,
       metadata,
-      successUrl: fullSuccessUrl,
-      cancelUrl,
+    );
+
+    // Server-side record of which connected account this PaymentIntent lives on, so
+    // /confirm-payment never has to trust a client-supplied connectedAccountId.
+    await db.collection("pendingPrivateLessonPaymentIntents").doc(paymentIntent.id).set({
+      connectedAccountId,
+      authUid: user.uid,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    return { checkoutUrl: session.url as string, sessionId: session.id };
+    return {
+      clientSecret: paymentIntent.client_secret as string,
+      paymentIntentId: paymentIntent.id,
+      connectedAccountId,
+    };
   }
 
-  async createConfirmedBookingFromSession(session: Record<string, unknown>): Promise<string> {
-    const meta = (session["metadata"] ?? {}) as Record<string, string>;
-    if (meta["purchaseType"] !== "private_lesson") {
-      throw new Error("Session is not a private_lesson purchase");
-    }
-
+  /**
+   * Creates the paid booking doc, or returns the existing one if this
+   * stripePaymentIntentId has already been recorded — the single source of truth
+   * both the saved-card charge and the confirm-payment flow write through, so they
+   * can't drift out of sync with each other again.
+   */
+  async createBookingRecord(params: {
+    studentId: string;
+    authUid: string;
+    instructorId: string;
+    studioId: string;
+    date: string;
+    timeSlot: TimeSlot;
+    notes?: string | null;
+    contactInfo?: { email?: string | null; phone?: string | null } | null;
+    amountPaid: number;
+    stripePaymentIntentId: string;
+    stripeConnectedAccountId: string | null;
+  }): Promise<Record<string, unknown> & { id: string }> {
     const db = getFirestore();
-    const bookingsRef = db.collection("privateLessonBookings");
 
-    const existing = await bookingsRef
-      .where("stripeSessionId", "==", session["id"])
+    const existing = await db.collection("privateLessonBookings")
+      .where("stripePaymentIntentId", "==", params.stripePaymentIntentId)
       .limit(1)
       .get();
     if (!existing.empty) {
-      const firstDoc = existing.docs[0];
-      if (firstDoc) return firstDoc.id;
+      const doc = existing.docs[0]!;
+      return { id: doc.id, ...doc.data() };
     }
 
-    const customerDetails = session["customer_details"] as Record<string, unknown> | undefined;
-    const docRef = await bookingsRef.add({
-      studentId: meta["studentId"] || "",
-      authUid: meta["authUid"] || "",
-      instructorId: meta["instructorId"],
-      studioId: meta["studioId"],
-      date: meta["date"],
-      timeSlot: { startTime: meta["timeSlotStart"], endTime: meta["timeSlotEnd"] },
+    const bookingDoc = {
+      studentId: params.studentId,
+      authUid: params.authUid,
+      instructorId: params.instructorId,
+      studioId: params.studioId,
+      date: params.date,
+      timeSlot: params.timeSlot,
       status: "pending",
       paymentStatus: "paid",
-      stripeSessionId: session["id"],
-      stripePaymentIntentId: (session["payment_intent"] as string) || null,
-      stripeConnectedAccountId: meta["stripeConnectedAccountId"] || null,
-      notes: meta["notes"] || null,
-      contactInfo: {
-        email: meta["contactEmail"] || (customerDetails?.["email"] as string | null) || null,
-        phone: meta["contactPhone"] || null,
-      },
-      amountPaid: parseFloat(meta["amountPaid"] ?? "0") || 0,
+      stripePaymentIntentId: params.stripePaymentIntentId,
+      stripeConnectedAccountId: params.stripeConnectedAccountId,
+      notes: params.notes || null,
+      contactInfo: params.contactInfo || null,
+      amountPaid: params.amountPaid,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    const bookingRef = await db.collection("privateLessonBookings").add(bookingDoc);
+    return { id: bookingRef.id, ...bookingDoc };
+  }
+
+  /**
+   * Verifies a PaymentIntent succeeded and creates the booking doc from its
+   * (server-set, tamper-proof) metadata.
+   */
+  async confirmPrivateLessonPayment(
+    paymentIntentId: string,
+    authUid: string,
+  ): Promise<Record<string, unknown> & { id: string }> {
+    const db = getFirestore();
+
+    const existing = await db.collection("privateLessonBookings")
+      .where("stripePaymentIntentId", "==", paymentIntentId)
+      .limit(1)
+      .get();
+    if (!existing.empty) {
+      const doc = existing.docs[0]!;
+      return { id: doc.id, ...doc.data() };
+    }
+
+    const pendingDoc = await db.collection("pendingPrivateLessonPaymentIntents").doc(paymentIntentId).get();
+    if (!pendingDoc.exists) throw new Error("Payment record not found");
+
+    const pendingData = pendingDoc.data() as Record<string, unknown>;
+    if (pendingData["authUid"] !== authUid) throw new Error("Access denied");
+    const connectedAccountId = pendingData["connectedAccountId"] as string;
+
+    const paymentIntent = await stripeService.retrieveConnectedPaymentIntent(paymentIntentId, connectedAccountId);
+    if (paymentIntent.status !== "succeeded") throw new Error("Payment not completed");
+
+    const meta = (paymentIntent.metadata || {}) as Record<string, string>;
+
+    const booking = await this.createBookingRecord({
+      studentId: meta["studentId"] || "",
+      authUid: meta["authUid"] || authUid,
+      instructorId: meta["instructorId"] as string,
+      studioId: meta["studioId"] as string,
+      date: meta["date"] as string,
+      timeSlot: { startTime: meta["timeSlotStart"] as string, endTime: meta["timeSlotEnd"] as string },
+      notes: meta["notes"] || null,
+      contactInfo: { email: meta["contactEmail"] || null, phone: meta["contactPhone"] || null },
+      amountPaid: parseFloat(meta["amountPaid"] ?? "0") || 0,
+      stripePaymentIntentId: paymentIntentId,
+      stripeConnectedAccountId: connectedAccountId,
     });
-    return docRef.id;
+    await pendingDoc.ref.delete();
+
+    return booking;
   }
 }
 
