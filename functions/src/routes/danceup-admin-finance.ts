@@ -157,7 +157,7 @@ app.get("/", async (req: Request, res: Response) => {
               displayAmount = charge.amount / 100;
               platformFee = bt.amount / 100;
             } else {
-              platformFee = Math.round((0.30 + displayAmount * 0.015) * 100) / 100;
+              platformFee = Math.round((0.30 + displayAmount * 0.0075) * 100) / 100;
             }
           } else if (bt.type === "application_fee") {
             // Charge not expanded — platform fee is still bt.amount
@@ -202,7 +202,7 @@ app.get("/", async (req: Request, res: Response) => {
         const charge = resolveCharge(bt.type, source);
         const platformFeeAmt = bt.type === "application_fee"
           ? bt.amount / 100                                    // direct: app fee amount
-          : Math.round((0.30 + (bt.amount / 100) * 0.015) * 100) / 100; // computed: $0.30 + 1.5%
+          : Math.round((0.30 + (bt.amount / 100) * 0.0075) * 100) / 100; // computed: $0.30 + 0.75%
         const grossAmt = charge
           ? charge.amount / 100
           : bt.type === "application_fee"
