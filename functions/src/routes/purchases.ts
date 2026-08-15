@@ -8,6 +8,7 @@ import { sendStudentPush } from "../utils/push-notifications";
 import * as stripeService from "../services/stripe.service";
 import purchaseService from "../services/purchase.service";
 import creditTrackingService from "../services/credit-tracking.service";
+import attendanceService from "../services/attendance.service";
 import authService from "../services/auth.service";
 import { sendConfirmationEmail } from "../services/sendgrid.service";
 import classesService from "../services/classes.service";
@@ -90,6 +91,7 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
     const itemId = body["itemId"] as string | undefined;
     const selectedTiers = body["selectedTiers"];
     const teamName = typeof body["teamName"] === "string" && body["teamName"].trim() ? body["teamName"].trim() : null;
+    const dependentId = typeof body["dependentId"] === "string" && body["dependentId"].trim() ? body["dependentId"].trim() : null;
     if (!purchaseType || !itemId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType and itemId are required");
     }
@@ -111,18 +113,27 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
 
     const db = getFirestore();
 
+    const itemDetails = await purchaseService.getItemDetails(purchaseType as "class" | "event" | "workshop" | "package", itemId);
+
+    // Resolved AFTER itemDetails specifically so this can be scoped by
+    // studioOwnerId — an authUid-only query previously risked grabbing an
+    // arbitrary studio's roster row for anyone enrolled at more than one
+    // studio, baking the wrong studentId into Stripe metadata below.
     let studentDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
-    if (user) {
+    if (dependentId) {
+      const resolvedId = await attendanceService.resolveOrCreateStudentIdForDependent(
+        user.uid, itemDetails.studioOwnerId, dependentId,
+      );
+      const doc = await db.collection("students").doc(resolvedId).get();
+      studentDoc = doc.exists ? (doc as unknown as FirebaseFirestore.QueryDocumentSnapshot) : null;
+    } else {
       const studentQuery = await db.collection("students")
         .where("authUid", "==", user.uid)
-        .limit(1)
+        .where("studioOwnerId", "==", itemDetails.studioOwnerId)
         .get();
-      if (!studentQuery.empty) {
-        studentDoc = studentQuery.docs[0] ?? null;
-      }
+      const match = studentQuery.docs.find((doc) => !doc.data()["dependentId"]) ?? null;
+      studentDoc = match;
     }
-
-    const itemDetails = await purchaseService.getItemDetails(purchaseType as "class" | "event" | "workshop" | "package", itemId);
 
     const studioOwnerRef = db.collection("users").doc(itemDetails.studioOwnerId);
     const studioOwnerDoc = await studioOwnerRef.get();
@@ -232,6 +243,7 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
       studentId: studentDoc ? studentDoc.id : "",
       authUid: user.uid,
       ...(teamName ? { teamName } : {}),
+      ...(dependentId ? { dependentId } : {}),
     };
 
     // For events/workshops, compute the actual total from the tiers the user selected.
@@ -331,6 +343,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
     const paymentMethodId = body["paymentMethodId"] as string | undefined;
     const selectedTiers = body["selectedTiers"];
     const teamName = typeof body["teamName"] === "string" && body["teamName"].trim() ? body["teamName"].trim() : null;
+    const dependentId = typeof body["dependentId"] === "string" && body["dependentId"].trim() ? body["dependentId"].trim() : null;
 
     if (!purchaseType || !itemId || !paymentMethodId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType, itemId, and paymentMethodId are required");
@@ -401,19 +414,33 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
     }
     const studioOwnerId = itemDetails.studioOwnerId;
 
-    // ── Verify enrollment: query for the student in THIS specific studio ──
-    // Using authUid + studioOwnerId ensures multi-studio users get the correct doc.
-    const studentQuery = await db.collection("students")
-      .where("authUid", "==", user.uid)
-      .where("studioOwnerId", "==", studioOwnerId)
-      .limit(1)
-      .get();
-
-    if (studentQuery.empty) {
-      return sendErrorResponse(req, res, 403, "Forbidden", "You are not enrolled in this studio.");
+    // ── Verify enrollment: resolve the student in THIS specific studio ────
+    // Using authUid + studioOwnerId ensures multi-studio users get the correct
+    // doc; dependentId picks a specific family member's row. A dependent not
+    // yet enrolled at this studio is auto-enrolled (buying their first package
+    // is the normal way that happens) — the account holder themself still
+    // must already be enrolled, matching this endpoint's existing behavior.
+    let studentDoc: FirebaseFirestore.QueryDocumentSnapshot;
+    if (dependentId) {
+      const resolvedId = await attendanceService.resolveOrCreateStudentIdForDependent(
+        user.uid, studioOwnerId, dependentId,
+      );
+      const doc = await db.collection("students").doc(resolvedId).get();
+      if (!doc.exists) {
+        return sendErrorResponse(req, res, 403, "Forbidden", "Could not enroll this family member at this studio.");
+      }
+      studentDoc = doc as unknown as FirebaseFirestore.QueryDocumentSnapshot;
+    } else {
+      const studentQuery = await db.collection("students")
+        .where("authUid", "==", user.uid)
+        .where("studioOwnerId", "==", studioOwnerId)
+        .get();
+      const match = studentQuery.docs.find((doc) => !doc.data()["dependentId"]);
+      if (!match) {
+        return sendErrorResponse(req, res, 403, "Forbidden", "You are not enrolled in this studio.");
+      }
+      studentDoc = match;
     }
-
-    const studentDoc = studentQuery.docs[0]!;
     const studentData = studentDoc.data() as Record<string, unknown>;
 
     const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
@@ -489,6 +516,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
       studioOwnerId,
       studentId: studentDoc.id,
       authUid: user.uid,
+      ...(dependentId ? { dependentId } : {}),
     };
     // Non-recurring packages must NOT use a stable idempotency key. A stable key causes
     // Stripe to return the cached PI from the first purchase on every subsequent attempt,
@@ -596,6 +624,7 @@ app.post("/charge-saved", paymentCreationLimiter, async (req, res) => {
       creditGranted: creditResult.creditsGranted > 0,
       creditsGranted: creditResult.creditsGranted,
       creditIds: creditResult.creditIds,
+      dependentId,
       classId: purchaseType === "class" ? itemId : null,
       metadata: purchaseMetadata,
     });
@@ -699,6 +728,7 @@ app.post("/create-payment-intent", paymentCreationLimiter, async (req, res) => {
     const body = req.body as Record<string, unknown>;
     const purchaseType = body["purchaseType"] as string | undefined;
     const itemId = body["itemId"] as string | undefined;
+    const dependentId = typeof body["dependentId"] === "string" && body["dependentId"].trim() ? body["dependentId"].trim() : null;
 
     if (!purchaseType || !itemId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "purchaseType and itemId are required");
@@ -730,10 +760,24 @@ app.post("/create-payment-intent", paymentCreationLimiter, async (req, res) => {
       return sendErrorResponse(req, res, 400, "Bad Request", "This studio has not completed Stripe Connect setup.");
     }
 
-    // Resolve student doc
-    const studentQuery = await db.collection("students")
-      .where("authUid", "==", user.uid).limit(1).get();
-    const studentDoc = studentQuery.empty ? null : studentQuery.docs[0]!;
+    // Resolve student doc — scoped by studioOwnerId (not just authUid) so a
+    // parent enrolled at more than one studio can't have this grab an
+    // arbitrary studio's roster row; dependentId picks a specific family
+    // member's row instead of the caller's own.
+    let studentDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+    if (dependentId) {
+      const resolvedId = await attendanceService.resolveOrCreateStudentIdForDependent(
+        user.uid, itemDetails.studioOwnerId, dependentId,
+      );
+      const doc = await db.collection("students").doc(resolvedId).get();
+      studentDoc = doc.exists ? (doc as unknown as FirebaseFirestore.QueryDocumentSnapshot) : null;
+    } else {
+      const studentQuery = await db.collection("students")
+        .where("authUid", "==", user.uid)
+        .where("studioOwnerId", "==", itemDetails.studioOwnerId)
+        .get();
+      studentDoc = studentQuery.docs.find((doc) => !doc.data()["dependentId"]) ?? null;
+    }
     const studentId = studentDoc ? studentDoc.id : "guest";
     const studentName = studentDoc
       ? `${(studentDoc.data()["firstName"] as string) || ""} ${(studentDoc.data()["lastName"] as string) || ""}`.trim()
@@ -794,6 +838,7 @@ app.post("/create-payment-intent", paymentCreationLimiter, async (req, res) => {
       studentId,
       authUid: user.uid,
       connectedCustomerId,
+      ...(dependentId ? { dependentId } : {}),
     };
 
     const paymentIntent = await stripeService.createDirectPaymentIntent(
@@ -1104,6 +1149,7 @@ app.post("/success", async (req, res) => {
       creditGranted: creditResult.creditsGranted > 0,
       creditsGranted: creditResult.creditsGranted,
       creditIds: creditResult.creditIds,
+      dependentId: metadata["dependentId"] || null,
       classId: purchaseType === "class" ? itemId : null,
       metadata: {
         ...itemDetails.metadata,
@@ -1151,6 +1197,7 @@ app.get("/", async (req, res) => {
     const type = req.query["type"] as string | undefined;
     const limitParam = req.query["limit"] as string | undefined;
     const startAfterParam = req.query["startAfter"] as string | undefined;
+    const dependentId = req.query["dependentId"] as string | undefined;
     const limitNum = Math.min(parseInt(limitParam || "50") || 50, 200);
     const purchaseType = type && ["class", "event", "workshop", "package"].includes(type) ? type : null;
 
@@ -1170,6 +1217,17 @@ app.get("/", async (req, res) => {
 
     if (purchaseType) {
       purchasesQuery = purchasesQuery.where("purchaseType", "==", purchaseType);
+    }
+
+    // Explicit dependentId narrows to that family member — every purchase made
+    // going forward always writes this field (even as `null` for "self"), so
+    // this filters cleanly. With no dependentId given, the response is
+    // unfiltered (all family purchases mixed together, as it always has been)
+    // rather than "self only" — narrowing that default would silently hide
+    // pre-existing purchase history for accounts with no dependentId field at
+    // all, which a Firestore equality filter can't distinguish from "self".
+    if (dependentId) {
+      purchasesQuery = purchasesQuery.where("dependentId", "==", dependentId);
     }
 
     if (startAfterParam) {

@@ -15,6 +15,7 @@ interface BookingData {
   timeSlot: TimeSlot;
   notes?: string | null;
   contactInfo?: { email?: string; phone?: string } | null;
+  dependentId?: string | null;
 }
 
 interface StudentInfo {
@@ -378,6 +379,7 @@ export class BookingsService {
     };
     if (bookingData.contactInfo?.email) metadata["contactEmail"] = bookingData.contactInfo.email;
     if (bookingData.contactInfo?.phone) metadata["contactPhone"] = bookingData.contactInfo.phone;
+    if (bookingData.dependentId) metadata["dependentId"] = bookingData.dependentId;
 
     const paymentIntent = await stripeService.createDirectPaymentIntent(
       amountCents,
@@ -419,6 +421,7 @@ export class BookingsService {
     amountPaid: number;
     stripePaymentIntentId: string;
     stripeConnectedAccountId: string | null;
+    dependentId?: string | null;
   }): Promise<Record<string, unknown> & { id: string }> {
     const db = getFirestore();
 
@@ -445,6 +448,11 @@ export class BookingsService {
       notes: params.notes || null,
       contactInfo: params.contactInfo || null,
       amountPaid: params.amountPaid,
+      // Tag only — studentId above is still the account holder's own global
+      // profile id (private lessons never touch the per-studio credit
+      // ledger), so there's no identity resolution to change here, just
+      // which family member this booking is actually for.
+      dependentId: params.dependentId || null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
@@ -495,6 +503,7 @@ export class BookingsService {
       amountPaid: parseFloat(meta["amountPaid"] ?? "0") || 0,
       stripePaymentIntentId: paymentIntentId,
       stripeConnectedAccountId: connectedAccountId,
+      dependentId: meta["dependentId"] || null,
     });
     await pendingDoc.ref.delete();
 

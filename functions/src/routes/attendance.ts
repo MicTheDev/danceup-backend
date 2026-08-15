@@ -395,13 +395,19 @@ app.post("/", async (req, res) => {
       }
       studioOwnerId = classStudioOwnerId;
 
-      // Find the student doc scoped to this specific studio
+      // Find the student doc scoped to this specific studio — dependentId picks
+      // a specific family member's row instead of the caller's own.
+      const dependentId = typeof body["dependentId"] === "string" ? body["dependentId"] as string : undefined;
       if (!studentId && body["studentAuthUid"]) {
         let resolved: string | null;
         try {
-          resolved = await attendanceService.getStudentIdByAuthUidAndStudio(
-            body["studentAuthUid"] as string, studioOwnerId,
-          );
+          resolved = dependentId
+            ? await attendanceService.resolveOrCreateStudentIdForDependent(
+              body["studentAuthUid"] as string, studioOwnerId, dependentId,
+            )
+            : await attendanceService.getStudentIdByAuthUidAndStudio(
+              body["studentAuthUid"] as string, studioOwnerId,
+            );
         } catch (error) {
           console.error("Check-in — student lookup by authUid+studio failed:", (error as Error).message, error);
           return sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred");
@@ -412,7 +418,10 @@ app.post("/", async (req, res) => {
         studentId = resolved;
       }
 
-      // Verify the student doc's authUid matches the caller's token
+      // Verify the student doc's authUid matches the caller's token — this
+      // check needs no dependent-awareness: a dependent's roster row still
+      // carries the PARENT's authUid (dependents never get their own login),
+      // so this already passes correctly for a dependent's row as-is.
       const studentRef = db.collection("students").doc(studentId as string);
       let studentDoc: FirebaseFirestore.DocumentSnapshot;
       try {

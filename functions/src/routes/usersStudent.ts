@@ -1,5 +1,6 @@
 import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
+import * as crypto from "crypto";
 import express, { Request, Response, NextFunction } from "express";
 // force-rebuild: fixes corrupted Cloud Run image reference (2026-07-21)
 import cors from "cors";
@@ -333,9 +334,13 @@ app.get("/me", async (req, res) => {
     const studentData = studentDoc.data() as Record<string, unknown>;
     const studiosBase = studioEnrollmentService.ensureStudiosStructure(studentData) as Record<string, unknown>;
 
+    // Which studios are browsable/relevant stays family-wide (the parent
+    // profile's own studios map) — only the credit BALANCE per studio is
+    // scoped to whichever profile the caller is asking about.
+    const dependentId = typeof req.query["dependentId"] === "string" ? req.query["dependentId"] as string : undefined;
     const studiosWithLiveCredits: Record<string, { credits: number }> = {};
     for (const studioId of Object.keys(studiosBase)) {
-      const credits = await creditTrackingService.getLiveCreditsForAuthUser(user.uid, studioId) as number;
+      const credits = await creditTrackingService.getLiveCreditsForAuthUser(user.uid, studioId, dependentId) as number;
       studiosWithLiveCredits[studioId] = { credits };
     }
 
@@ -353,12 +358,28 @@ app.get("/me", async (req, res) => {
       }),
     );
 
+    const dependentsSnapshot = await getFirestore()
+      .collection("usersStudentProfiles").doc(studentDoc.id).collection("dependents").get();
+    const dependents = dependentsSnapshot.docs.map((doc) => {
+      const data = doc.data() as Record<string, unknown>;
+      return {
+        id: doc.id,
+        firstName: data["firstName"] || "",
+        lastName: data["lastName"] || "",
+        photoURL: data["photoURL"] || null,
+        graduatedAt: data["graduatedAt"] || null,
+        graduationPending: !!data["graduationClaimCode"],
+        graduationClaimCodeExpiresAt: data["graduationClaimCodeExpiresAt"] || null,
+      };
+    });
+
     sendJsonResponse(req, res, 200, {
       uid: user.uid,
       email: user.email,
       studentProfileId: studentDoc.id,
       autoCheckInClassIds: (studentData["autoCheckInClassIds"] as string[]) || [],
       instructorLinks,
+      dependents,
       profile: {
         firstName: studentData["firstName"],
         lastName: studentData["lastName"],
@@ -515,11 +536,336 @@ app.delete("/me/avatar", async (req, res) => {
   }
 });
 
+// ─── Family accounts: dependent profiles ───────────────────────────────────
+// A dependent is a parent-managed dancer profile with no login of its own —
+// every students/purchases/privateLessonBookings row created on its behalf
+// still carries the PARENT's authUid (see dependentId on those collections).
+
+function generateClaimCode(): string {
+  // Excludes 0/O/1/I/L — this code gets read aloud or typed by a kid, so
+  // ambiguous characters are worth avoiding even at a small cost to entropy.
+  const alphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+  const bytes = crypto.randomBytes(10);
+  let code = "";
+  for (let i = 0; i < 10; i++) {
+    code += alphabet[bytes[i]! % alphabet.length];
+  }
+  return code;
+}
+
+app.get("/dependents", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string } | null;
+    if (!studentDoc) return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+
+    const snapshot = await getFirestore()
+      .collection("usersStudentProfiles").doc(studentDoc.id).collection("dependents").get();
+    const dependents = snapshot.docs.map((doc) => {
+      const data = doc.data() as Record<string, unknown>;
+      return {
+        id: doc.id,
+        firstName: data["firstName"] || "",
+        lastName: data["lastName"] || "",
+        photoURL: data["photoURL"] || null,
+        graduatedAt: data["graduatedAt"] || null,
+        graduationPending: !!data["graduationClaimCode"],
+        graduationClaimCodeExpiresAt: data["graduationClaimCodeExpiresAt"] || null,
+      };
+    });
+    sendJsonResponse(req, res, 200, dependents);
+  } catch (error) {
+    console.error("List dependents error:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.post("/dependents", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const { firstName, lastName } = req.body as { firstName?: string; lastName?: string };
+    if (!firstName?.trim() || !lastName?.trim()) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "firstName and lastName are required");
+    }
+
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string } | null;
+    if (!studentDoc) return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+
+    const db = getFirestore();
+    const dependentRef = db.collection("usersStudentProfiles").doc(studentDoc.id).collection("dependents").doc();
+    await dependentRef.set({
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      photoURL: null,
+      graduatedAt: null,
+      graduatedToAuthUid: null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 201, { id: dependentRef.id, firstName: firstName.trim(), lastName: lastName.trim(), photoURL: null, graduatedAt: null });
+  } catch (error) {
+    console.error("Create dependent error:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.patch("/dependents/:id", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const dependentId = req.params["id"] as string;
+    const { firstName, lastName, photoURL } = req.body as { firstName?: string; lastName?: string; photoURL?: string | null };
+
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string } | null;
+    if (!studentDoc) return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+
+    const db = getFirestore();
+    const dependentRef = db.collection("usersStudentProfiles").doc(studentDoc.id).collection("dependents").doc(dependentId);
+    const dependentDoc = await dependentRef.get();
+    if (!dependentDoc.exists) return sendErrorResponse(req, res, 404, "Not Found", "Dependent not found");
+
+    const updateData: Record<string, unknown> = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+    if (firstName?.trim()) updateData["firstName"] = firstName.trim();
+    if (lastName?.trim()) updateData["lastName"] = lastName.trim();
+    if (photoURL !== undefined) updateData["photoURL"] = photoURL || null;
+    await dependentRef.update(updateData);
+
+    // Keep the name on any existing roster rows in sync, matching how /me PUT
+    // already syncs the account holder's own phone number to their rows.
+    if (updateData["firstName"] || updateData["lastName"]) {
+      const rosterRows = await db.collection("students")
+        .where("authUid", "==", user.uid).where("dependentId", "==", dependentId).get();
+      if (!rosterRows.empty) {
+        const batch = db.batch();
+        rosterRows.forEach((doc) => {
+          batch.update(doc.ref, {
+            ...(updateData["firstName"] ? { firstName: updateData["firstName"] } : {}),
+            ...(updateData["lastName"] ? { lastName: updateData["lastName"] } : {}),
+          });
+        });
+        await batch.commit();
+      }
+    }
+
+    sendJsonResponse(req, res, 200, { id: dependentId });
+  } catch (error) {
+    console.error("Update dependent error:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.delete("/dependents/:id", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const dependentId = req.params["id"] as string;
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string } | null;
+    if (!studentDoc) return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+
+    const db = getFirestore();
+    const dependentRef = db.collection("usersStudentProfiles").doc(studentDoc.id).collection("dependents").doc(dependentId);
+    const dependentDoc = await dependentRef.get();
+    if (!dependentDoc.exists) return sendErrorResponse(req, res, 404, "Not Found", "Dependent not found");
+
+    const [rosterRows, purchaseRows, bookingRows] = await Promise.all([
+      db.collection("students").where("authUid", "==", user.uid).where("dependentId", "==", dependentId).limit(1).get(),
+      db.collection("purchases").where("authUid", "==", user.uid).where("dependentId", "==", dependentId).limit(1).get(),
+      db.collection("privateLessonBookings").where("authUid", "==", user.uid).where("dependentId", "==", dependentId).limit(1).get(),
+    ]);
+    if (!rosterRows.empty || !purchaseRows.empty || !bookingRows.empty) {
+      return sendErrorResponse(req, res, 400, "Bad Request",
+        "This dependent has class enrollment, purchase, or booking history and can't be deleted. Graduate them to their own account instead if they no longer need this profile.");
+    }
+
+    await dependentRef.delete();
+    sendJsonResponse(req, res, 200, { id: dependentId, deleted: true });
+  } catch (error) {
+    console.error("Delete dependent error:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.post("/dependents/:id/graduate/initiate", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const dependentId = req.params["id"] as string;
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string } | null;
+    if (!studentDoc) return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+
+    const db = getFirestore();
+    const dependentRef = db.collection("usersStudentProfiles").doc(studentDoc.id).collection("dependents").doc(dependentId);
+    const dependentDoc = await dependentRef.get();
+    if (!dependentDoc.exists) return sendErrorResponse(req, res, 404, "Not Found", "Dependent not found");
+    const dependentData = dependentDoc.data() as Record<string, unknown>;
+    if (dependentData["graduatedAt"]) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "This dependent has already graduated");
+    }
+
+    const code = generateClaimCode();
+    const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    await db.collection("dependentGraduationClaims").doc(code).set({
+      parentId: studentDoc.id,
+      dependentId,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt,
+    });
+    await dependentRef.update({
+      graduationClaimCode: code,
+      graduationClaimCodeExpiresAt: expiresAt,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, { code, expiresAt: expiresAt.toDate().toISOString() });
+  } catch (error) {
+    console.error("Initiate graduation error:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.post("/dependents/:id/graduate/cancel", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const dependentId = req.params["id"] as string;
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string } | null;
+    if (!studentDoc) return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+
+    const db = getFirestore();
+    const dependentRef = db.collection("usersStudentProfiles").doc(studentDoc.id).collection("dependents").doc(dependentId);
+    const dependentDoc = await dependentRef.get();
+    if (!dependentDoc.exists) return sendErrorResponse(req, res, 404, "Not Found", "Dependent not found");
+    const existingCode = (dependentDoc.data() as Record<string, unknown>)["graduationClaimCode"] as string | undefined;
+
+    if (existingCode) {
+      await db.collection("dependentGraduationClaims").doc(existingCode).delete();
+    }
+    await dependentRef.update({
+      graduationClaimCode: admin.firestore.FieldValue.delete(),
+      graduationClaimCodeExpiresAt: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, { id: dependentId, cancelled: true });
+  } catch (error) {
+    console.error("Cancel graduation error:", error);
+    handleError(req, res, error);
+  }
+});
+
+app.post("/graduate/redeem", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const code = (req.body as { code?: string }).code?.trim().toUpperCase();
+    if (!code) return sendErrorResponse(req, res, 400, "Validation Error", "code is required");
+
+    const db = getFirestore();
+    const claimRef = db.collection("dependentGraduationClaims").doc(code);
+    const claimDoc = await claimRef.get();
+    if (!claimDoc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "This code isn't valid. Double-check it and try again.");
+    }
+    const claimData = claimDoc.data() as { parentId: string; dependentId: string; expiresAt: admin.firestore.Timestamp };
+    if (claimData.expiresAt.toMillis() < Date.now()) {
+      await claimRef.delete();
+      return sendErrorResponse(req, res, 400, "Bad Request", "This code has expired. Ask for a new one.");
+    }
+
+    const dependentRef = db.collection("usersStudentProfiles").doc(claimData.parentId)
+      .collection("dependents").doc(claimData.dependentId);
+    const dependentDoc = await dependentRef.get();
+    if (!dependentDoc.exists) {
+      await claimRef.delete();
+      return sendErrorResponse(req, res, 404, "Not Found", "This dependent profile no longer exists");
+    }
+
+    await studioEnrollmentService.claimDependentRosterRowsForNewAuthUid(claimData.dependentId, user.uid);
+
+    // The new account starts its own auto-checkin preferences from scratch —
+    // strip any entries the parent had set for this dependent, since those
+    // roster rows the parent no longer owns after the re-point above.
+    const parentProfileRef = db.collection("usersStudentProfiles").doc(claimData.parentId);
+    const parentProfileDoc = await parentProfileRef.get();
+    const parentData = parentProfileDoc.data() as Record<string, unknown> | undefined;
+    const existingEntries = (parentData?.["autoCheckInEntries"] as Array<{ dependentId?: string }>) || [];
+    if (existingEntries.some((e) => e.dependentId === claimData.dependentId)) {
+      await parentProfileRef.update({
+        autoCheckInEntries: existingEntries.filter((e) => e.dependentId !== claimData.dependentId),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    await dependentRef.update({
+      graduatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      graduatedToAuthUid: user.uid,
+      graduationClaimCode: admin.firestore.FieldValue.delete(),
+      graduationClaimCodeExpiresAt: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await claimRef.delete();
+
+    sendJsonResponse(req, res, 200, { graduated: true });
+  } catch (error) {
+    console.error("Redeem graduation error:", error);
+    handleError(req, res, error);
+  }
+});
+
 app.patch("/auto-checkin-prefs", async (req, res) => {
   try {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string } | null;
+    if (!studentDoc) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
+    }
+    const db = getFirestore();
+
+    // New shape: per-entry, optionally per-dependent. Kept as a separate body
+    // key (not a replacement) so existing mobile clients sending the flat
+    // legacy shape below keep working completely unchanged.
+    const rawEntries = (req.body as { entries?: unknown }).entries;
+    if (rawEntries !== undefined) {
+      if (!Array.isArray(rawEntries) || rawEntries.length > 50) {
+        return sendErrorResponse(req, res, 400, "Bad Request", "entries must be an array of at most 50 items");
+      }
+      const entries: Array<{ classId: string; studioOwnerId: string; dependentId: string | null }> = [];
+      for (const raw of rawEntries) {
+        const classId = (raw as Record<string, unknown>)?.["classId"];
+        const dependentId = (raw as Record<string, unknown>)?.["dependentId"];
+        if (typeof classId !== "string" || (dependentId !== undefined && dependentId !== null && typeof dependentId !== "string")) {
+          return sendErrorResponse(req, res, 400, "Bad Request", "Each entry needs a classId (string) and optional dependentId (string)");
+        }
+        // studioOwnerId is resolved server-side, never trusted from the client
+        // — matches how attendance.ts already resolves it from the class doc.
+        const classDoc = await db.collection("classes").doc(classId).get();
+        if (!classDoc.exists) continue;
+        const studioOwnerId = (classDoc.data() as Record<string, unknown>)["studioOwnerId"] as string | undefined;
+        if (!studioOwnerId) continue;
+        entries.push({ classId, studioOwnerId, dependentId: (dependentId as string) || null });
+      }
+
+      await db.collection("usersStudentProfiles").doc(studentDoc.id).update({
+        autoCheckInEntries: entries,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return sendJsonResponse(req, res, 200, { entries });
+    }
+
+    // Legacy shape — self only, unchanged from before family accounts existed.
     const { autoCheckInClassIds } = req.body as { autoCheckInClassIds?: unknown };
     if (!Array.isArray(autoCheckInClassIds) || autoCheckInClassIds.some((id) => typeof id !== "string")) {
       return sendErrorResponse(req, res, 400, "Bad Request", "autoCheckInClassIds must be an array of strings");
@@ -528,12 +874,6 @@ app.patch("/auto-checkin-prefs", async (req, res) => {
       return sendErrorResponse(req, res, 400, "Bad Request", "autoCheckInClassIds cannot exceed 50 items");
     }
 
-    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string } | null;
-    if (!studentDoc) {
-      return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
-    }
-
-    const db = getFirestore();
     await db.collection("usersStudentProfiles").doc(studentDoc.id).update({
       autoCheckInClassIds,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -832,9 +1172,16 @@ app.get("/event-passes", async (req, res) => {
       .where("status", "==", "completed")
       .get();
 
+    // Filtered in code, not via a Firestore equality clause, since this already fetches
+    // every completed purchase for the account — no new composite index needed, and
+    // legacy rows with no dependentId field at all are unaffected when unfiltered.
+    const dependentId = typeof req.query["dependentId"] === "string" ? req.query["dependentId"] as string : undefined;
     const relevantPurchases = purchasesSnap.docs.filter((doc) => {
-      const t = doc.data()["purchaseType"] as string;
-      return t === "event" || t === "workshop";
+      const data = doc.data();
+      const t = data["purchaseType"] as string;
+      if (t !== "event" && t !== "workshop") return false;
+      if (dependentId === undefined) return true;
+      return (data["dependentId"] as string | null | undefined) === dependentId;
     });
 
     // Batch-fetch item docs for startTime/endTime
@@ -1376,7 +1723,7 @@ app.post("/checkin", async (req, res) => {
     let user;
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
-    const { classId, classInstanceDate } = req.body as { classId?: string; classInstanceDate?: string };
+    const { classId, classInstanceDate, dependentId } = req.body as { classId?: string; classInstanceDate?: string; dependentId?: string };
     if (!classId) return sendErrorResponse(req, res, 400, "Validation Error", "classId is required");
     if (!classInstanceDate) return sendErrorResponse(req, res, 400, "Validation Error", "classInstanceDate is required");
 
@@ -1389,16 +1736,19 @@ app.post("/checkin", async (req, res) => {
     const studioOwnerId = classData["studioOwnerId"] as string | undefined;
     if (!studioOwnerId) return sendErrorResponse(req, res, 400, "Bad Request", "Class has no studio owner");
 
-    // Find the student record in the old students collection using authUid + studioOwnerId
-    const studentId = await attendanceService.getStudentIdByAuthUidAndStudio(user.uid, studioOwnerId);
+    // Find the student record in the old students collection using authUid + studioOwnerId,
+    // scoped to a specific dependent's row when one is given.
+    const studentId = dependentId
+      ? await attendanceService.resolveOrCreateStudentIdForDependent(user.uid, studioOwnerId, dependentId)
+      : await attendanceService.getStudentIdByAuthUidAndStudio(user.uid, studioOwnerId);
     if (!studentId) {
       return sendErrorResponse(req, res, 404, "Not Found", "Student enrollment not found for this studio. Please contact your studio.");
     }
 
-    // Delegate to attendance service (handles duplicate check, credits, record creation)
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const jsAttendanceService = require("../../services/attendance.service");
-    await jsAttendanceService.createAttendanceRecord(
+    // Delegate to attendance service (handles duplicate check, credits, record creation).
+    // (Previously loaded via a dynamic require() with a path that doesn't resolve in the
+    // compiled output — attendanceService is already imported above; use it directly.)
+    await attendanceService.createAttendanceRecord(
       { studentId, classId, classInstanceDate, checkedInBy: "student" },
       studioOwnerId,
     );

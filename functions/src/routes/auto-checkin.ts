@@ -1,6 +1,7 @@
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import * as admin from "firebase-admin";
 import { getFirestore } from "../utils/firestore";
+import attendanceService from "../services/attendance.service";
 
 const DAY_NAME_TO_NUM: Record<string, number> = {
   Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3,
@@ -88,26 +89,35 @@ export const autoCheckIn = onSchedule(
 
     console.log(`[AutoCheckIn] Running at ${now.toISOString()}`);
 
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const attendanceService = require("../../services/attendance.service");
-
     const profilesSnap = await db.collection("usersStudentProfiles").get();
-    const profilesWithIds = profilesSnap.docs.filter(d => ((d.data()["autoCheckInClassIds"] ?? []) as string[]).length > 0);
-    console.log(`[AutoCheckIn] ${profilesSnap.size} profiles, ${profilesWithIds.length} with autoCheckInClassIds`);
+
+    type AutoCheckInEntry = { classId: string; dependentId: string | null };
+    const entriesForProfile = (profile: admin.firestore.DocumentData): AutoCheckInEntry[] => {
+      const rawEntries = profile["autoCheckInEntries"] as { classId: string; dependentId?: string | null }[] | undefined;
+      if (rawEntries && rawEntries.length > 0) {
+        return rawEntries.map((e) => ({ classId: e.classId, dependentId: e.dependentId || null }));
+      }
+      const legacyClassIds = (profile["autoCheckInClassIds"] ?? []) as string[];
+      return legacyClassIds.map((classId) => ({ classId, dependentId: null }));
+    };
+
+    const profilesWithEntries = profilesSnap.docs.filter((d) => entriesForProfile(d.data()).length > 0);
+    console.log(`[AutoCheckIn] ${profilesSnap.size} profiles, ${profilesWithEntries.length} with auto check-in entries`);
 
     const classCache = new Map<string, admin.firestore.DocumentData>();
     const studioCache = new Map<string, admin.firestore.DocumentData>();
 
     for (const profileDoc of profilesSnap.docs) {
       const profile = profileDoc.data();
-      const classIds = (profile["autoCheckInClassIds"] ?? []) as string[];
-      if (classIds.length === 0) continue;
+      const entries = entriesForProfile(profile);
+      if (entries.length === 0) continue;
 
       const authUid = profile["authUid"] as string;
       const fcmToken = profile["fcmToken"] as string | undefined;
       console.log(`[AutoCheckIn] ${authUid} fcmToken=${fcmToken ? "present" : "MISSING"}`);
 
-      for (const classId of classIds) {
+      for (const entry of entries) {
+        const { classId, dependentId } = entry;
         try {
           if (!classCache.has(classId)) {
             const doc = await db.collection("classes").doc(classId).get();
@@ -184,21 +194,24 @@ export const autoCheckIn = onSchedule(
             continue;
           }
 
-          const studentSnap = await db.collection("students")
-            .where("authUid", "==", authUid)
-            .where("studioOwnerId", "==", studioOwnerId)
-            .limit(1)
-            .get();
-          if (studentSnap.empty) { console.log(`[AutoCheckIn] No student record for ${authUid} in studio ${studioOwnerId}`); continue; }
-          const studentId = studentSnap.docs[0]!.id;
+          const studentId = await attendanceService.getStudentIdByAuthUidAndStudio(authUid, studioOwnerId, dependentId);
+          if (!studentId) {
+            console.log(`[AutoCheckIn] No student record for ${authUid}${dependentId ? ` (dependent ${dependentId})` : ""} in studio ${studioOwnerId}`);
+            continue;
+          }
 
           try {
+            // "student" here, not a distinct "auto" value — the current attendance
+            // service's checkedInBy type only recognizes "studio" | "student" (matching
+            // every frontend consumer of this field), and resolves checkedInById to
+            // studentId for any non-"studio" value either way, so this preserves the
+            // exact same stored checkedInById this cron has always produced.
             await attendanceService.createAttendanceRecord(
-              { studentId, classId, classInstanceDate: instanceDateStr, checkedInBy: "auto" },
+              { studentId, classId, classInstanceDate: instanceDateStr, checkedInBy: "student" },
               studioOwnerId,
             );
 
-            console.log(`[AutoCheckIn] Checked in ${authUid} → class "${className}"`);
+            console.log(`[AutoCheckIn] Checked in ${authUid}${dependentId ? ` (dependent ${dependentId})` : ""} → class "${className}"`);
 
             if (fcmToken) {
               await sendFcmNotification(fcmToken, "Checked in ✓", `${className} at ${studioName}`)

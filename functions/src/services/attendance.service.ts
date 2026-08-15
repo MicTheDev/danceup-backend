@@ -1,6 +1,7 @@
 import * as admin from "firebase-admin";
 import authService from "./auth.service";
 import creditTrackingService from "./credit-tracking.service";
+import studioEnrollmentService from "./studio-enrollment.service";
 import { getFirestore } from "../utils/firestore";
 
 interface AttendanceData {
@@ -51,16 +52,36 @@ export class AttendanceService {
     return firstDoc ? firstDoc.id : null;
   }
 
-  async getStudentIdByAuthUidAndStudio(authUid: string, studioOwnerId: string): Promise<string | null> {
+  /**
+   * `dependentId` omitted/null resolves the caller's own roster row; a value
+   * resolves that specific dependent's row. Firestore's `==` doesn't match a
+   * field that's simply absent from a doc, and no pre-existing row ever had
+   * `dependentId` written on it, so this can't be a third `.where()` clause —
+   * it fetches the (small, per-family) set for this (authUid, studioOwnerId)
+   * pair and filters in code instead, which works for both legacy rows
+   * (field absent) and new ones (field explicitly null).
+   */
+  async getStudentIdByAuthUidAndStudio(
+    authUid: string, studioOwnerId: string, dependentId?: string | null,
+  ): Promise<string | null> {
     const db = getFirestore();
     const snapshot = await db.collection("students")
       .where("authUid", "==", authUid)
       .where("studioOwnerId", "==", studioOwnerId)
-      .limit(1)
       .get();
-    if (snapshot.empty) return null;
-    const firstDoc = snapshot.docs[0];
-    return firstDoc ? firstDoc.id : null;
+    const match = dependentId
+      ? snapshot.docs.find((doc) => doc.data()["dependentId"] === dependentId)
+      : snapshot.docs.find((doc) => !doc.data()["dependentId"]);
+    return match ? match.id : null;
+  }
+
+  /** Resolves a dependent's roster row for a studio, enrolling them on first use. */
+  async resolveOrCreateStudentIdForDependent(
+    authUid: string, studioOwnerId: string, dependentId: string,
+  ): Promise<string> {
+    const existing = await this.getStudentIdByAuthUidAndStudio(authUid, studioOwnerId, dependentId);
+    if (existing) return existing;
+    return studioEnrollmentService.enrollDependent(studioOwnerId, authUid, dependentId);
   }
 
   async getAttendanceRecordsByStudent(

@@ -685,6 +685,24 @@
       ]
     },
     {
+      "collectionGroup": "purchases",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "authUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dependentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "credits",
       "queryScope": "COLLECTION",
       "fields": [

@@ -76,6 +76,81 @@ export class StudioEnrollmentService {
     return studentId;
   }
 
+  /**
+   * Enrolls a dependent (a parent-managed sub-profile with no login of its
+   * own) at a studio. Mirrors enrollStudent, but sources the name from the
+   * dependent sub-doc instead of the account holder's own profile, and tags
+   * the new roster row with dependentId — everything downstream (credits,
+   * attendance, purchases) resolves that row the same way it resolves any
+   * other student, just filtered on dependentId instead of authUid alone.
+   */
+  async enrollDependent(studioOwnerId: string, authUid: string, dependentId: string): Promise<string> {
+    const db = getFirestore();
+
+    const parentProfileDoc = await authService.getStudentProfileByAuthUid(authUid);
+    if (!parentProfileDoc) throw new Error("Student profile not found. Please complete your profile first.");
+
+    const dependentRef = db.collection("usersStudentProfiles").doc(parentProfileDoc.id)
+      .collection("dependents").doc(dependentId);
+    const dependentDoc = await dependentRef.get();
+    if (!dependentDoc.exists) throw new Error("Dependent profile not found");
+    const dependentData = dependentDoc.data() as Record<string, unknown>;
+    if (dependentData["graduatedAt"]) throw new Error("This dependent has already graduated to their own account");
+
+    const existingRows = await db.collection("students")
+      .where("authUid", "==", authUid)
+      .where("studioOwnerId", "==", studioOwnerId)
+      .get();
+    if (existingRows.docs.some((doc) => doc.data()["dependentId"] === dependentId)) {
+      throw new Error("This dependent is already enrolled at this studio");
+    }
+
+    const studentId = await studentsService.createStudent({
+      firstName: (dependentData["firstName"] as string) || "",
+      lastName: (dependentData["lastName"] as string) || "",
+      email: null,
+      phone: null,
+      authUid,
+      dependentId,
+    }, studioOwnerId);
+
+    const userProfileRef = db.collection("usersStudentProfiles").doc(parentProfileDoc.id);
+    const currentData = (await userProfileRef.get()).data() as Record<string, unknown> | undefined;
+    const studios = ensureStudiosStructure(currentData);
+    if (!studios[studioOwnerId]) {
+      studios[studioOwnerId] = {};
+      await userProfileRef.update({ studios, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    }
+
+    return studentId;
+  }
+
+  /**
+   * Graduation: re-points every roster row tagged with this dependentId to a
+   * newly-registered independent account, and strips dependentId so the row
+   * now reads as that person's own account-holder row. Credits carry over
+   * automatically — they live in the row's `credits` subcollection, which
+   * this never touches. Direct sibling of claimPlaceholderStudentsForAuthUid,
+   * just matching on dependentId instead of email.
+   */
+  async claimDependentRosterRowsForNewAuthUid(dependentId: string, newAuthUid: string): Promise<void> {
+    const db = getFirestore();
+    const snapshot = await db.collection("students")
+      .where("dependentId", "==", dependentId)
+      .get();
+    if (snapshot.empty) return;
+
+    const batch = db.batch();
+    snapshot.docs.forEach((doc) => {
+      batch.update(doc.ref, {
+        authUid: newAuthUid,
+        dependentId: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+    await batch.commit();
+  }
+
   async unenrollStudent(studioOwnerId: string, authUid: string): Promise<void> {
     const db = getFirestore();
     const snapshot = await db.collection("students")
