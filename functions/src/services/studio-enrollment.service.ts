@@ -131,7 +131,10 @@ export class StudioEnrollmentService {
    * now reads as that person's own account-holder row. Credits carry over
    * automatically — they live in the row's `credits` subcollection, which
    * this never touches. Direct sibling of claimPlaceholderStudentsForAuthUid,
-   * just matching on dependentId instead of email.
+   * just matching on dependentId instead of email — and, like that sibling,
+   * must also add each claimed studio to the new account's own `studios` map,
+   * since /me and the dashboard discover enrolled studios from that map, not
+   * by scanning the students collection.
    */
   async claimDependentRosterRowsForNewAuthUid(dependentId: string, newAuthUid: string): Promise<void> {
     const db = getFirestore();
@@ -149,6 +152,26 @@ export class StudioEnrollmentService {
       });
     });
     await batch.commit();
+
+    const newProfileDoc = await authService.getStudentProfileByAuthUid(newAuthUid);
+    if (!newProfileDoc) return;
+
+    const userProfileRef = db.collection("usersStudentProfiles").doc(newProfileDoc.id);
+    const currentData = (await userProfileRef.get()).data() as Record<string, unknown> | undefined;
+    const studios = ensureStudiosStructure(currentData);
+
+    let changed = false;
+    snapshot.docs.forEach((doc) => {
+      const studioOwnerId = (doc.data() as Record<string, unknown>)["studioOwnerId"] as string | undefined;
+      if (studioOwnerId && !studios[studioOwnerId]) {
+        studios[studioOwnerId] = {};
+        changed = true;
+      }
+    });
+
+    if (changed) {
+      await userProfileRef.update({ studios, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    }
   }
 
   async unenrollStudent(studioOwnerId: string, authUid: string): Promise<void> {
