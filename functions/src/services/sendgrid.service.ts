@@ -930,3 +930,57 @@ export async function sendSignupNudgeEmail(
     subject: `${name}, your first class at ${studio} is waiting!`, html, text, categories: ["signup-nudge"],
   });
 }
+
+// Sent to the PARENT's own (verified) email as a backup reference when they generate a
+// graduation code — the dependent has no verified contact channel on file, so delivery to
+// them is still manual, but this gives the parent something to fall back on if they lose
+// track of the code or forget to relay it, rather than needing to contact support.
+export async function sendGraduationCodeEmail(
+  to: string, parentFirstName: string, dependentFirstName: string, code: string, expiresAt: Date,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendGraduationCodeEmail: no recipient email, skipping"); return; }
+  const parentName = escapeHtml(parentFirstName?.trim() || "there");
+  const dependentName = escapeHtml(dependentFirstName?.trim() || "your family member");
+  const expiryLabel = expiresAt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">Claim code for ${dependentName}</h2>
+        <p style="color:#64748b;margin:0 0 20px">
+          You started the process of moving ${dependentName} from a family profile on your DanceUp account to their own independent account, ${parentName}. Here's the code to give them:
+        </p>
+        <p style="font-family:monospace;font-size:28px;font-weight:700;letter-spacing:4px;color:#1e293b;background:#f1f5f9;border-radius:10px;padding:16px 20px;text-align:center;margin:0 0 20px">
+          ${escapeHtml(code)}
+        </p>
+        <p style="color:#475569;margin:0 0 8px">
+          After ${dependentName} creates their own DanceUp account, they'll enter this code at
+          <a href="https://danceup.app/claim-account" style="color:#6366f1">danceup.app/claim-account</a> to take over their class history and credits.
+        </p>
+        <p style="color:#94a3b8;font-size:13px;margin:20px 0 0">This code expires ${expiryLabel}. We're sending it to you as a backup in case it gets lost — no need to do anything else with this email.</p>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because you generated a graduation code on your DanceUp account.</p>
+      </div>
+    </div>`;
+
+  const text = [
+    `Claim code for ${dependentFirstName?.trim() || "your family member"}`,
+    ``,
+    `You started moving ${dependentFirstName?.trim() || "your family member"} to their own DanceUp account. Here's the code to give them:`,
+    ``,
+    code,
+    ``,
+    `After they create their own account, they'll enter this code at https://danceup.app/claim-account to take over their class history and credits.`,
+    ``,
+    `This code expires ${expiryLabel}. We're sending it to you as a backup in case it gets lost.`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `Claim code for ${dependentFirstName?.trim() || "your family member"}: ${code}`,
+    html,
+    text,
+    categories: ["graduation-code"],
+  });
+}

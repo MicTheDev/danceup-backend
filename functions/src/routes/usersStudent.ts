@@ -25,7 +25,7 @@ import {
   getStripePublishableKey,
   getStripeClient,
 } from "../services/stripe.service";
-import { sendWelcomeEmail, sendPasswordResetEmail } from "../services/sendgrid.service";
+import { sendWelcomeEmail, sendPasswordResetEmail, sendGraduationCodeEmail } from "../services/sendgrid.service";
 import { completeSocialSignIn } from "../services/social-auth.service";
 import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
@@ -698,7 +698,7 @@ app.post("/dependents/:id/graduate/initiate", async (req, res) => {
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
     const dependentId = req.params["id"] as string;
-    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string } | null;
+    const studentDoc = await authService.getStudentProfileByAuthUid(user.uid) as { id: string; data: () => Record<string, unknown> } | null;
     if (!studentDoc) return sendErrorResponse(req, res, 404, "Not Found", "Student profile not found");
 
     const db = getFirestore();
@@ -724,6 +724,17 @@ app.post("/dependents/:id/graduate/initiate", async (req, res) => {
       graduationClaimCodeExpiresAt: expiresAt,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+
+    // Best-effort — the code is already generated and usable even if this fails, so a
+    // SendGrid hiccup shouldn't block the response the parent is waiting on.
+    const parentData = studentDoc.data();
+    sendGraduationCodeEmail(
+      (parentData["email"] as string) || user.email || "",
+      (parentData["firstName"] as string) || "",
+      (dependentData["firstName"] as string) || "",
+      code,
+      expiresAt.toDate(),
+    ).catch((err) => console.error("Failed to send graduation code email:", err));
 
     sendJsonResponse(req, res, 200, { code, expiresAt: expiresAt.toDate().toISOString() });
   } catch (error) {
