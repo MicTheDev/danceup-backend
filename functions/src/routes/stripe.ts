@@ -13,9 +13,11 @@ import {
   sendConfirmationEmail,
   sendStudioSubscriptionPaymentFailedEmail,
   sendPackageSubscriptionPaymentFailedEmail,
+  sendStudentPaymentFailedEmailToStudio,
 } from "../services/sendgrid.service";
 import authService from "../services/auth.service";
 import purchaseService from "../services/purchase.service";
+import notificationsService from "../services/notifications.service";
 import { logAuditEvent } from "../services/audit.service";
 import {
   sendJsonResponse,
@@ -2060,6 +2062,7 @@ app.post("/webhook-connect", async (req, res) => {
           if (purchaseType !== "package") break;
 
           const studioOwnerId = subscription.metadata?.["studioOwnerId"];
+          const studentId = subscription.metadata?.["studentId"];
           const authUid = subscription.metadata?.["authUid"];
           const itemName = subscription.metadata?.["itemName"];
 
@@ -2083,25 +2086,56 @@ app.post("/webhook-connect", async (req, res) => {
           console.log(`[webhook-connect] invoice.payment_failed sub=${subscriptionId} authUid=${authUid} status=${subscription.status}`);
 
           const studentProfileDoc = await authService.getStudentProfileByAuthUid(authUid);
-          if (!studentProfileDoc) break;
-          const profileData = studentProfileDoc.data() as Record<string, unknown>;
+          const profileData = studentProfileDoc ? (studentProfileDoc.data() as Record<string, unknown>) : null;
+          const studentName = profileData
+            ? `${(profileData["firstName"] as string) || ""} ${(profileData["lastName"] as string) || ""}`.trim() || "A student"
+            : "A student";
 
           let studioName = "your studio";
+          let studioOwnerEmail: string | null = null;
+          let studioOwnerFirstName = "";
           if (studioOwnerId) {
             const studioDoc = await db.collection("users").doc(studioOwnerId).get();
             if (studioDoc.exists) {
-              studioName = ((studioDoc.data() as Record<string, unknown>)["studioName"] as string) || studioName;
+              const studioData = studioDoc.data() as Record<string, unknown>;
+              studioName = (studioData["studioName"] as string) || studioName;
+              studioOwnerEmail = (studioData["email"] as string) || null;
+              studioOwnerFirstName = (studioData["firstName"] as string) || "";
             }
           }
 
           const nextAttempt = invoice["next_payment_attempt"] as number | null;
-          sendPackageSubscriptionPaymentFailedEmail(
-            (profileData["email"] as string) || "",
-            (profileData["firstName"] as string) || "",
-            studioName,
-            (itemName as string) || "your package",
-            nextAttempt ? new Date(nextAttempt * 1000) : null,
-          ).catch((err) => console.error("[webhook-connect] Failed to send package-subscription-payment-failed email:", err));
+
+          if (profileData) {
+            sendPackageSubscriptionPaymentFailedEmail(
+              (profileData["email"] as string) || "",
+              (profileData["firstName"] as string) || "",
+              studioName,
+              (itemName as string) || "your package",
+              nextAttempt ? new Date(nextAttempt * 1000) : null,
+            ).catch((err) => console.error("[webhook-connect] Failed to send package-subscription-payment-failed email:", err));
+          }
+
+          if (studioOwnerId) {
+            notificationsService.createNotification(
+              studioOwnerId,
+              null,
+              "payment_failed",
+              "Payment Failed",
+              `${studentName}'s payment for "${itemName || "their package"}" failed`,
+              studentId || null,
+            ).catch((err) => console.error("[webhook-connect] Failed to create studio payment-failed notification:", err));
+          }
+
+          if (studioOwnerEmail) {
+            sendStudentPaymentFailedEmailToStudio(
+              studioOwnerEmail,
+              studioOwnerFirstName,
+              studentName,
+              (itemName as string) || "their package",
+              studentId || null,
+            ).catch((err) => console.error("[webhook-connect] Failed to send payment-failed email to studio:", err));
+          }
         } catch (err) {
           console.error("[webhook-connect] Error handling invoice.payment_failed:", err);
         }

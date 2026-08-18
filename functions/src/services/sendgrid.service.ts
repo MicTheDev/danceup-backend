@@ -1077,3 +1077,51 @@ export async function sendPackageSubscriptionPaymentFailedEmail(
     categories: ["package-subscription-payment-failed"],
   });
 }
+
+// Sent to the STUDIO OWNER (not the student) when one of their students' recurring
+// package payments fails — otherwise a studio has no visibility into a lapsed renewal
+// beyond the student mentioning it, or noticing credits quietly stopped refreshing.
+export async function sendStudentPaymentFailedEmailToStudio(
+  to: string, studioOwnerFirstName: string, studentName: string, packageName: string, studentId: string | null,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendStudentPaymentFailedEmailToStudio: no recipient email, skipping"); return; }
+  const ownerName = studioOwnerFirstName?.trim() || "there";
+  const student = studentName?.trim() || "A student";
+  const pkg = packageName?.trim() || "their package";
+  const studentUrl = studentId
+    ? `https://studio-owners.danceup.app/people/students/${studentId}`
+    : "https://studio-owners.danceup.app/people/students";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">A student's payment failed, ${ownerName}</h2>
+        <p style="color:#64748b;margin:0 0 16px">
+          <strong>${student}</strong>'s card on file for their <strong>${pkg}</strong> subscription was declined. We've emailed them to update their payment method — no action is needed from you, but their credits won't renew until it's resolved.
+        </p>
+        <a href="${studentUrl}"
+           style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          View Student →
+        </a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because a student's package subscription payment failed at your studio.</p>
+      </div>
+    </div>`;
+
+  const text = [
+    `A student's payment failed, ${ownerName}`,
+    ``,
+    `${student}'s card on file for their ${pkg} subscription was declined. We've emailed them to update their payment method — no action is needed from you, but their credits won't renew until it's resolved.`,
+    ``,
+    `View student: ${studentUrl}`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `${student}'s payment failed`,
+    html,
+    text,
+    categories: ["package-subscription-payment-failed-studio"],
+  });
+}
