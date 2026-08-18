@@ -984,3 +984,96 @@ export async function sendGraduationCodeEmail(
     categories: ["graduation-code"],
   });
 }
+
+// Sent to a studio owner when their own DanceUp platform subscription payment fails
+// (invoice.payment_failed on the platform account).
+export async function sendStudioSubscriptionPaymentFailedEmail(
+  to: string, firstName: string, nextRetryDate: Date | null,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendStudioSubscriptionPaymentFailedEmail: no recipient email, skipping"); return; }
+  const name = firstName?.trim() || "there";
+  const retryLine = nextRetryDate
+    ? `We'll automatically try your card again on ${nextRetryDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}.`
+    : "Please update your payment method as soon as possible to avoid any interruption.";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">We couldn't process your DanceUp payment, ${name}</h2>
+        <p style="color:#64748b;margin:0 0 16px">
+          Your card on file for your DanceUp subscription was declined. ${retryLine}
+        </p>
+        <a href="https://studio-owners.danceup.app/settings/billing"
+           style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          Update Payment Method →
+        </a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because a payment on your DanceUp studio subscription failed.</p>
+      </div>
+    </div>`;
+
+  const text = [
+    `We couldn't process your DanceUp payment, ${name}`,
+    ``,
+    `Your card on file for your DanceUp subscription was declined. ${retryLine}`,
+    ``,
+    `Update your payment method: https://studio-owners.danceup.app/settings/billing`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: "Action needed: your DanceUp payment failed",
+    html,
+    text,
+    categories: ["subscription-payment-failed"],
+  });
+}
+
+// Sent to a student when a recurring package subscription fails to renew (invoice.payment_failed
+// on a studio's connected account). The credits themselves aren't affected retroactively — this
+// just flags that the NEXT renewal didn't go through, before they lose access.
+export async function sendPackageSubscriptionPaymentFailedEmail(
+  to: string, firstName: string, studioName: string, packageName: string, nextRetryDate: Date | null,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendPackageSubscriptionPaymentFailedEmail: no recipient email, skipping"); return; }
+  const name = firstName?.trim() || "there";
+  const studio = studioName?.trim() || "your studio";
+  const pkg = packageName?.trim() || "your package";
+  const retryLine = nextRetryDate
+    ? `We'll automatically try your card again on ${nextRetryDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}.`
+    : "Please update your payment method so your credits keep renewing without interruption.";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">Your ${pkg} payment didn't go through, ${name}</h2>
+        <p style="color:#64748b;margin:0 0 16px">
+          The card on file for your <strong>${pkg}</strong> subscription at <strong>${studio}</strong> was declined. ${retryLine}
+        </p>
+        <a href="https://danceup.app/dashboard"
+           style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          Update Payment Method →
+        </a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because a payment on your ${studio} package subscription failed.</p>
+      </div>
+    </div>`;
+
+  const text = [
+    `Your ${pkg} payment didn't go through, ${name}`,
+    ``,
+    `The card on file for your ${pkg} subscription at ${studio} was declined. ${retryLine}`,
+    ``,
+    `Update your payment method: https://danceup.app/dashboard`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `Action needed: your ${studio} payment failed`,
+    html,
+    text,
+    categories: ["package-subscription-payment-failed"],
+  });
+}

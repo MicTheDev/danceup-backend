@@ -9,7 +9,11 @@ import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
 import { getSecret } from "../utils/secret-manager";
 import * as stripeService from "../services/stripe.service";
-import { sendConfirmationEmail } from "../services/sendgrid.service";
+import {
+  sendConfirmationEmail,
+  sendStudioSubscriptionPaymentFailedEmail,
+  sendPackageSubscriptionPaymentFailedEmail,
+} from "../services/sendgrid.service";
 import authService from "../services/auth.service";
 import purchaseService from "../services/purchase.service";
 import { logAuditEvent } from "../services/audit.service";
@@ -1795,6 +1799,14 @@ app.post("/webhook", async (req, res) => {
                 updatedAt: admin.firestore.FieldValue.serverTimestamp(),
               });
               console.log(`[webhook] invoice.payment_failed userId=${userId} sub=${subscriptionId} status=${subscription.status}`);
+
+              const userData = userDoc.data() as Record<string, unknown>;
+              const nextAttempt = invoice["next_payment_attempt"] as number | null;
+              sendStudioSubscriptionPaymentFailedEmail(
+                (userData["email"] as string) || "",
+                (userData["firstName"] as string) || "",
+                nextAttempt ? new Date(nextAttempt * 1000) : null,
+              ).catch((err) => console.error("[webhook] Failed to send subscription-payment-failed email:", err));
             }
           }
         } catch (err) {
@@ -1804,6 +1816,10 @@ app.post("/webhook", async (req, res) => {
       }
 
       case "invoice.payment_succeeded": {
+        // Platform-account subscriptions only (the studio owner's own DanceUp billing).
+        // Connected-account subscriptions (student packages) never reach this endpoint —
+        // it isn't registered with Stripe as a Connect-scoped listener — and are handled
+        // by POST /webhook-connect instead.
         const invoice = event.data.object as unknown as Record<string, unknown>;
         const invoiceParent = invoice["parent"] as Record<string, unknown> | undefined;
         const subscriptionId = (invoice["subscription"] as string | undefined) ??
@@ -1814,26 +1830,105 @@ app.post("/webhook", async (req, res) => {
         const stripe = await stripeService.getStripeClient() as import("stripe").default;
         const subscription = await stripe.subscriptions.retrieve(subscriptionId);
 
-        const purchaseType = subscription.metadata?.["purchaseType"];
-        if (purchaseType !== "package") {
-          const userId = subscription.metadata?.["userId"];
-          if (userId) {
-            try {
-              const userDoc = await db.collection("users").doc(userId).get();
-              if (userDoc.exists) {
-                await userDoc.ref.update({
-                  stripeSubscriptionStatus: "active",
-                  subscriptionActive: true,
-                  updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-                });
-                console.log(`[webhook] invoice.payment_succeeded (platform) userId=${userId} — access restored`);
-              }
-            } catch (err) {
-              console.error("[webhook] Error restoring platform subscription access:", err);
+        const userId = subscription.metadata?.["userId"];
+        if (userId) {
+          try {
+            const userDoc = await db.collection("users").doc(userId).get();
+            if (userDoc.exists) {
+              await userDoc.ref.update({
+                stripeSubscriptionStatus: "active",
+                subscriptionActive: true,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+              console.log(`[webhook] invoice.payment_succeeded (platform) userId=${userId} — access restored`);
             }
+          } catch (err) {
+            console.error("[webhook] Error restoring platform subscription access:", err);
           }
-          break;
         }
+        break;
+      }
+
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
+    }
+
+    res.status(200).json({ received: true });
+  } catch (error) {
+    console.error("Webhook error:", error);
+    return sendErrorResponse(req, res, 400, "Webhook Error", (error as Error).message);
+  }
+});
+
+// POST /webhook-connect — a separate, Connect-scoped webhook endpoint (registered with
+// Stripe as "listen to events on connected accounts") for events tied to a student's
+// recurring package subscription, which lives on the studio's connected account, not
+// the platform account. The main /webhook above only receives platform-account events,
+// so it can never see these — that mismatch previously meant renewal credits were never
+// granted and failures went completely undetected. Uses its own signing secret since
+// Stripe issues a distinct one per webhook endpoint.
+app.post("/webhook-connect", async (req, res) => {
+  const sig = req.headers["stripe-signature"] as string | undefined;
+
+  if (!sig) {
+    return sendErrorResponse(req, res, 400, "Validation Error", "Missing stripe-signature header");
+  }
+
+  try {
+    const projectId = process.env["GCLOUD_PROJECT"] || process.env["GCP_PROJECT"] || "";
+    const isProduction = projectId.includes("production");
+    const secretName = isProduction
+      ? "stripe-connect-webhook-secret-prod"
+      : "stripe-connect-webhook-secret-test";
+
+    let webhookSecret: string | undefined;
+    try {
+      webhookSecret = await getSecret(secretName);
+    } catch (error) {
+      console.error(`Failed to load Connect webhook secret from Secret Manager: ${secretName}`, error);
+      return sendErrorResponse(req, res, 500, "Configuration Error", "Webhook secret unavailable");
+    }
+
+    if (!webhookSecret) {
+      console.error("Connect webhook secret not configured");
+      return sendErrorResponse(req, res, 500, "Configuration Error", "Webhook secret not configured");
+    }
+
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+    if (!rawBody) {
+      return sendErrorResponse(req, res, 400, "Bad Request", "Missing raw request body for webhook verification");
+    }
+
+    const event = await stripeService.verifyWebhookSignature(
+      rawBody,
+      sig,
+      webhookSecret.trim(),
+    ) as import("stripe").default.Event;
+
+    const connectedAccountId = (event as unknown as { account?: string }).account;
+    if (!connectedAccountId) {
+      console.warn("[webhook-connect] Event missing connected account id, ignoring:", event.type);
+      return res.status(200).json({ received: true });
+    }
+
+    const db = getFirestore();
+    const stripe = await stripeService.getStripeClient() as import("stripe").default;
+
+    switch (event.type) {
+      case "invoice.payment_succeeded": {
+        const invoice = event.data.object as unknown as Record<string, unknown>;
+        const invoiceParent = invoice["parent"] as Record<string, unknown> | undefined;
+        const subscriptionId = (invoice["subscription"] as string | undefined) ??
+          (invoiceParent?.["subscription_details"] as Record<string, unknown> | undefined)?.["subscription"] as string | undefined;
+
+        if (!subscriptionId) break;
+
+        const subscription = await stripe.subscriptions.retrieve(
+          subscriptionId, { stripeAccount: connectedAccountId },
+        );
+
+        const purchaseType = subscription.metadata?.["purchaseType"];
+        if (purchaseType !== "package") break;
 
         const itemId = subscription.metadata?.["itemId"];
         const studioOwnerId = subscription.metadata?.["studioOwnerId"];
@@ -1851,6 +1946,9 @@ app.post("/webhook", async (req, res) => {
         const billingReason = invoice["billing_reason"] as string | undefined;
         const isFirstPayment = billingReason === "subscription_create";
 
+        // The first invoice's credits are already granted synchronously in the
+        // /purchases/charge-saved request handler itself — this webhook only needs
+        // to process the SECOND payment onward (actual renewals).
         if (isFirstPayment) break;
 
         try {
@@ -1938,23 +2036,85 @@ app.post("/webhook", async (req, res) => {
             itemName: `${itemDetails["itemName"]} (Renewal #${renewalNumber})`,
           });
 
-          console.log("Subscription renewal processed:", {
+          console.log("[webhook-connect] Subscription renewal processed:", {
             subscriptionId, studentId, renewalNumber,
             creditsGranted: creditResult.creditsGranted, amountPaid,
           });
         } catch (error) {
-          console.error("Error processing subscription renewal:", error);
+          console.error("[webhook-connect] Error processing subscription renewal:", error);
+        }
+        break;
+      }
+
+      case "invoice.payment_failed": {
+        const invoice = event.data.object as unknown as Record<string, unknown>;
+        const subscriptionId = invoice["subscription"] as string | undefined;
+        if (!subscriptionId) break;
+
+        try {
+          const subscription = await stripe.subscriptions.retrieve(
+            subscriptionId, { stripeAccount: connectedAccountId },
+          );
+
+          const purchaseType = subscription.metadata?.["purchaseType"];
+          if (purchaseType !== "package") break;
+
+          const studioOwnerId = subscription.metadata?.["studioOwnerId"];
+          const authUid = subscription.metadata?.["authUid"];
+          const itemName = subscription.metadata?.["itemName"];
+
+          if (!authUid) {
+            console.error("[webhook-connect] Missing authUid in subscription metadata for invoice.payment_failed:", subscriptionId);
+            break;
+          }
+
+          const purchaseQuery = await db.collection("purchases")
+            .where("authUid", "==", authUid)
+            .where("stripeSubscriptionId", "==", subscriptionId)
+            .limit(1)
+            .get();
+          if (!purchaseQuery.empty) {
+            await purchaseQuery.docs[0]!.ref.update({
+              subscriptionStatus: subscription.status,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+          }
+
+          console.log(`[webhook-connect] invoice.payment_failed sub=${subscriptionId} authUid=${authUid} status=${subscription.status}`);
+
+          const studentProfileDoc = await authService.getStudentProfileByAuthUid(authUid);
+          if (!studentProfileDoc) break;
+          const profileData = studentProfileDoc.data() as Record<string, unknown>;
+
+          let studioName = "your studio";
+          if (studioOwnerId) {
+            const studioDoc = await db.collection("users").doc(studioOwnerId).get();
+            if (studioDoc.exists) {
+              studioName = ((studioDoc.data() as Record<string, unknown>)["studioName"] as string) || studioName;
+            }
+          }
+
+          const nextAttempt = invoice["next_payment_attempt"] as number | null;
+          sendPackageSubscriptionPaymentFailedEmail(
+            (profileData["email"] as string) || "",
+            (profileData["firstName"] as string) || "",
+            studioName,
+            (itemName as string) || "your package",
+            nextAttempt ? new Date(nextAttempt * 1000) : null,
+          ).catch((err) => console.error("[webhook-connect] Failed to send package-subscription-payment-failed email:", err));
+        } catch (err) {
+          console.error("[webhook-connect] Error handling invoice.payment_failed:", err);
         }
         break;
       }
 
       default:
-        console.log(`Unhandled event type: ${event.type}`);
+        console.log(`[webhook-connect] Unhandled event type: ${event.type}`);
     }
 
     res.status(200).json({ received: true });
   } catch (error) {
-    console.error("Webhook error:", error);
+    console.error("[webhook-connect] Webhook error:", error);
     return sendErrorResponse(req, res, 400, "Webhook Error", (error as Error).message);
   }
 });
