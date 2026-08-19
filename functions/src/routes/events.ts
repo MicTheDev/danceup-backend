@@ -4,6 +4,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import eventsService from "../services/events.service";
 import storageService from "../services/storage.service";
+import { autoGenerateEventOrWorkshopFlyer } from "../services/auto-flyer.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateEventPayload, validateUpdateEventPayload } from "../utils/validation";
 import { sanitizeRichText } from "../utils/sanitize";
@@ -180,7 +181,8 @@ app.post("/", async (req, res) => {
       }
     }
 
-    sendJsonResponse(req, res, 201, { id: eventId, message: "Event created successfully" });
+    const flyer = await autoGenerateEventOrWorkshopFlyer(eventData, studioOwnerId, "event");
+    sendJsonResponse(req, res, 201, { id: eventId, message: "Event created successfully", flyer });
   } catch (error) {
     console.error("Error creating event:", error);
     handleError(req, res, error);

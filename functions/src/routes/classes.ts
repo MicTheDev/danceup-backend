@@ -3,10 +3,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import classesService from "../services/classes.service";
 import storageService from "../services/storage.service";
-import * as flyerGen from "../services/flyer-generator.service";
-import * as flyersService from "../services/flyers.service";
-import notificationsService from "../services/notifications.service";
-import { getFirestore } from "../utils/firestore";
+import { autoGenerateClassFlyer } from "../services/auto-flyer.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateClassPayload, validateUpdateClassPayload } from "../utils/validation";
 import { sanitizeRichText } from "../utils/sanitize";
@@ -20,73 +17,6 @@ import {
 } from "../utils/http";
 
 const app = express();
-
-// Best-effort — a flyer-generation failure should never block class creation itself.
-// Mirrors exactly what POST /flyers/generate + /flyers/save do for a manually-requested
-// class flyer, just triggered automatically so the studio doesn't have to remember to
-// go make one. Shows up in the existing Marketing > Flyers list once done.
-async function autoGenerateClassFlyer(
-  classBody: Record<string, unknown>, studioOwnerId: string,
-): Promise<void> {
-  try {
-    const db = getFirestore();
-    const userDoc = await db.collection("users").doc(studioOwnerId).get();
-    const userData = userDoc.data() as Record<string, unknown> | undefined;
-    const studioName = (userData?.["studioName"] as string) || "My Studio";
-
-    const name = (classBody["name"] as string) || "Dance Class";
-    const danceGenre = classBody["danceGenre"] as string | undefined;
-    const level = classBody["level"] as string | undefined;
-    const dayOfWeek = classBody["dayOfWeek"] as string | undefined;
-    const startTime = classBody["startTime"] as string | undefined;
-    const endTime = classBody["endTime"] as string | undefined;
-    const cost = classBody["cost"] as number | undefined;
-    const timeStr = startTime && endTime ? `${startTime} – ${endTime}` : startTime;
-
-    const copy = await flyerGen.generateFlyerCopy({
-      type: "class",
-      name,
-      studioName,
-      danceGenre,
-      level,
-      dateStr: dayOfWeek || "",
-      price: cost != null ? `$${cost}` : undefined,
-    });
-
-    const svgContent = flyerGen.buildClassFlyer({
-      studioName,
-      name,
-      danceGenre,
-      level,
-      dayOfWeek,
-      timeStr,
-      price: cost != null ? `$${cost} per class` : undefined,
-      copy,
-    });
-
-    const flyer = await flyersService.saveFlyer(studioOwnerId, {
-      type: "class",
-      contentName: name,
-      svgContent,
-      flyerHeight: 1350,
-    });
-
-    // The generation itself is silent otherwise — the studio owner would have no way
-    // to know a draft is waiting for them unless they think to check Marketing > Flyers.
-    await notificationsService.createNotification(
-      studioOwnerId,
-      null,
-      "flyer_created",
-      "Flyer Draft Ready",
-      `A flyer for "${name}" was auto-generated — ready to review and share`,
-      null,
-      null,
-      flyer.id,
-    );
-  } catch (error) {
-    console.error("Error auto-generating class flyer:", error);
-  }
-}
 
 app.options("*", (req, res) => {
   const origin = req.headers.origin;
@@ -208,8 +138,8 @@ app.post("/", async (req, res) => {
     delete classBody["imageFile"];
 
     const classId = await classesService.createClass(classBody, studioOwnerId);
-    await autoGenerateClassFlyer(classBody, studioOwnerId);
-    sendJsonResponse(req, res, 201, { id: classId, message: "Class created successfully" });
+    const flyer = await autoGenerateClassFlyer(classBody, studioOwnerId);
+    sendJsonResponse(req, res, 201, { id: classId, message: "Class created successfully", flyer });
   } catch (error) {
     console.error("Error creating class:", error);
     handleError(req, res, error);
