@@ -1125,3 +1125,49 @@ export async function sendStudentPaymentFailedEmailToStudio(
     categories: ["package-subscription-payment-failed-studio"],
   });
 }
+
+// Sent to a student some time after their first class, prompting them to leave a
+// review — linked to the specific class they most recently attended (freshest in
+// mind), landing directly on that class's review section rather than a generic page.
+export async function sendReviewRequestEmail(
+  to: string, firstName: string, studioName: string, className: string, classId: string,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendReviewRequestEmail: no recipient email, skipping"); return; }
+  const name = firstName?.trim() || "there";
+  const studio = studioName?.trim() || "the studio";
+  const cls = className?.trim() || "your class";
+  const reviewUrl = `https://danceup.app/classes/${classId}#reviews`;
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">How's it going, ${name}?</h2>
+        <p style="color:#64748b;margin:0 0 20px">
+          You've been dancing at <strong>${studio}</strong> for a bit now. Mind sharing a quick review of <strong>${cls}</strong>? It helps other dancers find their people.
+        </p>
+        <a href="${reviewUrl}"
+           style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          Leave a Review →
+        </a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because you're enrolled at ${studio} via DanceUp.</p>
+      </div>
+    </div>`;
+
+  const text = [
+    `How's it going, ${name}?`,
+    ``,
+    `You've been dancing at ${studio} for a bit now. Mind sharing a quick review of ${cls}? It helps other dancers find their people.`,
+    ``,
+    `Leave a review: ${reviewUrl}`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `Enjoying ${cls} at ${studio}?`,
+    html,
+    text,
+    categories: ["review-request"],
+  });
+}

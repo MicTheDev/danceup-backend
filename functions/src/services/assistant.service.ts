@@ -107,8 +107,8 @@ const READ_TOOLS: FunctionDeclaration[] = [
 ];
 
 const EMAIL_TONES = ["promotional", "informational", "community"] as const;
-const TRIGGER_TYPES: TriggerType[] = ["inactive_days", "credits_expiring_days", "signup_no_attend", "milestone_checkins", "first_class_attended", "credits_depleted"];
-const ACTION_TYPES: ActionType[] = ["re_engagement_email", "credit_reminder_email", "milestone_email", "signup_nudge_email", "first_class_email", "credits_depleted_email"];
+const TRIGGER_TYPES: TriggerType[] = ["inactive_days", "credits_expiring_days", "signup_no_attend", "milestone_checkins", "first_class_attended", "credits_depleted", "review_request_days"];
+const ACTION_TYPES: ActionType[] = ["re_engagement_email", "credit_reminder_email", "milestone_email", "signup_nudge_email", "first_class_email", "credits_depleted_email", "review_request_email"];
 const CLASS_LEVELS = ["Beginner", "Intermediate", "Advanced", "All Levels"];
 const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 

@@ -7,10 +7,11 @@ import {
   sendSignupNudgeEmail,
   sendFirstClassEmail,
   sendCreditsDepletedEmail,
+  sendReviewRequestEmail,
 } from "./sendgrid.service";
 
-export type TriggerType = "inactive_days" | "credits_expiring_days" | "signup_no_attend" | "milestone_checkins" | "first_class_attended" | "credits_depleted";
-export type ActionType = "re_engagement_email" | "credit_reminder_email" | "milestone_email" | "signup_nudge_email" | "first_class_email" | "credits_depleted_email";
+export type TriggerType = "inactive_days" | "credits_expiring_days" | "signup_no_attend" | "milestone_checkins" | "first_class_attended" | "credits_depleted" | "review_request_days";
+export type ActionType = "re_engagement_email" | "credit_reminder_email" | "milestone_email" | "signup_nudge_email" | "first_class_email" | "credits_depleted_email" | "review_request_email";
 
 export interface CampaignRule {
   id: string;
@@ -131,6 +132,9 @@ class CampaignRulesService {
     const lastAttendedMap = new Map<string, Date>();
     const firstAttendedMap = new Map<string, Date>();
     const totalCheckInsMap = new Map<string, number>();
+    // Which class each student attended most recently — used to link a review request
+    // at the specific class they last experienced, not an arbitrary/oldest one.
+    const lastAttendedClassMap = new Map<string, string>();
     attendanceSnap.forEach((doc) => {
       const d = doc.data() as Record<string, unknown>;
       if (d["isRemoved"] === true) return;
@@ -138,7 +142,11 @@ class CampaignRulesService {
       const date = tsToDate(d["classInstanceDate"]);
       if (!sid || !date) return;
       const lastExisting = lastAttendedMap.get(sid);
-      if (!lastExisting || date > lastExisting) lastAttendedMap.set(sid, date);
+      if (!lastExisting || date > lastExisting) {
+        lastAttendedMap.set(sid, date);
+        const cid = d["classId"] as string | undefined;
+        if (cid) lastAttendedClassMap.set(sid, cid);
+      }
       const firstExisting = firstAttendedMap.get(sid);
       if (!firstExisting || date < firstExisting) firstAttendedMap.set(sid, date);
       totalCheckInsMap.set(sid, (totalCheckInsMap.get(sid) || 0) + 1);
@@ -197,6 +205,15 @@ class CampaignRulesService {
     }
 
     let totalSent = 0;
+    const classNameCache = new Map<string, string>();
+    async function getClassName(classId: string): Promise<string> {
+      const cached = classNameCache.get(classId);
+      if (cached !== undefined) return cached;
+      const doc = await db.collection("classes").doc(classId).get();
+      const name = doc.exists ? (((doc.data() as Record<string, unknown>)["name"] as string) || "your class") : "your class";
+      classNameCache.set(classId, name);
+      return name;
+    }
 
     for (const ruleDoc of activeRuleDocs) {
       const rule = ruleDoc.data() as Omit<CampaignRule, "id">;
@@ -257,6 +274,13 @@ class CampaignRulesService {
             shouldSend = depletedCreditsSet.has(sid);
             break;
           }
+          case "review_request_days": {
+            const firstDate = firstAttendedMap.get(sid);
+            if (!firstDate || !lastAttendedClassMap.has(sid)) { shouldSend = false; break; }
+            const daysSinceFirst = Math.floor((now.getTime() - firstDate.getTime()) / (24 * 60 * 60 * 1000));
+            shouldSend = daysSinceFirst >= rule.triggerValue;
+            break;
+          }
         }
 
         if (!shouldSend) continue;
@@ -297,6 +321,13 @@ class CampaignRulesService {
             case "credits_depleted_email":
               await sendCreditsDepletedEmail(email, firstName, studioName);
               break;
+            case "review_request_email": {
+              const classId = lastAttendedClassMap.get(sid);
+              if (!classId) break;
+              const className = await getClassName(classId);
+              await sendReviewRequestEmail(email, firstName, studioName, className, classId);
+              break;
+            }
           }
 
           await db.collection("campaign_emails").add({

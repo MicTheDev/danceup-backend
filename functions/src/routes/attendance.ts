@@ -168,6 +168,29 @@ app.get("/classes", async (req, res) => {
   }
 });
 
+app.get("/under-enrolled", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const thresholdRaw = req.query["threshold"] as string | undefined;
+    const lookbackRaw = req.query["days"] as string | undefined;
+    const threshold = thresholdRaw ? Math.max(1, parseInt(thresholdRaw, 10) || 3) : 3;
+    const lookbackDays = lookbackRaw ? Math.max(7, parseInt(lookbackRaw, 10) || 30) : 30;
+
+    const classes = await attendanceService.getUnderEnrolledClasses(studioOwnerId, threshold, lookbackDays);
+    sendJsonResponse(req, res, 200, { classes, threshold, lookbackDays });
+  } catch (error) {
+    console.error("Error getting under-enrolled classes:", error);
+    handleError(req, res, error);
+  }
+});
+
 app.get("/workshops", async (req, res) => {
   try {
     let user;

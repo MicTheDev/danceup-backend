@@ -1185,9 +1185,9 @@ Return ONLY a valid JSON object:
 
 export interface AutomationSuggestion {
   name: string;
-  triggerType: "inactive_days" | "credits_expiring_days" | "signup_no_attend" | "milestone_checkins" | "first_class_attended" | "credits_depleted";
+  triggerType: "inactive_days" | "credits_expiring_days" | "signup_no_attend" | "milestone_checkins" | "first_class_attended" | "credits_depleted" | "review_request_days";
   triggerValue: number;
-  actionType: "re_engagement_email" | "credit_reminder_email" | "milestone_email" | "signup_nudge_email" | "first_class_email" | "credits_depleted_email";
+  actionType: "re_engagement_email" | "credit_reminder_email" | "milestone_email" | "signup_nudge_email" | "first_class_email" | "credits_depleted_email" | "review_request_email";
   cooldownDays: number;
   reasoning: string;
 }
@@ -1229,6 +1229,7 @@ AVAILABLE TRIGGER TYPES:
 - "milestone_checkins": Student reaches N total check-ins. Requires triggerValue (count, 5–100).
 - "first_class_attended": First class within N days. Requires triggerValue (1–7).
 - "credits_depleted": Student uses all credits. No triggerValue needed (use 0).
+- "review_request_days": N days since the student's first check-in. Requires triggerValue (days, 3–30). Pair with review_request_email.
 
 AVAILABLE ACTION TYPES:
 - "re_engagement_email": Warm re-engagement email
@@ -1237,6 +1238,7 @@ AVAILABLE ACTION TYPES:
 - "signup_nudge_email": Nudge to attend first class
 - "first_class_email": Celebrate first class
 - "credits_depleted_email": Buy-more-credits prompt
+- "review_request_email": Ask for a review of their most recently attended class
 
 Suggest 2–4 automation rules that would most benefit this studio based on the data. Prioritize what the data shows is a real problem. Do not suggest rules that already exist.
 

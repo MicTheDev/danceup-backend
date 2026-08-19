@@ -16,6 +16,7 @@ export class NotificationsService {
     title: string,
     message: string,
     studentId: string | null = null,
+    classId: string | null = null,
   ): Promise<string> {
     const db = getFirestore();
     const notificationData: Record<string, unknown> = {
@@ -29,6 +30,7 @@ export class NotificationsService {
     };
     if (bookingId) notificationData["bookingId"] = bookingId;
     if (studentId) notificationData["studentId"] = studentId;
+    if (classId) notificationData["classId"] = classId;
     const docRef = await db.collection("notifications").add(notificationData);
     return docRef.id;
   }
