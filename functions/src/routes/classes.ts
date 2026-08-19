@@ -3,6 +3,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import classesService from "../services/classes.service";
 import storageService from "../services/storage.service";
+import { autoGenerateClassFlyer } from "../services/auto-flyer.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateClassPayload, validateUpdateClassPayload } from "../utils/validation";
 import { sanitizeRichText } from "../utils/sanitize";
@@ -137,7 +138,8 @@ app.post("/", async (req, res) => {
     delete classBody["imageFile"];
 
     const classId = await classesService.createClass(classBody, studioOwnerId);
-    sendJsonResponse(req, res, 201, { id: classId, message: "Class created successfully" });
+    const flyer = await autoGenerateClassFlyer(classBody, studioOwnerId);
+    sendJsonResponse(req, res, 201, { id: classId, message: "Class created successfully", flyer });
   } catch (error) {
     console.error("Error creating class:", error);
     handleError(req, res, error);

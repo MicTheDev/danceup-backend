@@ -3,6 +3,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import workshopsService from "../services/workshops.service";
 import storageService from "../services/storage.service";
+import { autoGenerateEventOrWorkshopFlyer } from "../services/auto-flyer.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateWorkshopPayload, validateUpdateWorkshopPayload } from "../utils/validation";
 import { sanitizeRichText } from "../utils/sanitize";
@@ -174,7 +175,8 @@ app.post("/", async (req, res) => {
       }
     }
 
-    sendJsonResponse(req, res, 201, { id: workshopId, message: "Workshop created successfully" });
+    const flyer = await autoGenerateEventOrWorkshopFlyer(workshopData, studioOwnerId, "workshop");
+    sendJsonResponse(req, res, 201, { id: workshopId, message: "Workshop created successfully", flyer });
   } catch (error) {
     console.error("Error creating workshop:", error);
     handleError(req, res, error);

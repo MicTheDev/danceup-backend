@@ -230,12 +230,15 @@ app.post("/create-payment-intent", async (req, res) => {
       return sendErrorResponse(req, res, 401, "Authentication Failed", "Login required to book a private lesson.");
     }
 
-    const { instructorId, studioId, date, timeSlot, notes, contactInfo } = req.body as Record<string, unknown>;
+    const { instructorId, studioId, date, timeSlot, notes, contactInfo, dependentId } = req.body as Record<string, unknown>;
 
     if (!instructorId || !studioId || !date || !(timeSlot as Record<string, unknown>)?.["startTime"] || !(timeSlot as Record<string, unknown>)?.["endTime"]) {
       return sendErrorResponse(req, res, 400, "Validation Error", "instructorId, studioId, date, and timeSlot are required");
     }
 
+    // The account holder's own global profile id — unchanged for a dependent's
+    // booking, since private lessons don't touch the per-studio credit ledger.
+    // dependentId below is a display/notification tag only.
     const studentId = await bookingsService.getStudentId(user.uid);
 
     const result = await bookingsService.createPrivateLessonPaymentIntent(
@@ -246,6 +249,7 @@ app.post("/create-payment-intent", async (req, res) => {
         timeSlot: timeSlot as { startTime: string; endTime: string },
         notes: notes as string | null | undefined,
         contactInfo: contactInfo as { email?: string; phone?: string } | null | undefined,
+        dependentId: typeof dependentId === "string" ? dependentId : null,
       },
       { uid: user.uid, email: user.email },
       studentId,
@@ -326,7 +330,7 @@ app.post("/charge-saved", async (req, res) => {
       return sendErrorResponse(req, res, 401, "Authentication Failed", "Login required to book a private lesson.");
     }
 
-    const { instructorId, studioId, date, timeSlot, paymentMethodId, notes } = req.body as Record<string, unknown>;
+    const { instructorId, studioId, date, timeSlot, paymentMethodId, notes, dependentId } = req.body as Record<string, unknown>;
     const ts = timeSlot as Record<string, unknown> | undefined;
     if (!instructorId || !studioId || !date || !ts?.["startTime"] || !ts?.["endTime"] || !paymentMethodId) {
       return sendErrorResponse(req, res, 400, "Validation Error", "instructorId, studioId, date, timeSlot, and paymentMethodId are required");
@@ -466,6 +470,7 @@ app.post("/charge-saved", async (req, res) => {
       amountPaid: instructor["privateRate"] as number,
       stripePaymentIntentId: piData["id"] as string,
       stripeConnectedAccountId: connectedAccountId,
+      dependentId: typeof dependentId === "string" ? dependentId : null,
     });
 
     const recipientEmail = profileDoc ? ((profileDoc.data() as Record<string, unknown>)["email"] as string) : user.email;

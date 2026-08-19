@@ -67,17 +67,19 @@ export class CreditTrackingService {
     return total;
   }
 
-  async getLiveCreditsForAuthUser(authUid: string, studioOwnerId: string): Promise<number> {
+  /** See attendance.service.ts's getStudentIdByAuthUidAndStudio for why this
+   *  fetches-then-filters instead of adding a third `.where("dependentId", ...)`. */
+  async getLiveCreditsForAuthUser(authUid: string, studioOwnerId: string, dependentId?: string | null): Promise<number> {
     const db = getFirestore();
     const snapshot = await db.collection("students")
       .where("authUid", "==", authUid)
       .where("studioOwnerId", "==", studioOwnerId)
-      .limit(1)
       .get();
-    if (snapshot.empty) return 0;
-    const firstDoc = snapshot.docs[0];
-    if (!firstDoc) return 0;
-    return this.getAvailableCredits(firstDoc.id, studioOwnerId);
+    const match = dependentId
+      ? snapshot.docs.find((doc) => doc.data()["dependentId"] === dependentId)
+      : snapshot.docs.find((doc) => !doc.data()["dependentId"]);
+    if (!match) return 0;
+    return this.getAvailableCredits(match.id, studioOwnerId);
   }
 
   async useCredit(studentId: string, studioOwnerId: string, classId: string | null = null): Promise<string> {

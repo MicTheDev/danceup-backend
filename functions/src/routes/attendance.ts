@@ -168,6 +168,29 @@ app.get("/classes", async (req, res) => {
   }
 });
 
+app.get("/under-enrolled", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const studioOwnerId = await attendanceService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const thresholdRaw = req.query["threshold"] as string | undefined;
+    const lookbackRaw = req.query["days"] as string | undefined;
+    const threshold = thresholdRaw ? Math.max(1, parseInt(thresholdRaw, 10) || 3) : 3;
+    const lookbackDays = lookbackRaw ? Math.max(7, parseInt(lookbackRaw, 10) || 30) : 30;
+
+    const classes = await attendanceService.getUnderEnrolledClasses(studioOwnerId, threshold, lookbackDays);
+    sendJsonResponse(req, res, 200, { classes, threshold, lookbackDays });
+  } catch (error) {
+    console.error("Error getting under-enrolled classes:", error);
+    handleError(req, res, error);
+  }
+});
+
 app.get("/workshops", async (req, res) => {
   try {
     let user;
@@ -395,13 +418,19 @@ app.post("/", async (req, res) => {
       }
       studioOwnerId = classStudioOwnerId;
 
-      // Find the student doc scoped to this specific studio
+      // Find the student doc scoped to this specific studio — dependentId picks
+      // a specific family member's row instead of the caller's own.
+      const dependentId = typeof body["dependentId"] === "string" ? body["dependentId"] as string : undefined;
       if (!studentId && body["studentAuthUid"]) {
         let resolved: string | null;
         try {
-          resolved = await attendanceService.getStudentIdByAuthUidAndStudio(
-            body["studentAuthUid"] as string, studioOwnerId,
-          );
+          resolved = dependentId
+            ? await attendanceService.resolveOrCreateStudentIdForDependent(
+              body["studentAuthUid"] as string, studioOwnerId, dependentId,
+            )
+            : await attendanceService.getStudentIdByAuthUidAndStudio(
+              body["studentAuthUid"] as string, studioOwnerId,
+            );
         } catch (error) {
           console.error("Check-in — student lookup by authUid+studio failed:", (error as Error).message, error);
           return sendErrorResponse(req, res, 500, "Internal Server Error", "An unexpected error occurred");
@@ -412,7 +441,10 @@ app.post("/", async (req, res) => {
         studentId = resolved;
       }
 
-      // Verify the student doc's authUid matches the caller's token
+      // Verify the student doc's authUid matches the caller's token — this
+      // check needs no dependent-awareness: a dependent's roster row still
+      // carries the PARENT's authUid (dependents never get their own login),
+      // so this already passes correctly for a dependent's row as-is.
       const studentRef = db.collection("students").doc(studentId as string);
       let studentDoc: FirebaseFirestore.DocumentSnapshot;
       try {
