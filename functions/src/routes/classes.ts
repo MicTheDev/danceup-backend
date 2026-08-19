@@ -5,6 +5,7 @@ import classesService from "../services/classes.service";
 import storageService from "../services/storage.service";
 import * as flyerGen from "../services/flyer-generator.service";
 import * as flyersService from "../services/flyers.service";
+import notificationsService from "../services/notifications.service";
 import { getFirestore } from "../utils/firestore";
 import { verifyToken } from "../utils/auth";
 import { validateCreateClassPayload, validateUpdateClassPayload } from "../utils/validation";
@@ -63,12 +64,25 @@ async function autoGenerateClassFlyer(
       copy,
     });
 
-    await flyersService.saveFlyer(studioOwnerId, {
+    const flyer = await flyersService.saveFlyer(studioOwnerId, {
       type: "class",
       contentName: name,
       svgContent,
       flyerHeight: 1350,
     });
+
+    // The generation itself is silent otherwise — the studio owner would have no way
+    // to know a draft is waiting for them unless they think to check Marketing > Flyers.
+    await notificationsService.createNotification(
+      studioOwnerId,
+      null,
+      "flyer_created",
+      "Flyer Draft Ready",
+      `A flyer for "${name}" was auto-generated — ready to review and share`,
+      null,
+      null,
+      flyer.id,
+    );
   } catch (error) {
     console.error("Error auto-generating class flyer:", error);
   }
