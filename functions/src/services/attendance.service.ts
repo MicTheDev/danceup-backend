@@ -1,6 +1,8 @@
 import * as admin from "firebase-admin";
 import authService from "./auth.service";
 import creditTrackingService from "./credit-tracking.service";
+import studioEnrollmentService from "./studio-enrollment.service";
+import notificationsService from "./notifications.service";
 import { getFirestore } from "../utils/firestore";
 
 interface AttendanceData {
@@ -51,16 +53,36 @@ export class AttendanceService {
     return firstDoc ? firstDoc.id : null;
   }
 
-  async getStudentIdByAuthUidAndStudio(authUid: string, studioOwnerId: string): Promise<string | null> {
+  /**
+   * `dependentId` omitted/null resolves the caller's own roster row; a value
+   * resolves that specific dependent's row. Firestore's `==` doesn't match a
+   * field that's simply absent from a doc, and no pre-existing row ever had
+   * `dependentId` written on it, so this can't be a third `.where()` clause —
+   * it fetches the (small, per-family) set for this (authUid, studioOwnerId)
+   * pair and filters in code instead, which works for both legacy rows
+   * (field absent) and new ones (field explicitly null).
+   */
+  async getStudentIdByAuthUidAndStudio(
+    authUid: string, studioOwnerId: string, dependentId?: string | null,
+  ): Promise<string | null> {
     const db = getFirestore();
     const snapshot = await db.collection("students")
       .where("authUid", "==", authUid)
       .where("studioOwnerId", "==", studioOwnerId)
-      .limit(1)
       .get();
-    if (snapshot.empty) return null;
-    const firstDoc = snapshot.docs[0];
-    return firstDoc ? firstDoc.id : null;
+    const match = dependentId
+      ? snapshot.docs.find((doc) => doc.data()["dependentId"] === dependentId)
+      : snapshot.docs.find((doc) => !doc.data()["dependentId"]);
+    return match ? match.id : null;
+  }
+
+  /** Resolves a dependent's roster row for a studio, enrolling them on first use. */
+  async resolveOrCreateStudentIdForDependent(
+    authUid: string, studioOwnerId: string, dependentId: string,
+  ): Promise<string> {
+    const existing = await this.getStudentIdByAuthUidAndStudio(authUid, studioOwnerId, dependentId);
+    if (existing) return existing;
+    return studioEnrollmentService.enrollDependent(studioOwnerId, authUid, dependentId);
   }
 
   async getAttendanceRecordsByStudent(
@@ -213,6 +235,131 @@ export class AttendanceService {
       byClass,
       total: classRecords.length,
     };
+  }
+
+  /**
+   * Classes whose average attendance per scheduled session, over the trailing window,
+   * falls below a threshold — surfaced to the studio owner so they can decide whether to
+   * consolidate, reschedule, or promote a class before it becomes a bigger problem.
+   * Requires at least 2 scheduled sessions in the window (avoids flagging brand-new
+   * classes or one-off low weeks) and skips classes created more recently than the
+   * window itself, since there isn't enough history yet to judge them fairly.
+   */
+  async getUnderEnrolledClasses(
+    studioOwnerId: string, thresholdAvg = 3, lookbackDays = 30,
+  ): Promise<Array<{ classId: string; className: string; dayOfWeek: string; averageAttendance: number; sessionsInWindow: number; totalAttendance: number }>> {
+    const db = getFirestore();
+    const now = new Date();
+    const startDate = new Date(now.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
+
+    const dayNameToNum: Record<string, number> = {
+      Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6,
+    };
+
+    const [classesSnap, records] = await Promise.all([
+      db.collection("classes").where("studioOwnerId", "==", studioOwnerId).where("isActive", "==", true).get(),
+      this.getAttendanceRecords(studioOwnerId, startDate, null),
+    ]);
+
+    const attendanceCountByClass = new Map<string, number>();
+    records.forEach((r) => {
+      const cid = r["classId"] as string | undefined;
+      if (!cid) return;
+      attendanceCountByClass.set(cid, (attendanceCountByClass.get(cid) ?? 0) + 1);
+    });
+
+    const results: Array<{ classId: string; className: string; dayOfWeek: string; averageAttendance: number; sessionsInWindow: number; totalAttendance: number }> = [];
+
+    classesSnap.forEach((doc) => {
+      const data = doc.data() as Record<string, unknown>;
+      const createdAt = tsToDate(data["createdAt"]);
+      if (createdAt && createdAt > startDate) return; // too new to judge fairly
+
+      const dayOfWeek = data["dayOfWeek"] as string | undefined;
+      const dow = dayOfWeek ? dayNameToNum[dayOfWeek] : undefined;
+      if (dow === undefined) return;
+
+      let sessionsInWindow = 0;
+      for (let d = new Date(startDate); d <= now; d.setDate(d.getDate() + 1)) {
+        if (d.getDay() === dow) sessionsInWindow++;
+      }
+      if (sessionsInWindow < 2) return;
+
+      const totalAttendance = attendanceCountByClass.get(doc.id) ?? 0;
+      const averageAttendance = totalAttendance / sessionsInWindow;
+      if (averageAttendance >= thresholdAvg) return;
+
+      results.push({
+        classId: doc.id,
+        className: (data["name"] as string) || "Unnamed Class",
+        dayOfWeek: dayOfWeek || "",
+        averageAttendance: Math.round(averageAttendance * 10) / 10,
+        sessionsInWindow,
+        totalAttendance,
+      });
+    });
+
+    return results.sort((a, b) => a.averageAttendance - b.averageAttendance);
+  }
+
+  /**
+   * Runs getUnderEnrolledClasses for every studio with active classes and creates an
+   * in-app notification for each newly-flagged class. Dedupes against notifications
+   * created in the last 7 days for that exact class, so this is safe to run daily
+   * without re-notifying the studio owner about the same still-under-enrolled class
+   * every single day.
+   */
+  async notifyUnderEnrolledClassesForAllStudios(): Promise<number> {
+    const db = getFirestore();
+    const classesSnap = await db.collection("classes").where("isActive", "==", true).get();
+    const studioOwnerIds = new Set<string>();
+    classesSnap.forEach((doc) => {
+      const sid = (doc.data() as Record<string, unknown>)["studioOwnerId"] as string | undefined;
+      if (sid) studioOwnerIds.add(sid);
+    });
+
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    let totalNotified = 0;
+
+    for (const studioOwnerId of studioOwnerIds) {
+      try {
+        const underEnrolled = await this.getUnderEnrolledClasses(studioOwnerId);
+        if (underEnrolled.length === 0) continue;
+
+        // Single-field query, filtered in JS — avoids needing a new composite index,
+        // matches the same pattern already used by campaign-rules.service.ts.
+        const recentNotifsSnap = await db.collection("notifications")
+          .where("studioId", "==", studioOwnerId)
+          .get();
+        const recentlyNotifiedClassIds = new Set<string>();
+        recentNotifsSnap.forEach((doc) => {
+          const d = doc.data() as Record<string, unknown>;
+          if (d["type"] !== "low_enrollment" || !d["classId"]) return;
+          const createdAt = d["createdAt"] as admin.firestore.Timestamp | undefined;
+          if (createdAt && createdAt.toMillis() >= sevenDaysAgo) {
+            recentlyNotifiedClassIds.add(d["classId"] as string);
+          }
+        });
+
+        for (const cls of underEnrolled) {
+          if (recentlyNotifiedClassIds.has(cls.classId)) continue;
+          await notificationsService.createNotification(
+            studioOwnerId,
+            null,
+            "low_enrollment",
+            "Low Enrollment",
+            `"${cls.className}" is averaging ${cls.averageAttendance} students per class over the last 30 days`,
+            null,
+            cls.classId,
+          );
+          totalNotified++;
+        }
+      } catch (err) {
+        console.error(`[Attendance] Error checking under-enrolled classes for studio ${studioOwnerId}:`, (err as Error).message);
+      }
+    }
+
+    return totalNotified;
   }
 
   async getWorkshopAttendanceStats(

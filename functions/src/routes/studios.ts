@@ -118,7 +118,12 @@ app.post("/:studioId/enroll", async (req, res) => {
     try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
 
     const studioId = req.params["studioId"] as string;
-    const studentId = await studioEnrollmentService.enrollStudent(studioId, user.uid);
+    const dependentId = typeof (req.body as Record<string, unknown>)?.["dependentId"] === "string"
+      ? (req.body as Record<string, unknown>)["dependentId"] as string
+      : undefined;
+    const studentId = dependentId
+      ? await studioEnrollmentService.enrollDependent(studioId, user.uid, dependentId)
+      : await studioEnrollmentService.enrollStudent(studioId, user.uid);
 
     const studentData = await studentsService.getStudentById(studentId, studioId) as Record<string, unknown> | null;
     const firstName = (studentData?.["firstName"] as string) || "A student";

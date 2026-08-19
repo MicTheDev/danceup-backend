@@ -4,6 +4,7 @@ import cors from "cors";
 import studentsService from "../services/students.service";
 import * as flyersService from "../services/flyers.service";
 import * as flyerGen from "../services/flyer-generator.service";
+import { formatEventDate, formatEventTime, formatPrice } from "../services/auto-flyer.service";
 import { getFirestore } from "../utils/firestore";
 import { verifyToken } from "../utils/auth";
 import {
@@ -140,42 +141,6 @@ async function fetchAllClasses(studioOwnerId: string): Promise<Array<flyerGen.Sc
       instructors: instructors.length > 0 ? instructors : undefined,
     };
   });
-}
-
-function formatEventDate(isoStr?: string): string {
-  if (!isoStr) return "";
-  try {
-    return new Date(isoStr).toLocaleDateString("en-US", {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    });
-  } catch {
-    return isoStr;
-  }
-}
-
-function formatEventTime(isoStr?: string): string {
-  if (!isoStr) return "";
-  try {
-    return new Date(isoStr).toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    });
-  } catch {
-    return isoStr;
-  }
-}
-
-function formatPrice(tiers?: Array<{ price?: number }>): string {
-  if (!tiers || tiers.length === 0) return "";
-  const lowestPrice = tiers
-    .map((t) => t.price ?? Infinity)
-    .filter((p) => p < Infinity)
-    .sort((a, b) => a - b)[0];
-  return lowestPrice !== undefined ? `$${lowestPrice}` : "";
 }
 
 async function fetchImageAsBase64(url: string): Promise<string | null> {
