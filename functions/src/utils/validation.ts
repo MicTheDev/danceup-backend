@@ -561,6 +561,37 @@ export function validateRegistrationPayload(payload: Record<string, unknown>): V
   return { valid: errors.length === 0, errors };
 }
 
+// Same shape as registration, minus password (an admin never sets one — the studio
+// owner gets a password-reset email instead) and membership (subscription is a
+// separate onboarding step, not part of account creation).
+export function validateAdminOnboardStudioPayload(payload: Record<string, unknown>): ValidationErrors {
+  const errors: ValidationErrorList = [];
+
+  if (!isValidEmail(payload["email"])) {
+    errors.push({ field: "email", message: "Valid email is required" });
+  }
+
+  for (const field of ["firstName", "lastName", "studioName", "studioAddressLine1", "city"]) {
+    const v = validateRequiredString(payload[field], field.charAt(0).toUpperCase() + field.slice(1));
+    if (!v.valid) errors.push({ field, message: v.message ?? "" });
+  }
+
+  const stateV = validateState(payload["state"]);
+  if (!stateV.valid) errors.push({ field: "state", message: stateV.message ?? "" });
+
+  const zipV = validateZip(payload["zip"]);
+  if (!zipV.valid) errors.push({ field: "zip", message: zipV.message ?? "" });
+
+  for (const field of ["facebook", "instagram", "tiktok", "youtube"]) {
+    if (payload[field]) {
+      const uv = validateUrl(payload[field]);
+      if (!uv.valid) errors.push({ field, message: uv.message ?? "" });
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
 export function validateLoginPayload(payload: Record<string, unknown>): ValidationErrors {
   const errors: ValidationErrorList = [];
   if (!isValidEmail(payload["email"])) {
@@ -1395,9 +1426,10 @@ export function validateUpdateStudentPayload(payload: Record<string, unknown>): 
 }
 
 // Only validates the overall payload shape. Per-row content issues (missing
-// name, malformed email) are validated inside bulkImportStudents() and reported
-// per-row in the response, rather than rejecting the whole import over one bad row.
-export function validateBulkImportStudentsPayload(payload: Record<string, unknown>): ValidationErrors {
+// name, malformed email) are validated inside the corresponding bulkImport*()
+// service function and reported per-row in the response, rather than rejecting
+// the whole import over one bad row.
+function validateBulkImportRowsShape(payload: Record<string, unknown>, maxRows = 2000): ValidationErrors {
   const errors: ValidationErrorList = [];
   const rows = payload["rows"];
 
@@ -1405,8 +1437,8 @@ export function validateBulkImportStudentsPayload(payload: Record<string, unknow
     errors.push({ field: "rows", message: "rows must be a non-empty array" });
     return { valid: false, errors };
   }
-  if (rows.length > 2000) {
-    errors.push({ field: "rows", message: "A single import is limited to 2000 rows" });
+  if (rows.length > maxRows) {
+    errors.push({ field: "rows", message: `A single import is limited to ${maxRows} rows` });
     return { valid: false, errors };
   }
   rows.forEach((row, index) => {
@@ -1414,6 +1446,68 @@ export function validateBulkImportStudentsPayload(payload: Record<string, unknow
       errors.push({ field: `rows[${index}]`, message: "Row must be an object" });
     }
   });
+
+  return { valid: errors.length === 0, errors };
+}
+
+export function validateBulkImportStudentsPayload(payload: Record<string, unknown>): ValidationErrors {
+  return validateBulkImportRowsShape(payload);
+}
+
+export function validateBulkImportInstructorsPayload(payload: Record<string, unknown>): ValidationErrors {
+  return validateBulkImportRowsShape(payload);
+}
+
+export function validateBulkImportClassesPayload(payload: Record<string, unknown>): ValidationErrors {
+  return validateBulkImportRowsShape(payload);
+}
+
+// Branches on which of the two subscription-source shapes the admin submitted —
+// a standard platform tier by priceId, or a one-off negotiated deal that needs a
+// new Stripe Product/Price created for it. Exactly one must be present.
+export function validateAdminSubscriptionPayload(payload: Record<string, unknown>): ValidationErrors {
+  const errors: ValidationErrorList = [];
+  const priceId = payload["priceId"];
+  const customProduct = payload["customProduct"];
+
+  const hasPriceId = typeof priceId === "string" && priceId.trim().length > 0;
+  const hasCustomProduct = customProduct !== undefined && customProduct !== null;
+
+  if (hasPriceId && hasCustomProduct) {
+    errors.push({ field: "priceId", message: "Provide either priceId or customProduct, not both" });
+    return { valid: false, errors };
+  }
+  if (!hasPriceId && !hasCustomProduct) {
+    errors.push({ field: "priceId", message: "Either priceId or customProduct is required" });
+    return { valid: false, errors };
+  }
+
+  if (hasCustomProduct) {
+    if (typeof customProduct !== "object" || Array.isArray(customProduct)) {
+      errors.push({ field: "customProduct", message: "customProduct must be an object" });
+      return { valid: false, errors };
+    }
+    const cp = customProduct as Record<string, unknown>;
+    const nameV = validateRequiredString(cp["name"], "Product name");
+    if (!nameV.valid) errors.push({ field: "customProduct.name", message: nameV.message ?? "" });
+
+    if (typeof cp["amountCents"] !== "number" || isNaN(cp["amountCents"] as number) || (cp["amountCents"] as number) < 0) {
+      errors.push({ field: "customProduct.amountCents", message: "amountCents must be a non-negative number" });
+    }
+
+    const interval = cp["interval"];
+    if (interval !== "month" && interval !== "year") {
+      errors.push({ field: "customProduct.interval", message: "interval must be 'month' or 'year'" });
+    }
+
+    // A negotiated price still has to grant one of the 3 real tiers' feature
+    // access — studio-owners-app's route guard is a hard whitelist keyed on
+    // this exact string, so anything else silently locks the studio out.
+    const validGrantsTiers = ["event_host", "studio_owner", "studio_owner_pro_plus"];
+    if (!validGrantsTiers.includes(cp["grantsTier"] as string)) {
+      errors.push({ field: "customProduct.grantsTier", message: `grantsTier must be one of: ${validGrantsTiers.join(", ")}` });
+    }
+  }
 
   return { valid: errors.length === 0, errors };
 }

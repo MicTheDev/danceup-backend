@@ -28,7 +28,12 @@ export type AuditAction =
   | "event_admin_created"
   | "event_admin_updated"
   | "event_admin_deleted"
-  | "event_reassigned";
+  | "event_reassigned"
+  | "studio_admin_onboarded"
+  | "studio_admin_subscription_created"
+  | "student_admin_bulk_imported"
+  | "instructor_admin_bulk_imported"
+  | "class_admin_bulk_imported";
 
 async function writeAuditLog(
   actorUid: string,

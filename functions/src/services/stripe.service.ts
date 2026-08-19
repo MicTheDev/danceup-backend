@@ -113,6 +113,26 @@ interface TierPattern {
   patterns: string[];
 }
 
+// Every substring getTierFromProduct (below, and its duplicate in
+// getMembershipForPriceId) checks a product's name against — kept here, flat,
+// so a newly-created custom membership product's name can be checked against
+// the exact same collision set. If either tierPatterns array below changes,
+// update this list too.
+const RESERVED_TIER_NAME_SUBSTRINGS = [
+  "studio_owner_pro_plus", "studio owner pro+", "studio owner pro plus", "pro+",
+  "studio_owner", "studio owner",
+  "individual_instructor", "individual instructor", "indivdual instructor",
+  "event_host", "event host",
+];
+
+// A custom, admin-negotiated membership product must never be mistaken for one
+// of the 4 real platform tiers by getTierFromProduct's name-substring fallback
+// — that would leak it into getProducts()/the public self-serve tier picker.
+export function isReservedTierProductName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return RESERVED_TIER_NAME_SUBSTRINGS.some((s) => lower.includes(s));
+}
+
 export async function getProducts(): Promise<Array<Record<string, unknown>>> {
   const stripe = await getStripeClient();
   try {
@@ -1021,6 +1041,78 @@ export async function createSubscriptionCheckout(
     };
   } catch (error) {
     throw new Error(`Failed to create subscription: ${(error as Error).message}`);
+  }
+}
+
+// One-off negotiated deal for a single studio, created on the platform account
+// (not a connected account — this is what the studio pays DanceUp, not payouts).
+// grantsTier records, purely as Stripe-side metadata for anyone reading the
+// Stripe dashboard, which of the 3 real membership tiers this deal is meant to
+// functionally grant — the actual Firestore membership write happens separately
+// in the route handler, since that's what studio-owners-app's feature gating
+// reads, and it must always be one of the 3 real tier strings, never "custom".
+export async function createCustomMembershipProduct(
+  name: string,
+  amountCents: number,
+  interval: "month" | "year",
+  studioOwnerId: string,
+  studioName: string,
+  grantsTier: string,
+): Promise<{ product: Stripe.Product; price: Stripe.Price }> {
+  if (isReservedTierProductName(name)) {
+    throw new Error("Product name can't contain reserved tier terms (e.g. \"Studio Owner\", \"Pro+\", \"Event Host\")");
+  }
+
+  const stripe = await getStripeClient();
+  try {
+    const product = await stripe.products.create({
+      name,
+      active: true,
+      metadata: {
+        membership_tier: "custom",
+        studioId: studioOwnerId,
+        studioName: studioName || "",
+        grantsMembershipTier: grantsTier,
+      },
+    });
+
+    const price = await stripe.prices.create({
+      product: product.id,
+      currency: "usd",
+      unit_amount: amountCents,
+      recurring: { interval },
+    });
+
+    return { product, price };
+  } catch (error) {
+    throw new Error(`Failed to create custom membership product: ${(error as Error).message}`);
+  }
+}
+
+// Sibling to createSubscriptionCheckout, for admin-created subscriptions billed
+// via Stripe-hosted invoicing instead of an Elements-confirmed PaymentIntent —
+// no card ever touches danceup-admin. Stripe emails the invoice itself; the
+// existing platform webhook's "invoice.payment_succeeded" case (routes/stripe.ts)
+// already flips subscriptionActive off subscription.metadata.userId once paid,
+// so nothing there needs to change as long as this sets the same metadata shape.
+export async function createInvoicedSubscription(
+  customerId: string,
+  priceId: string,
+  userId: string,
+  membership: string,
+  daysUntilDue = 14,
+): Promise<Stripe.Subscription> {
+  const stripe = await getStripeClient();
+  try {
+    return await stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: priceId }],
+      collection_method: "send_invoice",
+      days_until_due: daysUntilDue,
+      metadata: { userId, membership },
+    });
+  } catch (error) {
+    throw new Error(`Failed to create invoiced subscription: ${(error as Error).message}`);
   }
 }
 

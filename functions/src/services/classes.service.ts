@@ -5,6 +5,9 @@ import { geocodeAddress } from "../utils/geocoding";
 import { haversineDistance } from "../utils/distance";
 import { sendWaitlistNotificationEmail } from "./sendgrid.service";
 import { AdminStudioInfo, batchGetStudios, toIso } from "../utils/admin-studio-enrichment";
+import {
+  validateClassLevel, validateDayOfWeek, validateTimeFormat, validateDanceGenre, validateCost,
+} from "../utils/validation";
 
 interface StudioInfo {
   id: string;
@@ -255,6 +258,131 @@ export class ClassesService {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     return docRef.id;
+  }
+
+  async bulkImportClassesForAdmin(
+    rows: Array<Record<string, unknown>>, studioOwnerId: string, adminUid: string,
+  ): Promise<{ created: number; errors: Array<{ row: number; message: string }> }> {
+    const db = getFirestore();
+    const errors: Array<{ row: number; message: string }> = [];
+    const validRows: Record<string, unknown>[] = [];
+
+    // Studio lookup (image fallback + geocode) happens once for the whole
+    // import, not per row — createClassForAdmin does it per-call because it's
+    // one class at a time, but repeating a geocode API call up to 2000 times
+    // for the same studio address would be both slow and needlessly costly.
+    const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
+    let imageUrl: string = STUDIO_PLACEHOLDER_IMAGE;
+    let coords: { lat: number; lng: number } | null = null;
+    if (studioOwnerDoc.exists) {
+      const sd = studioOwnerDoc.data() as Record<string, unknown>;
+      imageUrl = (sd["studioImageUrl"] as string | undefined) || STUDIO_PLACEHOLDER_IMAGE;
+      if (sd["studioAddressLine1"] && sd["city"] && sd["state"]) {
+        coords = await geocodeAddress(
+          sd["studioAddressLine1"] as string,
+          sd["city"] as string,
+          sd["state"] as string,
+          (sd["zip"] as string) || "",
+        );
+      }
+    }
+
+    const validDays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    const normalizeDayOfWeek = (raw: string): string => {
+      const lower = raw.trim().toLowerCase();
+      const match = validDays.find((d) => d.toLowerCase() === lower);
+      return match ?? raw.trim();
+    };
+
+    const validLevels = ["Beginner", "Intermediate", "Advanced", "All Levels"];
+    const normalizeLevel = (raw: string): string => {
+      const lower = raw.trim().toLowerCase();
+      const match = validLevels.find((l) => l.toLowerCase() === lower);
+      return match ?? raw.trim();
+    };
+
+    rows.forEach((row, index) => {
+      const rowNum = index + 1;
+
+      const name = typeof row["name"] === "string" ? (row["name"] as string).trim() : "";
+      if (!name) { errors.push({ row: rowNum, message: "Missing class name" }); return; }
+
+      const level = normalizeLevel(typeof row["level"] === "string" ? (row["level"] as string) : "");
+      const levelV = validateClassLevel(level);
+      if (!levelV.valid) { errors.push({ row: rowNum, message: levelV.message ?? "Invalid level" }); return; }
+
+      const dayOfWeek = normalizeDayOfWeek(typeof row["dayOfWeek"] === "string" ? (row["dayOfWeek"] as string) : "");
+      const dayV = validateDayOfWeek(dayOfWeek);
+      if (!dayV.valid) { errors.push({ row: rowNum, message: dayV.message ?? "Invalid day of week" }); return; }
+
+      const startTime = typeof row["startTime"] === "string" ? (row["startTime"] as string).trim() : "";
+      const startV = validateTimeFormat(startTime);
+      if (!startV.valid) { errors.push({ row: rowNum, message: startV.message ?? "Invalid start time" }); return; }
+
+      const endTime = typeof row["endTime"] === "string" ? (row["endTime"] as string).trim() : "";
+      const endV = validateTimeFormat(endTime);
+      if (!endV.valid) { errors.push({ row: rowNum, message: endV.message ?? "Invalid end time" }); return; }
+
+      let danceGenre: string | undefined;
+      const rawGenre = row["danceGenre"];
+      if (rawGenre !== undefined && rawGenre !== null && String(rawGenre).trim() !== "") {
+        danceGenre = String(rawGenre).trim().toLowerCase();
+        const genreV = validateDanceGenre(danceGenre);
+        if (!genreV.valid) { errors.push({ row: rowNum, message: genreV.message ?? "Invalid dance genre" }); return; }
+      }
+
+      let cost: number | undefined;
+      const rawCost = row["cost"];
+      if (rawCost !== undefined && rawCost !== null && String(rawCost).trim() !== "") {
+        cost = Number(rawCost);
+        const costV = validateCost(cost);
+        if (!costV.valid) { errors.push({ row: rowNum, message: costV.message ?? "Invalid cost" }); return; }
+      }
+
+      const room = typeof row["room"] === "string" ? (row["room"] as string).trim() || undefined : undefined;
+      const description = typeof row["description"] === "string" ? (row["description"] as string).trim() || undefined : undefined;
+      const isActiveRaw = typeof row["isActive"] === "string" ? (row["isActive"] as string).trim().toLowerCase() : "";
+      const isActive = isActiveRaw === "" ? true : ["true", "yes", "1", "y"].includes(isActiveRaw);
+
+      // instructorIds arrive pre-resolved from the frontend (names -> ids) —
+      // nothing here can validate a raw instructor name against Firestore.
+      const rawInstructorIds = row["instructorIds"];
+      const instructorIds = Array.isArray(rawInstructorIds)
+        ? rawInstructorIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        : [];
+
+      validRows.push({
+        name, level, dayOfWeek, startTime, endTime,
+        ...(danceGenre ? { danceGenre } : {}),
+        ...(cost !== undefined ? { cost } : {}),
+        ...(room ? { room } : {}),
+        ...(description ? { description } : {}),
+        isActive,
+        instructorIds,
+      });
+    });
+
+    const BATCH_SIZE = 500;
+    for (let i = 0; i < validRows.length; i += BATCH_SIZE) {
+      const batch = db.batch();
+      for (const row of validRows.slice(i, i + BATCH_SIZE)) {
+        const ref = db.collection("classes").doc();
+        batch.set(ref, {
+          ...row,
+          cost: row["cost"] ?? 0,
+          studioOwnerId,
+          imageUrl,
+          ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
+          lastModifiedByAdminUid: adminUid,
+          lastModifiedByAdminAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    }
+
+    return { created: validRows.length, errors };
   }
 
   async updateClassForAdmin(
