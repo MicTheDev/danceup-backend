@@ -4,7 +4,9 @@ import cors from "cors";
 import classesService from "../services/classes.service";
 import storageService from "../services/storage.service";
 import { verifyToken } from "../utils/auth";
-import { validateCreateClassPayload, validateUpdateClassPayload, validateRequiredString } from "../utils/validation";
+import {
+  validateCreateClassPayload, validateUpdateClassPayload, validateRequiredString, validateBulkImportClassesPayload,
+} from "../utils/validation";
 import { sanitizeRichText } from "../utils/sanitize";
 import { logAuditEvent } from "../services/audit.service";
 import {
@@ -41,7 +43,7 @@ app.use((req, res, next) => {
 });
 
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 applySecurityMiddleware(app);
 
 // GET / — every class across every studio, optionally filtered to one studio.
@@ -124,6 +126,47 @@ app.post("/", async (req: Request, res: Response) => {
     sendJsonResponse(req, res, 201, { id: classId, message: "Class created successfully" });
   } catch (error) {
     console.error("danceup-admin-classes create error:", error);
+    handleError(req, res, error);
+  }
+});
+
+// POST /bulk-import — CSV/spreadsheet bulk creation for one studio. instructorIds
+// arrive pre-resolved per row from the frontend (name -> id lookups happen there,
+// against that studio's own instructor list) since nothing here can validate a
+// raw instructor name against Firestore.
+app.post("/bulk-import", async (req: Request, res: Response) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+    if (!user.isAdmin) return sendErrorResponse(req, res, 403, "Forbidden", "Admin access only");
+
+    const validation = validateBulkImportClassesPayload(req.body);
+    if (!validation.valid) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid import data", {
+        errors: (validation as { valid: false; errors: unknown[] }).errors,
+      });
+    }
+
+    const studioOwnerId = req.body["studioOwnerId"] as string | undefined;
+    const studioV = validateRequiredString(studioOwnerId, "Studio");
+    if (!studioV.valid) {
+      return sendErrorResponse(req, res, 400, "Validation Error", studioV.message ?? "Studio is required");
+    }
+
+    const studioDoc = await getFirestore().collection("users").doc(studioOwnerId as string).get();
+    if (!studioDoc.exists) return sendErrorResponse(req, res, 400, "Validation Error", "Studio not found");
+
+    const rows = (req.body as { rows: Array<Record<string, unknown>> }).rows;
+    const result = await classesService.bulkImportClassesForAdmin(rows, studioOwnerId as string, user.uid);
+
+    await logAuditEvent(user.uid, studioOwnerId as string, "class_admin_bulk_imported", "class", "bulk", {
+      created: result.created,
+      errorCount: result.errors.length,
+    });
+
+    sendJsonResponse(req, res, 200, { created: result.created, errors: result.errors });
+  } catch (error) {
+    console.error("danceup-admin-classes bulk-import error:", error);
     handleError(req, res, error);
   }
 });

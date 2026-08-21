@@ -49,3 +49,6 @@ export { danceupAdminWorkshops } from "./routes/danceup-admin-workshops";
 export { danceupAdminEvents } from "./routes/danceup-admin-events";
 export { danceupAdminNotifications } from "./routes/danceup-admin-notifications";
 export { danceupAdminAudit } from "./routes/danceup-admin-audit";
+export { danceupAdminOnboarding } from "./routes/danceup-admin-onboarding";
+export { danceupAdminStudents } from "./routes/danceup-admin-students";
+export { danceupAdminInstructors } from "./routes/danceup-admin-instructors";

@@ -1,10 +1,21 @@
 import * as admin from "firebase-admin";
 import authService from "./auth.service";
 import { getFirestore } from "../utils/firestore";
+import { normalizeEmail, validatePhone } from "../utils/validation";
 
 interface InstructorAvailabilityData {
   availableForPrivates?: boolean;
   availability?: unknown;
+}
+
+export interface BulkImportRowError {
+  row: number; // 1-based index into the submitted rows array
+  message: string;
+}
+
+export interface BulkImportInstructorsResult {
+  created: number;
+  errors: BulkImportRowError[];
 }
 
 interface PublicInstructorData {
@@ -62,6 +73,60 @@ export class InstructorsService {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     return docRef.id;
+  }
+
+  async bulkImportInstructors(
+    rows: Array<Record<string, unknown>>, studioOwnerId: string,
+  ): Promise<BulkImportInstructorsResult> {
+    const db = getFirestore();
+    const errors: BulkImportRowError[] = [];
+    const validRows: Record<string, unknown>[] = [];
+
+    rows.forEach((row, index) => {
+      const rowNum = index + 1;
+      const firstName = typeof row["firstName"] === "string" ? (row["firstName"] as string).trim() : "";
+      const lastName = typeof row["lastName"] === "string" ? (row["lastName"] as string).trim() : "";
+      if (!firstName) { errors.push({ row: rowNum, message: "Missing first name" }); return; }
+      if (!lastName) { errors.push({ row: rowNum, message: "Missing last name" }); return; }
+
+      let email: string | null = null;
+      const rawEmail = row["email"];
+      if (rawEmail !== undefined && rawEmail !== null && String(rawEmail).trim() !== "") {
+        email = normalizeEmail(rawEmail);
+        if (!email) { errors.push({ row: rowNum, message: "Invalid email format" }); return; }
+      }
+
+      let phone: string | null = null;
+      const rawPhone = row["phone"];
+      if (rawPhone !== undefined && rawPhone !== null && String(rawPhone).trim() !== "") {
+        const phoneStr = String(rawPhone).trim();
+        const pv = validatePhone(phoneStr);
+        if (!pv.valid) { errors.push({ row: rowNum, message: pv.message || "Invalid phone number" }); return; }
+        phone = phoneStr;
+      }
+
+      const bio = typeof row["bio"] === "string" ? (row["bio"] as string).trim() || null : null;
+      validRows.push({ firstName, lastName, email, phone, bio });
+    });
+
+    // Firestore batches cap out at 500 writes — chunk to stay under that
+    // regardless of how many rows the 2000-row import limit allows through.
+    const BATCH_SIZE = 500;
+    for (let i = 0; i < validRows.length; i += BATCH_SIZE) {
+      const batch = db.batch();
+      for (const row of validRows.slice(i, i + BATCH_SIZE)) {
+        const ref = db.collection("instructors").doc();
+        batch.set(ref, {
+          ...row,
+          studioOwnerId,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    }
+
+    return { created: validRows.length, errors };
   }
 
   async updateInstructor(

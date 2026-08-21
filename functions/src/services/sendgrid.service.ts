@@ -637,6 +637,63 @@ export async function sendPasswordResetEmail(to: string, resetUrl: string): Prom
   });
 }
 
+// For studios onboarded directly by DanceUp staff (e.g. after a sales call) rather
+// than through self-serve signup — the studio has no idea this account exists yet,
+// so unlike sendPasswordResetEmail this can't say "we received a request..."; it has
+// to introduce the account itself before asking the owner to set a password for it.
+export async function sendStudioOwnerProvisionedEmail(
+  to: string, firstName: string, studioName: string, resetUrl: string,
+): Promise<void> {
+  if (!to) {
+    console.warn("[SendGrid] sendStudioOwnerProvisionedEmail: no recipient email, skipping");
+    return;
+  }
+
+  const name = firstName ? firstName.trim() : "there";
+  const studio = studioName ? studioName.trim() : "your studio";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h1 style="margin:0 0 8px;font-size:24px;color:#1e293b">Welcome to DanceUp, ${name}!</h1>
+        <p style="margin:0 0 24px;color:#64748b;font-size:15px">
+          The DanceUp team has set up <strong>${studio}</strong>'s account for you. Click the button below to set your password and log in. This link expires in 1 hour.
+        </p>
+        <a href="${resetUrl}"
+           style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">
+          Set Your Password →
+        </a>
+        <p style="margin:16px 0 0;color:#94a3b8;font-size:13px">
+          If the button doesn't work, copy and paste this link into your browser:<br/>
+          <a href="${resetUrl}" style="color:#6366f1;word-break:break-all">${resetUrl}</a>
+        </p>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">
+          Questions about your new account? Reach us any time at <a href="mailto:info@danceup.app" style="color:#94a3b8">info@danceup.app</a>.
+        </p>
+      </div>
+    </div>`;
+
+  const text = [
+    `Welcome to DanceUp, ${name}!`,
+    ``,
+    `The DanceUp team has set up ${studio}'s account for you. Use the link below to set your password and log in. This link expires in 1 hour.`,
+    ``,
+    resetUrl,
+    ``,
+    `Questions? Reach us at info@danceup.app.`,
+  ].join("\n");
+
+  await sendEmail({
+    to,
+    from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `Your DanceUp account for ${studio} is ready`,
+    html,
+    text,
+    categories: ["studio-owner-admin-provisioned"],
+  });
+}
+
 export async function sendConfirmationEmail(
   to: string,
   type: ConfirmationEmailType | string,
