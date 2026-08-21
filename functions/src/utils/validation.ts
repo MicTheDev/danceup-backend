@@ -161,6 +161,9 @@ export function validateDanceGenre(genre: unknown): ValidationResult {
     "hip-hop", "breakdance", "house", "waacking", "voguing", "popping & locking",
     "contemporary", "jazz", "modern", "lyrical",
     "ballet", "tap", "flamenco", "belly dance",
+    "crossfit", "pilates", "reformer pilates", "barre", "yoga",
+    "hiit", "bootcamp", "strength training", "functional fitness", "circuit training",
+    "kickboxing", "spin", "calisthenics",
   ];
   const genres = Array.isArray(genre) ? genre : [genre];
   for (const g of genres) {
