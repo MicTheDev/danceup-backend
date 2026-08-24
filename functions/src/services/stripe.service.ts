@@ -2,13 +2,13 @@ import Stripe from "stripe";
 import { getSecret } from "../utils/secret-manager";
 
 export function platformFeeCents(amountCents: number): number {
-  return Math.round(amountCents * 0.0075);
+  return Math.round(amountCents * 0.0125);
 }
 
 // Flat rate — Stripe subscriptions take a percentage (application_fee_percent) rather
-// than a cents amount, so this mirrors platformFeeCents' 0.75% for the subscription path.
+// than a cents amount, so this mirrors platformFeeCents' 1.25% for the subscription path.
 export function platformFeePercent(): number {
-  return 0.75;
+  return 1.25;
 }
 
 let stripeClient: Stripe | null = null;
