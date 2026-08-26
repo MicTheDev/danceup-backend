@@ -255,7 +255,7 @@ app.post("/create-payment-link", paymentCreationLimiter, async (req, res) => {
       if (tiersTotal !== null) chargePrice = tiersTotal;
     }
 
-    const applicationFeeAmount = 25 + Math.round(chargePrice * 100 * 0.01);
+    const applicationFeeAmount = stripeService.platformFeeCents(Math.round(chargePrice * 100));
 
     let checkoutSession: { url: string; id: string };
 
@@ -827,7 +827,7 @@ app.post("/create-payment-intent", paymentCreationLimiter, async (req, res) => {
     }
 
     const amountCents = Math.round(itemDetails.price * 100);
-    const applicationFeeAmount = 25 + Math.round(amountCents * 0.01);
+    const applicationFeeAmount = stripeService.platformFeeCents(amountCents);
 
     const metadata: Record<string, string> = {
       purchaseType,
