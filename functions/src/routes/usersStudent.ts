@@ -1227,6 +1227,7 @@ app.get("/event-passes", async (req, res) => {
         eventCode: doc.id,
         eventId: purchaseType === "event" ? itemId : undefined,
         workshopId: purchaseType === "workshop" ? itemId : undefined,
+        checkedIn: Boolean(data["checkedIn"]),
       };
     });
 
