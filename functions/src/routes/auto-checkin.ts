@@ -92,13 +92,32 @@ export const autoCheckIn = onSchedule(
     const profilesSnap = await db.collection("usersStudentProfiles").get();
 
     type AutoCheckInEntry = { classId: string; dependentId: string | null };
+    // autoCheckInEntries (family-aware clients) and autoCheckInClassIds (legacy
+    // self-only clients) are independent, coexisting storage locations — see
+    // PATCH /auto-checkin-prefs in usersStudent.ts, which writes to whichever
+    // key the caller sends without touching the other, specifically so one
+    // client's writes never clobber the other's. Preferring one over the other
+    // here (rather than merging) let a single autoCheckInEntries write silently
+    // orphan every class already selected via the legacy field — e.g. testing
+    // the family-aware endpoint against an account that had used the mobile
+    // app's legacy self-only picker (see incident: Staging Test Account,
+    // 2026-08-26).
     const entriesForProfile = (profile: admin.firestore.DocumentData): AutoCheckInEntry[] => {
-      const rawEntries = profile["autoCheckInEntries"] as { classId: string; dependentId?: string | null }[] | undefined;
-      if (rawEntries && rawEntries.length > 0) {
-        return rawEntries.map((e) => ({ classId: e.classId, dependentId: e.dependentId || null }));
-      }
+      const rawEntries = (profile["autoCheckInEntries"] as { classId: string; dependentId?: string | null }[] | undefined) ?? [];
       const legacyClassIds = (profile["autoCheckInClassIds"] ?? []) as string[];
-      return legacyClassIds.map((classId) => ({ classId, dependentId: null }));
+
+      const seen = new Set<string>();
+      const merged: AutoCheckInEntry[] = [];
+      for (const entry of [
+        ...rawEntries.map((e) => ({ classId: e.classId, dependentId: e.dependentId || null })),
+        ...legacyClassIds.map((classId) => ({ classId, dependentId: null })),
+      ]) {
+        const key = `${entry.classId}::${entry.dependentId ?? ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(entry);
+      }
+      return merged;
     };
 
     const profilesWithEntries = profilesSnap.docs.filter((d) => entriesForProfile(d.data()).length > 0);
