@@ -6,6 +6,9 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import authService from "../services/auth.service";
 import storageService from "../services/storage.service";
+import instructorsService from "../services/instructors.service";
+import instructorLinkingService from "../services/instructor-linking.service";
+import studioEnrollmentService from "../services/studio-enrollment.service";
 import { sendStudioOwnerWelcomeEmail, sendPasswordResetEmail } from "../services/sendgrid.service";
 import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
@@ -126,6 +129,41 @@ app.post("/register", registerLimiter, async (req, res) => {
       }
 
       const studioOwnerId = await authService.createUserDocument(userRecord.uid, userData);
+
+      // Every studio owner also gets: a usersStudentProfiles doc (so they can log
+      // into the users-app/users-mobile student apps with this same account), an
+      // instructor profile seeded from their own name/email, and immediate
+      // self-enrollment as a student at the studio they just created. Best-effort
+      // — a failure here shouldn't block studio account creation itself.
+      try {
+        await authService.createStudentProfileDocument(userRecord.uid, {
+          email: userRecord.email,
+          firstName: (firstName as string).trim(),
+          lastName: (lastName as string).trim(),
+          city: (city as string).trim(),
+          state: (state as string).trim().toUpperCase(),
+          zip: (zip as string).trim(),
+          phone: null,
+          danceGenres: [],
+          subscribeToNewsletter: false,
+          photoURL: null,
+        });
+
+        const instructorId = await instructorsService.createInstructor(
+          {
+            firstName: (firstName as string).trim(),
+            lastName: (lastName as string).trim(),
+            email: userRecord.email,
+          },
+          studioOwnerId,
+        );
+        await instructorLinkingService.linkInstructorIfAccountExists(instructorId, studioOwnerId, userRecord.email);
+
+        await studioEnrollmentService.enrollStudent(studioOwnerId, userRecord.uid);
+      } catch (setupError) {
+        console.error("Error setting up studio owner's student/instructor profile:", setupError);
+      }
+
       const customToken = await authService.createCustomToken(userRecord.uid);
 
       sendJsonResponse(req, res, 201, {
