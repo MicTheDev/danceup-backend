@@ -309,7 +309,7 @@ app.post("/forgot-password", forgotPasswordLimiter, async (req, res) => {
     }
 
     const { email } = req.body as { email: string };
-    const baseResetUrl = process.env["PASSWORD_RESET_URL"] || `${req.headers.origin || "https://studios.danceup.app"}/reset-password`;
+    const baseResetUrl = process.env["STUDIO_OWNER_PASSWORD_RESET_URL"] || `${req.headers.origin || "https://studios.danceup.app"}/reset-password`;
 
     try {
       const oobCode = await authService.generatePasswordResetOobCode(email);
