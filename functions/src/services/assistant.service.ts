@@ -4,6 +4,7 @@ import {
   SchemaType,
   FunctionCallingMode,
   type FunctionDeclaration,
+  type FunctionDeclarationSchemaProperty,
   type Content,
   type Part,
 } from "@google/generative-ai";
@@ -12,6 +13,9 @@ import { getSecret } from "../utils/secret-manager";
 import classesService from "./classes.service";
 import packagesService from "./packages.service";
 import instructorsService from "./instructors.service";
+import eventsService from "./events.service";
+import workshopsService from "./workshops.service";
+import notificationsService from "./notifications.service";
 import campaignRulesService, { TriggerType, ActionType } from "./campaign-rules.service";
 import * as marketingService from "./marketing.service";
 import * as aiService from "./ai.service";
@@ -20,6 +24,10 @@ import {
   validateCreateClassPayload,
   validateUpdateClassPayload,
   validateUpdatePackagePayload,
+  validateCreateEventPayload,
+  validateUpdateEventPayload,
+  validateCreateWorkshopPayload,
+  validateUpdateWorkshopPayload,
 } from "../utils/validation";
 import { logAuditEvent } from "./audit.service";
 
@@ -30,7 +38,9 @@ const MAX_HISTORY_MESSAGES = 40;
 const MODEL_NAME = "gemini-3.6-flash";
 
 export type AssistantRole = "user" | "model" | "system";
-export type ProposalActionType = "email_campaign" | "automation_rule" | "class_create" | "class_update" | "package_update";
+export type ProposalActionType =
+  | "email_campaign" | "automation_rule" | "class_create" | "class_update" | "package_update"
+  | "event_create" | "event_update" | "workshop_create" | "workshop_update";
 export type ProposalStatus = "pending" | "approved" | "rejected";
 
 export interface AssistantMessage {
@@ -104,6 +114,21 @@ const READ_TOOLS: FunctionDeclaration[] = [
     description: "Get dashboard stats and the top classes by attendance for the studio.",
     parameters: EMPTY_PARAMS,
   },
+  {
+    name: "get_events",
+    description: "Get the studio's events (socials, festivals, congresses, competitions, recitals, showcases): name, type, start/end time, location, and price tiers.",
+    parameters: EMPTY_PARAMS,
+  },
+  {
+    name: "get_workshops",
+    description: "Get the studio's workshops: name, levels, start/end time, location, and price tiers.",
+    parameters: EMPTY_PARAMS,
+  },
+  {
+    name: "get_pending_proposals",
+    description: "Get the studio owner's currently pending (not yet approved or discarded) draft proposals, with their id, actionType, summary, and current payload. Call this before revising a proposal the user is referring to (e.g. 'change that to Friday instead'), so you can pass its id back to the matching draft_* tool.",
+    parameters: EMPTY_PARAMS,
+  },
 ];
 
 const EMAIL_TONES = ["promotional", "informational", "community"] as const;
@@ -111,6 +136,26 @@ const TRIGGER_TYPES: TriggerType[] = ["inactive_days", "credits_expiring_days", 
 const ACTION_TYPES: ActionType[] = ["re_engagement_email", "credit_reminder_email", "milestone_email", "signup_nudge_email", "first_class_email", "credits_depleted_email", "review_request_email"];
 const CLASS_LEVELS = ["Beginner", "Intermediate", "Advanced", "All Levels"];
 const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const EVENT_TYPES = ["social", "festival", "congress", "competition", "recital", "showcase"];
+const WORKSHOP_LEVELS = ["beginner", "intermediate", "advanced"];
+
+const PRICE_TIERS_PROPERTY: FunctionDeclarationSchemaProperty = {
+  type: SchemaType.ARRAY,
+  description: "At least one price tier. Keep it to a single tier (e.g. General Admission) unless the studio owner specifically asks for more.",
+  items: {
+    type: SchemaType.OBJECT,
+    properties: {
+      name: { type: SchemaType.STRING, description: "e.g. 'General Admission'." },
+      price: { type: SchemaType.NUMBER, description: "Face price the studio keeps, in dollars." },
+    },
+    required: ["name", "price"],
+  },
+};
+
+const PROPOSAL_ID_PROPERTY = {
+  type: SchemaType.STRING,
+  description: "If revising an existing pending proposal (its id comes from get_pending_proposals), pass that id here instead of creating a new one. Omit to create a brand-new proposal.",
+} as const;
 
 const DRAFT_TOOLS: FunctionDeclaration[] = [
   {
@@ -121,6 +166,7 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
       properties: {
         tone: { type: SchemaType.STRING, enum: [...EMAIL_TONES], description: "Overall tone of the email." },
         instructions: { type: SchemaType.STRING, description: "Specific instructions from the studio owner about what the email should include." },
+        proposalId: PROPOSAL_ID_PROPERTY,
       },
       required: ["tone"],
     },
@@ -136,6 +182,7 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         triggerValue: { type: SchemaType.NUMBER, description: "The numeric threshold for the trigger (e.g. days inactive, check-in count)." },
         actionType: { type: SchemaType.STRING, enum: ACTION_TYPES, description: "Which email gets sent when the rule fires." },
         cooldownDays: { type: SchemaType.NUMBER, description: "Minimum days between repeated sends to the same student. Defaults to 30 if omitted." },
+        proposalId: PROPOSAL_ID_PROPERTY,
       },
       required: ["name", "triggerType", "triggerValue", "actionType"],
     },
@@ -157,6 +204,7 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         room: { type: SchemaType.STRING },
         description: { type: SchemaType.STRING },
         danceGenre: { type: SchemaType.STRING },
+        proposalId: PROPOSAL_ID_PROPERTY,
       },
       required: ["name", "level", "dayOfWeek", "startTime", "endTime", "instructorIds", "isActive"],
     },
@@ -179,6 +227,7 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         room: { type: SchemaType.STRING },
         description: { type: SchemaType.STRING },
         danceGenre: { type: SchemaType.STRING },
+        proposalId: PROPOSAL_ID_PROPERTY,
       },
       required: ["classId"],
     },
@@ -195,8 +244,99 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         expirationDays: { type: SchemaType.NUMBER },
         isActive: { type: SchemaType.BOOLEAN },
         description: { type: SchemaType.STRING },
+        proposalId: PROPOSAL_ID_PROPERTY,
       },
       required: ["packageId"],
+    },
+  },
+  {
+    name: "draft_create_event",
+    description: "Draft a brand-new event (social, festival, congress, competition, recital, or showcase) for the studio owner to review and approve. Never claim the event has been created.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        name: { type: SchemaType.STRING },
+        type: { type: SchemaType.STRING, enum: EVENT_TYPES },
+        startTime: { type: SchemaType.STRING, description: "ISO 8601 datetime, e.g. '2026-10-04T19:00:00.000Z'." },
+        endTime: { type: SchemaType.STRING, description: "ISO 8601 datetime, optional." },
+        priceTiers: PRICE_TIERS_PROPERTY,
+        addressLine1: { type: SchemaType.STRING },
+        city: { type: SchemaType.STRING },
+        state: { type: SchemaType.STRING, description: "2-letter state code." },
+        zip: { type: SchemaType.STRING },
+        description: { type: SchemaType.STRING },
+        danceGenre: { type: SchemaType.STRING },
+        proposalId: PROPOSAL_ID_PROPERTY,
+      },
+      required: ["name", "type", "startTime", "priceTiers", "addressLine1", "city", "state", "zip"],
+    },
+  },
+  {
+    name: "draft_update_event",
+    description: "Draft an update to an existing event for the studio owner to review and approve. Never claim the event has been updated. Call get_events first to get the eventId.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        eventId: { type: SchemaType.STRING, description: "The event doc ID from get_events." },
+        name: { type: SchemaType.STRING },
+        type: { type: SchemaType.STRING, enum: EVENT_TYPES },
+        startTime: { type: SchemaType.STRING },
+        endTime: { type: SchemaType.STRING },
+        priceTiers: PRICE_TIERS_PROPERTY,
+        addressLine1: { type: SchemaType.STRING },
+        city: { type: SchemaType.STRING },
+        state: { type: SchemaType.STRING },
+        zip: { type: SchemaType.STRING },
+        description: { type: SchemaType.STRING },
+        danceGenre: { type: SchemaType.STRING },
+        proposalId: PROPOSAL_ID_PROPERTY,
+      },
+      required: ["eventId"],
+    },
+  },
+  {
+    name: "draft_create_workshop",
+    description: "Draft a brand-new workshop for the studio owner to review and approve. Never claim the workshop has been created.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        name: { type: SchemaType.STRING },
+        levels: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING, enum: WORKSHOP_LEVELS } },
+        startTime: { type: SchemaType.STRING, description: "ISO 8601 datetime." },
+        endTime: { type: SchemaType.STRING, description: "ISO 8601 datetime." },
+        priceTiers: PRICE_TIERS_PROPERTY,
+        addressLine1: { type: SchemaType.STRING },
+        city: { type: SchemaType.STRING },
+        state: { type: SchemaType.STRING, description: "2-letter state code." },
+        zip: { type: SchemaType.STRING },
+        description: { type: SchemaType.STRING },
+        danceGenre: { type: SchemaType.STRING },
+        proposalId: PROPOSAL_ID_PROPERTY,
+      },
+      required: ["name", "levels", "startTime", "endTime", "priceTiers", "addressLine1", "city", "state", "zip"],
+    },
+  },
+  {
+    name: "draft_update_workshop",
+    description: "Draft an update to an existing workshop for the studio owner to review and approve. Never claim the workshop has been updated. Call get_workshops first to get the workshopId.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        workshopId: { type: SchemaType.STRING, description: "The workshop doc ID from get_workshops." },
+        name: { type: SchemaType.STRING },
+        levels: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING, enum: WORKSHOP_LEVELS } },
+        startTime: { type: SchemaType.STRING },
+        endTime: { type: SchemaType.STRING },
+        priceTiers: PRICE_TIERS_PROPERTY,
+        addressLine1: { type: SchemaType.STRING },
+        city: { type: SchemaType.STRING },
+        state: { type: SchemaType.STRING },
+        zip: { type: SchemaType.STRING },
+        description: { type: SchemaType.STRING },
+        danceGenre: { type: SchemaType.STRING },
+        proposalId: PROPOSAL_ID_PROPERTY,
+      },
+      required: ["workshopId"],
     },
   },
 ];
@@ -344,6 +484,26 @@ async function executeReadTool(name: string, studioOwnerId: string): Promise<unk
       const { studioName, dashboardStats, topClasses } = await insightsService.getInsightsData(studioOwnerId);
       return { studioName, dashboardStats, topClasses };
     }
+    case "get_events": {
+      const events = await eventsService.getEvents(studioOwnerId);
+      return events.map((e) => ({
+        id: e["id"], name: e["name"], type: e["type"], startTime: e["startTime"], endTime: e["endTime"],
+        city: e["city"], state: e["state"], priceTiers: e["priceTiers"],
+      }));
+    }
+    case "get_workshops": {
+      const workshops = await workshopsService.getWorkshops(studioOwnerId);
+      return workshops.map((w) => ({
+        id: w["id"], name: w["name"], levels: w["levels"], startTime: w["startTime"], endTime: w["endTime"],
+        city: w["city"], state: w["state"], priceTiers: w["priceTiers"],
+      }));
+    }
+    case "get_pending_proposals": {
+      const proposals = await loadPendingProposals(studioOwnerId);
+      return proposals.map((p) => ({
+        id: p.id, actionType: p.actionType, summary: p.summary, payload: p.payload,
+      }));
+    }
     default:
       return { error: `Unknown tool: ${name}` };
   }
@@ -352,20 +512,53 @@ async function executeReadTool(name: string, studioOwnerId: string): Promise<unk
 // ─── Draft tool -> proposal preparation (never writes) ─────────────────────
 
 type DraftResult =
-  | { valid: true; payload: Record<string, unknown>; summary: string }
+  | { valid: true; payload: Record<string, unknown>; summary: string; revisedProposalId?: string }
   | { valid: false; errors: Array<{ field: string; message: string }> };
+
+// When a draft_* tool call carries a proposalId, this loads the pending proposal it's
+// revising (verifying ownership/status/actionType via the existing getProposalOrThrow
+// guard, reused as-is) so its payload can be merged under the caller's new args — this
+// way the model can send just the changed field(s) rather than the whole payload again.
+async function resolvePendingProposalPayload(
+  studioOwnerId: string,
+  proposalId: string,
+  expectedActionType: ProposalActionType,
+): Promise<{ payload: Record<string, unknown> } | { error: string }> {
+  try {
+    const { data } = await getProposalOrThrow(studioOwnerId, proposalId);
+    if (data.actionType !== expectedActionType) {
+      return { error: `That proposal is a ${data.actionType}, not a ${expectedActionType} — call get_pending_proposals to find the right id.` };
+    }
+    return { payload: data.payload };
+  } catch (err) {
+    return { error: (err as Error).message || "Proposal not found." };
+  }
+}
 
 async function prepareDraftProposal(
   toolName: string,
   args: Record<string, unknown>,
   studioOwnerId: string,
 ): Promise<DraftResult> {
+  const proposalIdRaw = args["proposalId"];
+  const revisedProposalId = typeof proposalIdRaw === "string" && proposalIdRaw.trim() ? proposalIdRaw.trim() : undefined;
+  const { proposalId: _omitProposalId, ...argsWithoutProposalId } = args;
+
+  let mergedArgs: Record<string, unknown> = argsWithoutProposalId;
+  if (revisedProposalId) {
+    const expectedActionType = TOOL_NAME_TO_ACTION_TYPE[toolName];
+    const resolved = await resolvePendingProposalPayload(studioOwnerId, revisedProposalId, expectedActionType as ProposalActionType);
+    if ("error" in resolved) return { valid: false, errors: [{ field: "proposalId", message: resolved.error }] };
+    mergedArgs = { ...resolved.payload, ...argsWithoutProposalId };
+  }
+  const args_ = mergedArgs;
+
   switch (toolName) {
     case "draft_email_campaign": {
-      const tone = typeof args["tone"] === "string" && (EMAIL_TONES as readonly string[]).includes(args["tone"] as string)
-        ? (args["tone"] as string)
+      const tone = typeof args_["tone"] === "string" && (EMAIL_TONES as readonly string[]).includes(args_["tone"] as string)
+        ? (args_["tone"] as string)
         : "community";
-      const instructions = typeof args["instructions"] === "string" ? args["instructions"].slice(0, 500) : undefined;
+      const instructions = typeof args_["instructions"] === "string" ? args_["instructions"].slice(0, 500) : undefined;
 
       const { studioName, classes, events, workshops } = await marketingService.getStudioContentForAI(studioOwnerId, {});
       const { subject, htmlBody } = await aiService.generateEmailCampaign({
@@ -376,24 +569,25 @@ async function prepareDraftProposal(
         valid: true,
         payload: { subject, bodyHtml: htmlBody, sendToAll: true } as Record<string, unknown>,
         summary: `Email: "${subject}"`,
+        revisedProposalId,
       };
     }
 
     case "draft_automation_rule": {
       const errors: Array<{ field: string; message: string }> = [];
-      const name = typeof args["name"] === "string" ? args["name"].trim() : "";
+      const name = typeof args_["name"] === "string" ? args_["name"].trim() : "";
       if (!name) errors.push({ field: "name", message: "name is required" });
-      if (!TRIGGER_TYPES.includes(args["triggerType"] as TriggerType)) {
+      if (!TRIGGER_TYPES.includes(args_["triggerType"] as TriggerType)) {
         errors.push({ field: "triggerType", message: `triggerType must be one of: ${TRIGGER_TYPES.join(", ")}` });
       }
-      const triggerValue = args["triggerValue"];
+      const triggerValue = args_["triggerValue"];
       if (typeof triggerValue !== "number" || triggerValue < 1) {
         errors.push({ field: "triggerValue", message: "triggerValue must be a positive number" });
       }
-      if (!ACTION_TYPES.includes(args["actionType"] as ActionType)) {
+      if (!ACTION_TYPES.includes(args_["actionType"] as ActionType)) {
         errors.push({ field: "actionType", message: `actionType must be one of: ${ACTION_TYPES.join(", ")}` });
       }
-      const cooldownDaysRaw = args["cooldownDays"];
+      const cooldownDaysRaw = args_["cooldownDays"];
       const cooldownDays = typeof cooldownDaysRaw === "number" && cooldownDaysRaw >= 1 ? cooldownDaysRaw : 30;
 
       if (errors.length > 0) return { valid: false, errors };
@@ -401,23 +595,24 @@ async function prepareDraftProposal(
       return {
         valid: true,
         payload: {
-          name, triggerType: args["triggerType"], triggerValue, actionType: args["actionType"], cooldownDays,
+          name, triggerType: args_["triggerType"], triggerValue, actionType: args_["actionType"], cooldownDays,
         },
         summary: `Automation rule: "${name}"`,
+        revisedProposalId,
       };
     }
 
     case "draft_create_class": {
-      const payload: Record<string, unknown> = { ...args };
+      const payload: Record<string, unknown> = { ...args_ };
       const result = validateCreateClassPayload(payload);
       if (!result.valid) return { valid: false, errors: result.errors };
-      return { valid: true, payload, summary: `New class: "${payload["name"]}" (${payload["dayOfWeek"]} ${payload["startTime"]})` };
+      return { valid: true, payload, summary: `New class: "${payload["name"]}" (${payload["dayOfWeek"]} ${payload["startTime"]})`, revisedProposalId };
     }
 
     case "draft_update_class": {
-      const classId = typeof args["classId"] === "string" ? args["classId"] : "";
+      const classId = typeof args_["classId"] === "string" ? args_["classId"] : "";
       if (!classId) return { valid: false, errors: [{ field: "classId", message: "classId is required" }] };
-      const { classId: _omit, ...rest } = args;
+      const { classId: _omit, ...rest } = args_;
       const result = validateUpdateClassPayload(rest);
       if (!result.valid) return { valid: false, errors: result.errors };
 
@@ -429,13 +624,13 @@ async function prepareDraftProposal(
         // best-effort label only — approval-time write still re-validates ownership
       }
 
-      return { valid: true, payload: { classId, ...rest }, summary: `Update class: "${label}"` };
+      return { valid: true, payload: { classId, ...rest }, summary: `Update class: "${label}"`, revisedProposalId };
     }
 
     case "draft_update_package": {
-      const packageId = typeof args["packageId"] === "string" ? args["packageId"] : "";
+      const packageId = typeof args_["packageId"] === "string" ? args_["packageId"] : "";
       if (!packageId) return { valid: false, errors: [{ field: "packageId", message: "packageId is required" }] };
-      const { packageId: _omit, ...rest } = args;
+      const { packageId: _omit, ...rest } = args_;
       const result = validateUpdatePackagePayload(rest);
       if (!result.valid) return { valid: false, errors: result.errors };
 
@@ -447,7 +642,57 @@ async function prepareDraftProposal(
         // best-effort label only — approval-time write still re-validates ownership
       }
 
-      return { valid: true, payload: { packageId, ...rest }, summary: `Update package: "${label}"` };
+      return { valid: true, payload: { packageId, ...rest }, summary: `Update package: "${label}"`, revisedProposalId };
+    }
+
+    case "draft_create_event": {
+      const payload: Record<string, unknown> = { ...args_ };
+      const result = validateCreateEventPayload(payload);
+      if (!result.valid) return { valid: false, errors: result.errors };
+      return { valid: true, payload, summary: `New event: "${payload["name"]}" (${payload["type"]})`, revisedProposalId };
+    }
+
+    case "draft_update_event": {
+      const eventId = typeof args_["eventId"] === "string" ? args_["eventId"] : "";
+      if (!eventId) return { valid: false, errors: [{ field: "eventId", message: "eventId is required" }] };
+      const { eventId: _omit, ...rest } = args_;
+      const result = validateUpdateEventPayload(rest);
+      if (!result.valid) return { valid: false, errors: result.errors };
+
+      let label = eventId;
+      try {
+        const existing = await eventsService.getEventById(eventId, studioOwnerId);
+        if (existing) label = (existing["name"] as string) || eventId;
+      } catch {
+        // best-effort label only — approval-time write still re-validates ownership
+      }
+
+      return { valid: true, payload: { eventId, ...rest }, summary: `Update event: "${label}"`, revisedProposalId };
+    }
+
+    case "draft_create_workshop": {
+      const payload: Record<string, unknown> = { ...args_ };
+      const result = validateCreateWorkshopPayload(payload);
+      if (!result.valid) return { valid: false, errors: result.errors };
+      return { valid: true, payload, summary: `New workshop: "${payload["name"]}"`, revisedProposalId };
+    }
+
+    case "draft_update_workshop": {
+      const workshopId = typeof args_["workshopId"] === "string" ? args_["workshopId"] : "";
+      if (!workshopId) return { valid: false, errors: [{ field: "workshopId", message: "workshopId is required" }] };
+      const { workshopId: _omit, ...rest } = args_;
+      const result = validateUpdateWorkshopPayload(rest);
+      if (!result.valid) return { valid: false, errors: result.errors };
+
+      let label = workshopId;
+      try {
+        const existing = await workshopsService.getWorkshopById(workshopId, studioOwnerId);
+        if (existing) label = (existing["name"] as string) || workshopId;
+      } catch {
+        // best-effort label only — approval-time write still re-validates ownership
+      }
+
+      return { valid: true, payload: { workshopId, ...rest }, summary: `Update workshop: "${label}"`, revisedProposalId };
     }
 
     default:
@@ -468,23 +713,35 @@ async function persistProposal(studioOwnerId: string, actionType: ProposalAction
   return ref.id;
 }
 
+// Overwrites payload/summary on an existing pending proposal in place (revision), rather
+// than raising a second, duplicate proposal for the same underlying draft.
+async function updateProposal(proposalId: string, payload: Record<string, unknown>, summary: string): Promise<void> {
+  const db = getFirestore();
+  await db.collection(PROPOSALS_COLLECTION).doc(proposalId).update({ payload, summary });
+}
+
 const TOOL_NAME_TO_ACTION_TYPE: Record<string, ProposalActionType> = {
   draft_email_campaign: "email_campaign",
   draft_automation_rule: "automation_rule",
   draft_create_class: "class_create",
   draft_update_class: "class_update",
   draft_update_package: "package_update",
+  draft_create_event: "event_create",
+  draft_update_event: "event_update",
+  draft_create_workshop: "workshop_create",
+  draft_update_workshop: "workshop_update",
 };
 
 // ─── The chat/tool loop ─────────────────────────────────────────────────────
 
 function systemInstructionFor(studioName: string): string {
-  return `You are DanceUp's studio co-pilot for "${studioName}". You help the studio owner by answering questions using the read tools (schedule, packages, instructors, automation rules, engagement stats, insights) and by preparing drafts using the draft_* tools.
+  return `You are DanceUp's studio co-pilot for "${studioName}". You help the studio owner by answering questions using the read tools (schedule, packages, instructors, events, workshops, automation rules, engagement stats, insights) and by preparing drafts using the draft_* tools.
 
 Rules you must always follow:
-- You can NEVER send an email, create/update an automation rule, create/update a class, or update a package directly. The only way to propose any of those is to call the matching draft_* tool, which prepares a draft for the studio owner to review and explicitly approve.
+- You can NEVER send an email, create/update an automation rule, create/update a class, event, or workshop, or update a package directly. The only way to propose any of those is to call the matching draft_* tool, which prepares a draft for the studio owner to review and explicitly approve.
 - Never tell the user an action has been completed, sent, or saved — only that you've prepared a draft for their approval.
-- Before drafting a new class, call get_instructors so you use real instructor IDs. Before drafting an update to a class or package, call get_schedule or get_packages so you use a real ID.
+- Before drafting a new class, call get_instructors so you use real instructor IDs. Before drafting an update to a class, package, event, or workshop, call get_schedule, get_packages, get_events, or get_workshops (as appropriate) so you use a real ID.
+- If the user asks you to change something about a draft you already proposed (e.g. "actually make it Friday instead"), call get_pending_proposals first to find that proposal's id and current values, then call the SAME draft_* tool again with that id in the proposalId field plus only the field(s) that should change — this updates the existing draft in place instead of creating a duplicate one.
 - Keep replies concise and conversational.`;
 }
 
@@ -493,24 +750,15 @@ export interface AssistantTurnResult {
   proposals: AssistantProposal[];
 }
 
-export async function handleAssistantMessage(studioOwnerId: string, userText: string): Promise<AssistantTurnResult> {
-  await persistMessage(studioOwnerId, "user", userText);
-
-  const [allMessages, studioName] = await Promise.all([
-    loadMessages(studioOwnerId, { order: "desc", limit: MAX_HISTORY_MESSAGES + 1 }),
-    getStudioName(studioOwnerId),
-  ]);
-
-  const historyMessages = allMessages
-    .filter((m) => m.role === "user" || m.role === "model")
-    .slice(0, -1) // exclude the message we just persisted — it's sent as the new turn below
-    .slice(-MAX_HISTORY_MESSAGES);
-
-  const history: Content[] = historyMessages.map((m) => ({
-    role: m.role,
-    parts: [{ text: m.text }],
-  }));
-
+// Runs the tool-call loop to completion for a given set of contents (history plus the new
+// turn already appended). Shared by handleAssistantMessage (a real chat turn) and the
+// proactive suggestion job (a synthetic, system-authored turn) — neither persists messages
+// itself here, so callers control exactly what shows up in the visible chat thread.
+async function runTurn(
+  studioOwnerId: string,
+  studioName: string,
+  contents: Content[],
+): Promise<{ finalText: string; raisedProposals: AssistantProposal[] }> {
   const genAI = await getClient();
   const model = genAI.getGenerativeModel({
     model: MODEL_NAME,
@@ -518,14 +766,6 @@ export async function handleAssistantMessage(studioOwnerId: string, userText: st
     tools: [{ functionDeclarations: [...READ_TOOLS, ...DRAFT_TOOLS] }],
     toolConfig: { functionCallingConfig: { mode: FunctionCallingMode.AUTO } },
   });
-
-  // Managed by hand (rather than model.startChat()) because the SDK's ChatSession
-  // hardcodes role: "function" for function-response turns, which gemini-3.x's API
-  // rejects — this model generation expects those turns as role: "user" instead, and
-  // requires each function-call part's thoughtSignature to be echoed back verbatim on
-  // later turns. Pushing the raw response.candidates[0].content (rather than
-  // reconstructing parts from response.functionCalls()) preserves that signature as-is.
-  const contents: Content[] = [...history, { role: "user", parts: [{ text: userText }] }];
 
   const raisedProposals: AssistantProposal[] = [];
   let finalText = "";
@@ -545,13 +785,13 @@ export async function handleAssistantMessage(studioOwnerId: string, userText: st
     const readCalls = calls.filter((c) => !DRAFT_TOOL_NAMES.has(c.name));
 
     if (draftCalls.length > 0) {
-      const validResults: Array<{ actionType: ProposalActionType; payload: Record<string, unknown>; summary: string }> = [];
+      const validResults: Array<{ actionType: ProposalActionType; payload: Record<string, unknown>; summary: string; revisedProposalId?: string }> = [];
       const invalidResponseParts: Part[] = [];
 
       for (const call of draftCalls) {
         const draft = await prepareDraftProposal(call.name, call.args as Record<string, unknown>, studioOwnerId);
         if (draft.valid) {
-          validResults.push({ actionType: TOOL_NAME_TO_ACTION_TYPE[call.name] as ProposalActionType, payload: draft.payload, summary: draft.summary });
+          validResults.push({ actionType: TOOL_NAME_TO_ACTION_TYPE[call.name] as ProposalActionType, payload: draft.payload, summary: draft.summary, revisedProposalId: draft.revisedProposalId });
         } else {
           invalidResponseParts.push({ functionResponse: { name: call.name, response: { status: "invalid", errors: draft.errors } } });
         }
@@ -561,10 +801,17 @@ export async function handleAssistantMessage(studioOwnerId: string, userText: st
         // At least one valid draft was raised — persist it/them and end the turn here.
         // No further model reasoning happens after a draft is raised (core safety property).
         for (const r of validResults) {
-          const id = await persistProposal(studioOwnerId, r.actionType, r.payload, r.summary);
-          raisedProposals.push({
-            id, studioOwnerId, actionType: r.actionType, payload: r.payload, status: "pending", summary: r.summary, createdAt: new Date().toISOString(),
-          });
+          if (r.revisedProposalId) {
+            await updateProposal(r.revisedProposalId, r.payload, r.summary);
+            raisedProposals.push({
+              id: r.revisedProposalId, studioOwnerId, actionType: r.actionType, payload: r.payload, status: "pending", summary: r.summary, createdAt: new Date().toISOString(),
+            });
+          } else {
+            const id = await persistProposal(studioOwnerId, r.actionType, r.payload, r.summary);
+            raisedProposals.push({
+              id, studioOwnerId, actionType: r.actionType, payload: r.payload, status: "pending", summary: r.summary, createdAt: new Date().toISOString(),
+            });
+          }
         }
         finalText = result.response.text() || "I've drafted this for your review — see the card above.";
         break;
@@ -595,10 +842,112 @@ export async function handleAssistantMessage(studioOwnerId: string, userText: st
     finalText = "I wasn't able to finish reasoning about that in time — could you try rephrasing or asking something more specific?";
   }
 
+  return { finalText, raisedProposals };
+}
+
+// dropLastN drops the N most recent already-persisted messages from the returned history —
+// used by handleAssistantMessage to exclude the user message it just persisted (which is
+// re-sent as the new turn instead). The proactive job persists nothing beforehand, so it
+// passes 0.
+async function buildHistoryContents(studioOwnerId: string, dropLastN: number): Promise<Content[]> {
+  const allMessages = await loadMessages(studioOwnerId, { order: "desc", limit: MAX_HISTORY_MESSAGES + dropLastN });
+  const filtered = allMessages.filter((m) => m.role === "user" || m.role === "model");
+  const historyMessages = (dropLastN > 0 ? filtered.slice(0, -dropLastN) : filtered).slice(-MAX_HISTORY_MESSAGES);
+  return historyMessages.map((m) => ({ role: m.role, parts: [{ text: m.text }] }));
+}
+
+export async function handleAssistantMessage(studioOwnerId: string, userText: string): Promise<AssistantTurnResult> {
+  await persistMessage(studioOwnerId, "user", userText);
+
+  const [history, studioName] = await Promise.all([
+    buildHistoryContents(studioOwnerId, 1), // exclude the message we just persisted — sent as the new turn below
+    getStudioName(studioOwnerId),
+  ]);
+
+  // Managed by hand (rather than model.startChat()) because the SDK's ChatSession
+  // hardcodes role: "function" for function-response turns, which gemini-3.x's API
+  // rejects — this model generation expects those turns as role: "user" instead, and
+  // requires each function-call part's thoughtSignature to be echoed back verbatim on
+  // later turns. Pushing the raw response.candidates[0].content (rather than
+  // reconstructing parts from response.functionCalls()) preserves that signature as-is.
+  const contents: Content[] = [...history, { role: "user", parts: [{ text: userText }] }];
+
+  const { finalText, raisedProposals } = await runTurn(studioOwnerId, studioName, contents);
+
   const proposedActionIds = raisedProposals.map((p) => p.id);
   await persistMessage(studioOwnerId, "model", finalText, proposedActionIds.length > 0 ? proposedActionIds : undefined);
 
   return { reply: { text: finalText, proposedActionIds: proposedActionIds.length > 0 ? proposedActionIds : undefined }, proposals: raisedProposals };
+}
+
+const PROACTIVE_SUGGESTION_PROMPT = "Proactively review this studio's engagement stats, expiring credits, automation rules, and schedule. If you find one clear, valuable action that isn't already covered by an existing automation rule, draft exactly one proposal for it using the matching draft_* tool. If nothing stands out as worth surfacing right now, just reply with a short 'Nothing urgent today.' and don't draft anything.";
+const PROACTIVE_SUGGESTION_NOTIFICATION_TYPE = "copilot_suggestion";
+const PROACTIVE_SUGGESTION_COOLDOWN_DAYS = 3;
+
+async function hasRecentProactiveSuggestion(studioOwnerId: string): Promise<boolean> {
+  const db = getFirestore();
+  const cooldownStart = Date.now() - PROACTIVE_SUGGESTION_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
+  // Single-field query, filtered in JS — avoids a new composite index, matching the
+  // same dedup pattern already used by attendance.service.ts's low-enrollment job.
+  const snap = await db.collection("notifications").where("studioId", "==", studioOwnerId).get();
+  return snap.docs.some((doc) => {
+    const d = doc.data() as Record<string, unknown>;
+    if (d["type"] !== PROACTIVE_SUGGESTION_NOTIFICATION_TYPE) return false;
+    const createdAt = d["createdAt"] as admin.firestore.Timestamp | undefined;
+    return !!createdAt && createdAt.toMillis() >= cooldownStart;
+  });
+}
+
+// Called once per studio by the daily copilotSuggestions scheduled job (routes/copilot-suggestions.ts).
+// Skips quietly (no LLM call at all) if a proposal is already pending or a suggestion was
+// raised recently, so this never piles unactioned suggestions on a studio owner.
+export async function runProactiveSuggestionForStudio(studioOwnerId: string): Promise<{ raised: boolean }> {
+  const pending = await loadPendingProposals(studioOwnerId);
+  if (pending.length > 0) return { raised: false };
+  if (await hasRecentProactiveSuggestion(studioOwnerId)) return { raised: false };
+
+  const [history, studioName] = await Promise.all([
+    buildHistoryContents(studioOwnerId, 0),
+    getStudioName(studioOwnerId),
+  ]);
+  const contents: Content[] = [...history, { role: "user", parts: [{ text: PROACTIVE_SUGGESTION_PROMPT }] }];
+
+  const { finalText, raisedProposals } = await runTurn(studioOwnerId, studioName, contents);
+  if (raisedProposals.length === 0) return { raised: false };
+
+  const proposedActionIds = raisedProposals.map((p) => p.id);
+  await persistMessage(studioOwnerId, "model", finalText, proposedActionIds);
+
+  const proposal = raisedProposals[0] as AssistantProposal;
+  await notificationsService.createNotification(
+    studioOwnerId, null, PROACTIVE_SUGGESTION_NOTIFICATION_TYPE, "Your Co-Pilot has a suggestion",
+    proposal.summary, null, null, proposal.id,
+  );
+  return { raised: true };
+}
+
+// Called once daily by the copilotSuggestions scheduled job (routes/copilot-suggestions.ts).
+// Derives the studio-owner-id set the same ad-hoc way retention.service.ts does, and isolates
+// each studio in its own try/catch so one studio's failure doesn't block the rest.
+export async function runProactiveSuggestionsForAllStudios(): Promise<{ raisedCount: number }> {
+  const db = getFirestore();
+  const studentsSnapshot = await db.collection("students").get();
+  const studioOwnerIds = new Set<string>();
+  studentsSnapshot.forEach((doc) => {
+    const data = doc.data() as Record<string, unknown>;
+    if (data["studioOwnerId"]) studioOwnerIds.add(data["studioOwnerId"] as string);
+  });
+
+  let raisedCount = 0;
+  for (const studioOwnerId of studioOwnerIds) {
+    try {
+      const { raised } = await runProactiveSuggestionForStudio(studioOwnerId);
+      if (raised) raisedCount++;
+    } catch (err) {
+      console.error(`[CopilotSuggestions] Error processing studio ${studioOwnerId}:`, (err as Error).message);
+    }
+  }
+  return { raisedCount };
 }
 
 // ─── Approve / reject ───────────────────────────────────────────────────────
@@ -731,6 +1080,62 @@ export async function approveProposal(
       resultResourceId = packageId;
       message = "Package updated.";
       logAuditEvent(actorUid, studioOwnerId, "assistant_package_updated", "package", resultResourceId, {});
+      break;
+    }
+    case "event_create": {
+      const result = validateCreateEventPayload(mergedPayload);
+      if (!result.valid) {
+        const err = new Error("Validation Error") as Error & { status?: number; errors?: unknown[] };
+        err.status = 400;
+        err.errors = result.errors;
+        throw err;
+      }
+      resultResourceId = await eventsService.createEvent(mergedPayload, studioOwnerId);
+      message = "Event created.";
+      logAuditEvent(actorUid, studioOwnerId, "assistant_event_created", "event", resultResourceId, {});
+      break;
+    }
+    case "event_update": {
+      const { eventId, ...updates } = mergedPayload as { eventId: string } & Record<string, unknown>;
+      const result = validateUpdateEventPayload(updates);
+      if (!result.valid) {
+        const err = new Error("Validation Error") as Error & { status?: number; errors?: unknown[] };
+        err.status = 400;
+        err.errors = result.errors;
+        throw err;
+      }
+      await eventsService.updateEvent(eventId, updates, studioOwnerId);
+      resultResourceId = eventId;
+      message = "Event updated.";
+      logAuditEvent(actorUid, studioOwnerId, "assistant_event_updated", "event", resultResourceId, {});
+      break;
+    }
+    case "workshop_create": {
+      const result = validateCreateWorkshopPayload(mergedPayload);
+      if (!result.valid) {
+        const err = new Error("Validation Error") as Error & { status?: number; errors?: unknown[] };
+        err.status = 400;
+        err.errors = result.errors;
+        throw err;
+      }
+      resultResourceId = await workshopsService.createWorkshop(mergedPayload, studioOwnerId);
+      message = "Workshop created.";
+      logAuditEvent(actorUid, studioOwnerId, "assistant_workshop_created", "workshop", resultResourceId, {});
+      break;
+    }
+    case "workshop_update": {
+      const { workshopId, ...updates } = mergedPayload as { workshopId: string } & Record<string, unknown>;
+      const result = validateUpdateWorkshopPayload(updates);
+      if (!result.valid) {
+        const err = new Error("Validation Error") as Error & { status?: number; errors?: unknown[] };
+        err.status = 400;
+        err.errors = result.errors;
+        throw err;
+      }
+      await workshopsService.updateWorkshop(workshopId, updates, studioOwnerId);
+      resultResourceId = workshopId;
+      message = "Workshop updated.";
+      logAuditEvent(actorUid, studioOwnerId, "assistant_workshop_updated", "workshop", resultResourceId, {});
       break;
     }
     default:
