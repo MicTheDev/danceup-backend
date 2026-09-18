@@ -62,10 +62,27 @@ function isInWindow(localMinutes: number, startTime: string, endTime: string): b
   return localMinutes >= start - 30 && localMinutes <= end;
 }
 
-async function sendFcmNotification(token: string, title: string, body: string): Promise<void> {
+// Fires once, 55-65 minutes before class start — a 10-minute window (two cron
+// ticks wide) so a single missed/delayed tick doesn't skip the reminder
+// entirely; exact-once delivery within that window is enforced by the
+// classReminders dedup doc below, not by narrowing this window. Deliberately
+// well clear of the check-in window above (which opens at start-30), so the
+// two pushes never land together — this one says "get ready," that one
+// confirms you're checked in.
+function isInReminderWindow(localMinutes: number, startTime: string): boolean {
+  const start = parseMinutes(startTime);
+  return localMinutes >= start - 65 && localMinutes < start - 55;
+}
+
+async function sendFcmNotification(token: string, title: string, body: string, channelId: string): Promise<void> {
   await admin.messaging().send({
     token,
     notification: { title, body },
+    // data.channelId lets the app pick the right Android channel while in the
+    // foreground (it has to build the local notification itself there,
+    // android.notification.channelId below only governs display while
+    // backgrounded/terminated, where the OS shows it directly).
+    data: { channelId },
     apns: {
       payload: { aps: { sound: "default" } },
     },
@@ -74,10 +91,69 @@ async function sendFcmNotification(token: string, title: string, body: string): 
         sound: "default",
         icon: "ic_notification",
         color: "#4F46E5",
-        channelId: "auto_checkin",
+        channelId,
       },
     },
   });
+}
+
+// Scoped to the same auto-check-in entries the caller already resolved —
+// students without auto check-in enabled for a class have no reminder concept
+// today (there's no other "expected roster" for a class instance to draw
+// from). Uses .create() rather than .set() so a second cron tick landing in
+// the same 10-minute window above is a guaranteed no-op.
+async function sendClassReminderIfNeeded(
+  db: admin.firestore.Firestore,
+  params: {
+    authUid: string;
+    dependentId: string | null;
+    classId: string;
+    className: string;
+    studioName: string;
+    fcmToken: string | undefined;
+    localDateKey: string;
+  },
+): Promise<void> {
+  const { authUid, dependentId, classId, className, studioName, fcmToken, localDateKey } = params;
+  const dedupId = `${authUid}_${dependentId ?? "self"}_${classId}_${localDateKey}`;
+
+  try {
+    await db.collection("classReminders").doc(dedupId).create({
+      authUid,
+      dependentId,
+      classId,
+      sentAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    const msg = ((e as Error).message ?? "").toLowerCase();
+    if (!msg.includes("already exists")) {
+      console.warn(`[AutoCheckIn] Reminder dedup write failed for ${authUid} class ${classId}:`, (e as Error).message);
+    }
+    return;
+  }
+
+  console.log(`[AutoCheckIn] Sending class reminder to ${authUid}${dependentId ? ` (dependent ${dependentId})` : ""} → class "${className}"`);
+
+  const title = "Class starting soon";
+  const body = `${className} at ${studioName} starts in about an hour`;
+
+  if (fcmToken) {
+    await sendFcmNotification(fcmToken, title, body, "class_reminder")
+      .catch((e) => console.warn("[AutoCheckIn] Reminder FCM failed:", (e as Error).message));
+  }
+
+  try {
+    await db.collection("studentNotifications").add({
+      authUid,
+      type: "class_reminder",
+      title,
+      body,
+      read: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    console.warn("[AutoCheckIn] Reminder notification write failed:", (e as Error).message);
+  }
 }
 
 export const autoCheckIn = onSchedule(
@@ -208,6 +284,18 @@ export const autoCheckIn = onSchedule(
 
           if (classDow !== localDow) continue;
 
+          if (isInReminderWindow(localMinutes, startTime)) {
+            await sendClassReminderIfNeeded(db, {
+              authUid,
+              dependentId,
+              classId,
+              className,
+              studioName,
+              fcmToken,
+              localDateKey: `${localY}-${localMo}-${localD}`,
+            });
+          }
+
           if (!isInWindow(localMinutes, startTime, endTime)) {
             console.log(`[AutoCheckIn] Outside time window for "${className}"`);
             continue;
@@ -233,7 +321,7 @@ export const autoCheckIn = onSchedule(
             console.log(`[AutoCheckIn] Checked in ${authUid}${dependentId ? ` (dependent ${dependentId})` : ""} → class "${className}"`);
 
             if (fcmToken) {
-              await sendFcmNotification(fcmToken, "Checked in ✓", `${className} at ${studioName}`)
+              await sendFcmNotification(fcmToken, "Checked in ✓", `${className} at ${studioName}`, "auto_checkin")
                 .catch((e) => console.warn("[AutoCheckIn] FCM failed:", (e as Error).message));
             }
 
@@ -260,6 +348,7 @@ export const autoCheckIn = onSchedule(
                   fcmToken,
                   "Auto check-in failed",
                   `No credits remaining for ${className}. Open DanceUP to purchase more.`,
+                  "auto_checkin",
                 ).catch(() => {});
               }
             } else {
