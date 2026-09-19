@@ -20,6 +20,8 @@ import campaignRulesService, { TriggerType, ActionType } from "./campaign-rules.
 import * as marketingService from "./marketing.service";
 import * as aiService from "./ai.service";
 import * as insightsService from "./insights.service";
+import { sendCopilotSuggestionEmail } from "./sendgrid.service";
+import { sendStudioOwnerPush } from "../utils/push-notifications";
 import {
   validateCreateClassPayload,
   validateUpdateClassPayload,
@@ -358,6 +360,28 @@ async function getStudioName(studioOwnerId: string): Promise<string> {
   const doc = await db.collection("users").doc(studioOwnerId).get();
   if (!doc.exists) return "Your Studio";
   return ((doc.data() as Record<string, unknown>)["studioName"] as string) || "Your Studio";
+}
+
+interface StudioOwnerContact {
+  studioName: string;
+  email: string;
+  firstName: string;
+}
+
+async function getStudioOwnerContact(studioOwnerId: string): Promise<StudioOwnerContact> {
+  const db = getFirestore();
+  const doc = await db.collection("users").doc(studioOwnerId).get();
+  const data = (doc.exists ? doc.data() : {}) as Record<string, unknown>;
+  return {
+    studioName: (data["studioName"] as string) || "Your Studio",
+    email: (data["email"] as string) || "",
+    firstName: (data["firstName"] as string) || "",
+  };
+}
+
+function studioOwnerAssistantUrl(): string {
+  const baseUrl = process.env["STUDIO_OWNER_APP_URL"] || "https://studios.danceup.app";
+  return `${baseUrl}/dashboard/assistant`;
 }
 
 async function persistMessage(
@@ -898,21 +922,26 @@ async function hasRecentProactiveSuggestion(studioOwnerId: string): Promise<bool
   });
 }
 
-// Called once per studio by the daily copilotSuggestions scheduled job (routes/copilot-suggestions.ts).
+// Called once per studio by the daily copilotSuggestions scheduled job (routes/copilot-suggestions.ts),
+// and on-demand by the studio owner via POST /assistant/check-suggestions (force: true).
 // Skips quietly (no LLM call at all) if a proposal is already pending or a suggestion was
-// raised recently, so this never piles unactioned suggestions on a studio owner.
-export async function runProactiveSuggestionForStudio(studioOwnerId: string): Promise<{ raised: boolean }> {
-  const pending = await loadPendingProposals(studioOwnerId);
-  if (pending.length > 0) return { raised: false };
-  if (await hasRecentProactiveSuggestion(studioOwnerId)) return { raised: false };
+// raised recently, so the automated daily run never piles unactioned suggestions on a studio
+// owner — force:true (an explicit, human-initiated check) bypasses both of those guards, since
+// the whole point of that path is "show me this working right now."
+export async function runProactiveSuggestionForStudio(studioOwnerId: string, force = false): Promise<{ raised: boolean; proposal?: AssistantProposal }> {
+  if (!force) {
+    const pending = await loadPendingProposals(studioOwnerId);
+    if (pending.length > 0) return { raised: false };
+    if (await hasRecentProactiveSuggestion(studioOwnerId)) return { raised: false };
+  }
 
-  const [history, studioName] = await Promise.all([
+  const [history, contact] = await Promise.all([
     buildHistoryContents(studioOwnerId, 0),
-    getStudioName(studioOwnerId),
+    getStudioOwnerContact(studioOwnerId),
   ]);
   const contents: Content[] = [...history, { role: "user", parts: [{ text: PROACTIVE_SUGGESTION_PROMPT }] }];
 
-  const { finalText, raisedProposals } = await runTurn(studioOwnerId, studioName, contents);
+  const { finalText, raisedProposals } = await runTurn(studioOwnerId, contact.studioName, contents);
   if (raisedProposals.length === 0) return { raised: false };
 
   const proposedActionIds = raisedProposals.map((p) => p.id);
@@ -923,7 +952,16 @@ export async function runProactiveSuggestionForStudio(studioOwnerId: string): Pr
     studioOwnerId, null, PROACTIVE_SUGGESTION_NOTIFICATION_TYPE, "Your Co-Pilot has a suggestion",
     proposal.summary, null, null, proposal.id,
   );
-  return { raised: true };
+
+  const assistantUrl = studioOwnerAssistantUrl();
+  await Promise.all([
+    sendCopilotSuggestionEmail(contact.email, contact.firstName, contact.studioName, proposal.summary, assistantUrl)
+      .catch((err) => console.error(`[CopilotSuggestions] Failed to email studio ${studioOwnerId}:`, (err as Error).message)),
+    sendStudioOwnerPush(studioOwnerId, "Your Co-Pilot has a suggestion", proposal.summary, { proposalId: proposal.id, type: PROACTIVE_SUGGESTION_NOTIFICATION_TYPE })
+      .catch((err) => console.error(`[CopilotSuggestions] Failed to push studio ${studioOwnerId}:`, (err as Error).message)),
+  ]);
+
+  return { raised: true, proposal };
 }
 
 // Called once daily by the copilotSuggestions scheduled job (routes/copilot-suggestions.ts).
