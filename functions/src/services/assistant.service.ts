@@ -62,6 +62,7 @@ export interface AssistantProposal {
   payload: Record<string, unknown>;
   status: ProposalStatus;
   summary: string;
+  reasoning?: string;
   createdAt: string | null;
   resolvedAt?: string | null;
   resolvedBy?: string;
@@ -206,6 +207,11 @@ const PROPOSAL_ID_PROPERTY = {
   description: "If revising an existing pending proposal (its id comes from get_pending_proposals), pass that id here instead of creating a new one. Omit to create a brand-new proposal.",
 } as const;
 
+const REASONING_PROPERTY = {
+  type: SchemaType.STRING,
+  description: "One sentence citing the SPECIFIC data behind this draft (real numbers, names, or dates from a tool you called — e.g. '6 students haven't attended in 21+ days' or 'this class has averaged 18% fill rate over the last 4 weeks'). Never a generic reason like 'to help engagement.' Shown to the studio owner alongside the draft.",
+} as const;
+
 const DRAFT_TOOLS: FunctionDeclaration[] = [
   {
     name: "draft_email_campaign",
@@ -216,8 +222,9 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         tone: { type: SchemaType.STRING, enum: [...EMAIL_TONES], description: "Overall tone of the email." },
         instructions: { type: SchemaType.STRING, description: "Specific instructions from the studio owner about what the email should include." },
         proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
       },
-      required: ["tone"],
+      required: ["tone", "reasoning"],
     },
   },
   {
@@ -232,8 +239,9 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         actionType: { type: SchemaType.STRING, enum: ACTION_TYPES, description: "Which email gets sent when the rule fires." },
         cooldownDays: { type: SchemaType.NUMBER, description: "Minimum days between repeated sends to the same student. Defaults to 30 if omitted." },
         proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
       },
-      required: ["name", "triggerType", "triggerValue", "actionType"],
+      required: ["name", "triggerType", "triggerValue", "actionType", "reasoning"],
     },
   },
   {
@@ -254,8 +262,9 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         description: { type: SchemaType.STRING },
         danceGenre: { type: SchemaType.STRING },
         proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
       },
-      required: ["name", "level", "dayOfWeek", "startTime", "endTime", "instructorIds", "isActive"],
+      required: ["name", "level", "dayOfWeek", "startTime", "endTime", "instructorIds", "isActive", "reasoning"],
     },
   },
   {
@@ -277,8 +286,9 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         description: { type: SchemaType.STRING },
         danceGenre: { type: SchemaType.STRING },
         proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
       },
-      required: ["classId"],
+      required: ["classId", "reasoning"],
     },
   },
   {
@@ -294,8 +304,9 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         isActive: { type: SchemaType.BOOLEAN },
         description: { type: SchemaType.STRING },
         proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
       },
-      required: ["packageId"],
+      required: ["packageId", "reasoning"],
     },
   },
   {
@@ -316,8 +327,9 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         description: { type: SchemaType.STRING },
         danceGenre: { type: SchemaType.STRING },
         proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
       },
-      required: ["name", "type", "startTime", "priceTiers", "addressLine1", "city", "state", "zip"],
+      required: ["name", "type", "startTime", "priceTiers", "addressLine1", "city", "state", "zip", "reasoning"],
     },
   },
   {
@@ -339,8 +351,9 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         description: { type: SchemaType.STRING },
         danceGenre: { type: SchemaType.STRING },
         proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
       },
-      required: ["eventId"],
+      required: ["eventId", "reasoning"],
     },
   },
   {
@@ -361,8 +374,9 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         description: { type: SchemaType.STRING },
         danceGenre: { type: SchemaType.STRING },
         proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
       },
-      required: ["name", "levels", "startTime", "endTime", "priceTiers", "addressLine1", "city", "state", "zip"],
+      required: ["name", "levels", "startTime", "endTime", "priceTiers", "addressLine1", "city", "state", "zip", "reasoning"],
     },
   },
   {
@@ -384,8 +398,9 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         description: { type: SchemaType.STRING },
         danceGenre: { type: SchemaType.STRING },
         proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
       },
-      required: ["workshopId"],
+      required: ["workshopId", "reasoning"],
     },
   },
 ];
@@ -520,6 +535,7 @@ function hydrateProposal(doc: FirebaseFirestore.QueryDocumentSnapshot | Firebase
     payload: d["payload"] as Record<string, unknown>,
     status: d["status"] as ProposalStatus,
     summary: d["summary"] as string,
+    reasoning: d["reasoning"] as string | undefined,
     createdAt: tsToIso(d["createdAt"]),
     resolvedAt: tsToIso(d["resolvedAt"]),
     resolvedBy: d["resolvedBy"] as string | undefined,
@@ -602,7 +618,7 @@ async function executeReadTool(name: string, studioOwnerId: string): Promise<unk
     case "get_pending_proposals": {
       const proposals = await loadPendingProposals(studioOwnerId);
       return proposals.map((p) => ({
-        id: p.id, actionType: p.actionType, summary: p.summary, payload: p.payload,
+        id: p.id, actionType: p.actionType, summary: p.summary, reasoning: p.reasoning, payload: p.payload,
       }));
     }
     case "get_income_goal_progress": {
@@ -678,7 +694,7 @@ async function executeReadTool(name: string, studioOwnerId: string): Promise<unk
 // ─── Draft tool -> proposal preparation (never writes) ─────────────────────
 
 type DraftResult =
-  | { valid: true; payload: Record<string, unknown>; summary: string; revisedProposalId?: string }
+  | { valid: true; payload: Record<string, unknown>; summary: string; reasoning?: string; revisedProposalId?: string }
   | { valid: false; errors: Array<{ field: string; message: string }> };
 
 // When a draft_* tool call carries a proposalId, this loads the pending proposal it's
@@ -717,7 +733,13 @@ async function prepareDraftProposal(
     if ("error" in resolved) return { valid: false, errors: [{ field: "proposalId", message: resolved.error }] };
     mergedArgs = { ...resolved.payload, ...argsWithoutProposalId };
   }
-  const args_ = mergedArgs;
+  // Pulled out here (not left in args_) so it never accidentally gets spread into a
+  // create/update payload that's later written straight into a class/event/workshop doc —
+  // reasoning is metadata about the PROPOSAL, not a field of the thing being created.
+  const reasoningRaw = mergedArgs["reasoning"];
+  const reasoning = typeof reasoningRaw === "string" && reasoningRaw.trim() ? reasoningRaw.trim() : undefined;
+  const { reasoning: _omitReasoning, ...argsWithoutReasoning } = mergedArgs;
+  const args_ = argsWithoutReasoning;
 
   switch (toolName) {
     case "draft_email_campaign": {
@@ -735,6 +757,7 @@ async function prepareDraftProposal(
         valid: true,
         payload: { subject, bodyHtml: htmlBody, sendToAll: true } as Record<string, unknown>,
         summary: `Email: "${subject}"`,
+        reasoning,
         revisedProposalId,
       };
     }
@@ -764,6 +787,7 @@ async function prepareDraftProposal(
           name, triggerType: args_["triggerType"], triggerValue, actionType: args_["actionType"], cooldownDays,
         },
         summary: `Automation rule: "${name}"`,
+        reasoning,
         revisedProposalId,
       };
     }
@@ -772,7 +796,7 @@ async function prepareDraftProposal(
       const payload: Record<string, unknown> = { ...args_ };
       const result = validateCreateClassPayload(payload);
       if (!result.valid) return { valid: false, errors: result.errors };
-      return { valid: true, payload, summary: `New class: "${payload["name"]}" (${payload["dayOfWeek"]} ${payload["startTime"]})`, revisedProposalId };
+      return { valid: true, payload, summary: `New class: "${payload["name"]}" (${payload["dayOfWeek"]} ${payload["startTime"]})`, reasoning, revisedProposalId };
     }
 
     case "draft_update_class": {
@@ -790,7 +814,7 @@ async function prepareDraftProposal(
         // best-effort label only — approval-time write still re-validates ownership
       }
 
-      return { valid: true, payload: { classId, ...rest }, summary: `Update class: "${label}"`, revisedProposalId };
+      return { valid: true, payload: { classId, ...rest }, summary: `Update class: "${label}"`, reasoning, revisedProposalId };
     }
 
     case "draft_update_package": {
@@ -808,14 +832,14 @@ async function prepareDraftProposal(
         // best-effort label only — approval-time write still re-validates ownership
       }
 
-      return { valid: true, payload: { packageId, ...rest }, summary: `Update package: "${label}"`, revisedProposalId };
+      return { valid: true, payload: { packageId, ...rest }, summary: `Update package: "${label}"`, reasoning, revisedProposalId };
     }
 
     case "draft_create_event": {
       const payload: Record<string, unknown> = { ...args_ };
       const result = validateCreateEventPayload(payload);
       if (!result.valid) return { valid: false, errors: result.errors };
-      return { valid: true, payload, summary: `New event: "${payload["name"]}" (${payload["type"]})`, revisedProposalId };
+      return { valid: true, payload, summary: `New event: "${payload["name"]}" (${payload["type"]})`, reasoning, revisedProposalId };
     }
 
     case "draft_update_event": {
@@ -833,14 +857,14 @@ async function prepareDraftProposal(
         // best-effort label only — approval-time write still re-validates ownership
       }
 
-      return { valid: true, payload: { eventId, ...rest }, summary: `Update event: "${label}"`, revisedProposalId };
+      return { valid: true, payload: { eventId, ...rest }, summary: `Update event: "${label}"`, reasoning, revisedProposalId };
     }
 
     case "draft_create_workshop": {
       const payload: Record<string, unknown> = { ...args_ };
       const result = validateCreateWorkshopPayload(payload);
       if (!result.valid) return { valid: false, errors: result.errors };
-      return { valid: true, payload, summary: `New workshop: "${payload["name"]}"`, revisedProposalId };
+      return { valid: true, payload, summary: `New workshop: "${payload["name"]}"`, reasoning, revisedProposalId };
     }
 
     case "draft_update_workshop": {
@@ -858,7 +882,7 @@ async function prepareDraftProposal(
         // best-effort label only — approval-time write still re-validates ownership
       }
 
-      return { valid: true, payload: { workshopId, ...rest }, summary: `Update workshop: "${label}"`, revisedProposalId };
+      return { valid: true, payload: { workshopId, ...rest }, summary: `Update workshop: "${label}"`, reasoning, revisedProposalId };
     }
 
     default:
@@ -866,7 +890,7 @@ async function prepareDraftProposal(
   }
 }
 
-async function persistProposal(studioOwnerId: string, actionType: ProposalActionType, payload: Record<string, unknown>, summary: string): Promise<string> {
+async function persistProposal(studioOwnerId: string, actionType: ProposalActionType, payload: Record<string, unknown>, summary: string, reasoning?: string): Promise<string> {
   const db = getFirestore();
   const ref = await db.collection(PROPOSALS_COLLECTION).add({
     studioOwnerId,
@@ -874,6 +898,7 @@ async function persistProposal(studioOwnerId: string, actionType: ProposalAction
     payload,
     status: "pending",
     summary,
+    ...(reasoning ? { reasoning } : {}),
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
   return ref.id;
@@ -881,9 +906,9 @@ async function persistProposal(studioOwnerId: string, actionType: ProposalAction
 
 // Overwrites payload/summary on an existing pending proposal in place (revision), rather
 // than raising a second, duplicate proposal for the same underlying draft.
-async function updateProposal(proposalId: string, payload: Record<string, unknown>, summary: string): Promise<void> {
+async function updateProposal(proposalId: string, payload: Record<string, unknown>, summary: string, reasoning?: string): Promise<void> {
   const db = getFirestore();
-  await db.collection(PROPOSALS_COLLECTION).doc(proposalId).update({ payload, summary });
+  await db.collection(PROPOSALS_COLLECTION).doc(proposalId).update({ payload, summary, reasoning: reasoning ?? null });
 }
 
 const TOOL_NAME_TO_ACTION_TYPE: Record<string, ProposalActionType> = {
@@ -908,6 +933,8 @@ Rules you must always follow:
 - Never tell the user an action has been completed, sent, or saved — only that you've prepared a draft for their approval.
 - Before drafting a new class, call get_instructors so you use real instructor IDs. Before drafting an update to a class, package, event, or workshop, call get_schedule, get_packages, get_events, or get_workshops (as appropriate) so you use a real ID.
 - If the user asks you to change something about a draft you already proposed (e.g. "actually make it Friday instead"), call get_pending_proposals first to find that proposal's id and current values, then call the SAME draft_* tool again with that id in the proposalId field plus only the field(s) that should change — this updates the existing draft in place instead of creating a duplicate one.
+- Every draft_* tool call requires a 'reasoning' argument — always cite the specific number, name, or date from a tool you actually called (e.g. "6 students haven't attended in 21+ days" or "this class averaged 18% fill rate over 4 weeks"). Never a generic reason like "to boost engagement." Also mention that same reasoning, briefly, in your reply text — the studio owner should never see a draft with no visible logic behind it.
+- Don't default to an automation rule just because it's the easiest thing to justify from engagement stats. An email campaign, a class/package tweak, or a promo can all be better fits depending on what the data actually shows — pick based on the data, not on which read tool is quickest to call.
 - If you have access to deeper analysis tools (revenue forecast, class demand, student LTV, instructor performance, schedule health, automation suggestions, income-goal progress), use them whenever they'd sharpen your answer or a draft — e.g. pull automation-rule suggestions before drafting one, or check income-goal progress before proposing a revenue-focused action.
 - When a coordinated plan serves the owner better than one isolated action (e.g. closing a revenue gap with both a promo email and a matching automation rule), you may call more than one draft_* tool in the same turn — each becomes its own proposal, and the owner can approve them together. Briefly explain in your reply how the pieces work together.
 - Keep replies concise and conversational.`;
@@ -957,13 +984,13 @@ async function runTurn(
     const readCalls = calls.filter((c) => !DRAFT_TOOL_NAMES.has(c.name));
 
     if (draftCalls.length > 0) {
-      const validResults: Array<{ actionType: ProposalActionType; payload: Record<string, unknown>; summary: string; revisedProposalId?: string }> = [];
+      const validResults: Array<{ actionType: ProposalActionType; payload: Record<string, unknown>; summary: string; reasoning?: string; revisedProposalId?: string }> = [];
       const invalidResponseParts: Part[] = [];
 
       for (const call of draftCalls) {
         const draft = await prepareDraftProposal(call.name, call.args as Record<string, unknown>, studioOwnerId);
         if (draft.valid) {
-          validResults.push({ actionType: TOOL_NAME_TO_ACTION_TYPE[call.name] as ProposalActionType, payload: draft.payload, summary: draft.summary, revisedProposalId: draft.revisedProposalId });
+          validResults.push({ actionType: TOOL_NAME_TO_ACTION_TYPE[call.name] as ProposalActionType, payload: draft.payload, summary: draft.summary, reasoning: draft.reasoning, revisedProposalId: draft.revisedProposalId });
         } else {
           invalidResponseParts.push({ functionResponse: { name: call.name, response: { status: "invalid", errors: draft.errors } } });
         }
@@ -974,14 +1001,14 @@ async function runTurn(
         // No further model reasoning happens after a draft is raised (core safety property).
         for (const r of validResults) {
           if (r.revisedProposalId) {
-            await updateProposal(r.revisedProposalId, r.payload, r.summary);
+            await updateProposal(r.revisedProposalId, r.payload, r.summary, r.reasoning);
             raisedProposals.push({
-              id: r.revisedProposalId, studioOwnerId, actionType: r.actionType, payload: r.payload, status: "pending", summary: r.summary, createdAt: new Date().toISOString(),
+              id: r.revisedProposalId, studioOwnerId, actionType: r.actionType, payload: r.payload, status: "pending", summary: r.summary, reasoning: r.reasoning, createdAt: new Date().toISOString(),
             });
           } else {
-            const id = await persistProposal(studioOwnerId, r.actionType, r.payload, r.summary);
+            const id = await persistProposal(studioOwnerId, r.actionType, r.payload, r.summary, r.reasoning);
             raisedProposals.push({
-              id, studioOwnerId, actionType: r.actionType, payload: r.payload, status: "pending", summary: r.summary, createdAt: new Date().toISOString(),
+              id, studioOwnerId, actionType: r.actionType, payload: r.payload, status: "pending", summary: r.summary, reasoning: r.reasoning, createdAt: new Date().toISOString(),
             });
           }
         }
@@ -1052,7 +1079,7 @@ export async function handleAssistantMessage(studioOwnerId: string, userText: st
   return { reply: { text: finalText, proposedActionIds: proposedActionIds.length > 0 ? proposedActionIds : undefined }, proposals: raisedProposals };
 }
 
-const PROACTIVE_SUGGESTION_PROMPT = "Proactively review this studio's engagement stats, expiring credits, automation rules, and schedule. If you find one clear, valuable action that isn't already covered by an existing automation rule, draft exactly one proposal for it using the matching draft_* tool. If nothing stands out as worth surfacing right now, just reply with a short 'Nothing urgent today.' and don't draft anything.";
+const PROACTIVE_SUGGESTION_PROMPT = "Proactively look for the single most valuable thing to bring to this studio owner's attention right now. Check multiple angles before picking one — engagement (get_engagement_summary), the schedule and package lineup, and if you have access to them, revenue forecast, class demand, promo triggers, and income-goal pacing. An automation rule is only ONE of many possible actions (others: a one-off email campaign, a class or package tweak, a promo). Do not default to an automation rule just because engagement data is the easiest thing to check — pick whichever action type the data actually supports best. Draft exactly one proposal (or a short coordinated set, per your instructions) using the matching draft_* tool, with reasoning that cites the specific number(s) that drove your pick. If nothing stands out as worth surfacing right now, just reply with a short 'Nothing urgent today.' and don't draft anything.";
 const PROACTIVE_SUGGESTION_NOTIFICATION_TYPE = "copilot_suggestion";
 const PROACTIVE_SUGGESTION_COOLDOWN_DAYS = 3;
 
