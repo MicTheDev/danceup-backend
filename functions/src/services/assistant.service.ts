@@ -20,6 +20,7 @@ import campaignRulesService, { TriggerType, ActionType } from "./campaign-rules.
 import * as marketingService from "./marketing.service";
 import * as aiService from "./ai.service";
 import * as insightsService from "./insights.service";
+import * as insightsDataService from "./insights-data.service";
 import { sendCopilotSuggestionEmail } from "./sendgrid.service";
 import { sendStudioOwnerPush } from "../utils/push-notifications";
 import {
@@ -129,6 +130,52 @@ const READ_TOOLS: FunctionDeclaration[] = [
   {
     name: "get_pending_proposals",
     description: "Get the studio owner's currently pending (not yet approved or discarded) draft proposals, with their id, actionType, summary, and current payload. Call this before revising a proposal the user is referring to (e.g. 'change that to Friday instead'), so you can pass its id back to the matching draft_* tool.",
+    parameters: EMPTY_PARAMS,
+  },
+];
+
+// Only declared to the model for Pro+ studios (see runTurn) — these wrap the same AI Insights
+// engine (ai.service.ts) that powers the separate, Pro+-gated /analytics/ai-insights page, via
+// the shared data-assembly functions in insights-data.service.ts.
+const PRO_PLUS_READ_TOOLS: FunctionDeclaration[] = [
+  {
+    name: "get_income_goal_progress",
+    description: "Get the studio owner's annual revenue goal (if they've set one in Settings) and their actual revenue so far this calendar year, so you can tell them what percent of the way there they are and how much time is left in the year. If no goal is set, tell them and suggest setting one in Settings — don't draft anything for this.",
+    parameters: EMPTY_PARAMS,
+  },
+  {
+    name: "get_revenue_forecast",
+    description: "Get an AI-generated forecast of next month's revenue based on the last 6 months of purchase history (Stripe + cash), with a low/mid/high range, key drivers, and risks.",
+    parameters: EMPTY_PARAMS,
+  },
+  {
+    name: "get_class_demand_analysis",
+    description: "Get a per-class demand analysis (thriving / healthy / needs_attention / at_risk) based on fill rates over the last 30 days, with a recommended action for each class.",
+    parameters: EMPTY_PARAMS,
+  },
+  {
+    name: "get_promo_trigger_suggestions",
+    description: "Get specific promo suggestions (with urgency) for classes that have had a fill rate under 40% in at least 2 of the last 4 weeks.",
+    parameters: EMPTY_PARAMS,
+  },
+  {
+    name: "get_schedule_health",
+    description: "Get an assessment of the studio's overall schedule health — day/time coverage gaps, genre/level diversity, strengths, and recommendations.",
+    parameters: EMPTY_PARAMS,
+  },
+  {
+    name: "get_automation_rule_suggestions",
+    description: "Get 2-4 AI-suggested automation rules tailored to this studio's actual engagement data (at-risk students, unused credits, never-attended signups), excluding rules that already exist. Follow up with draft_automation_rule to formalize one.",
+    parameters: EMPTY_PARAMS,
+  },
+  {
+    name: "get_student_ltv_insights",
+    description: "Get student lifetime-value analysis: average LTV, top students by total spend, and AI commentary on LTV health.",
+    parameters: EMPTY_PARAMS,
+  },
+  {
+    name: "get_instructor_performance",
+    description: "Get per-instructor performance summaries: classes taught, check-ins, average fill rate, and average review rating.",
     parameters: EMPTY_PARAMS,
   },
 ];
@@ -355,18 +402,15 @@ function tsToIso(val: unknown): string | null {
   return null;
 }
 
-async function getStudioName(studioOwnerId: string): Promise<string> {
-  const db = getFirestore();
-  const doc = await db.collection("users").doc(studioOwnerId).get();
-  if (!doc.exists) return "Your Studio";
-  return ((doc.data() as Record<string, unknown>)["studioName"] as string) || "Your Studio";
-}
-
 interface StudioOwnerContact {
   studioName: string;
   email: string;
   firstName: string;
+  isProPlus: boolean;
+  annualRevenueGoal: number | null;
 }
+
+const PRO_PLUS_MEMBERSHIP = "studio_owner_pro_plus";
 
 async function getStudioOwnerContact(studioOwnerId: string): Promise<StudioOwnerContact> {
   const db = getFirestore();
@@ -376,12 +420,45 @@ async function getStudioOwnerContact(studioOwnerId: string): Promise<StudioOwner
     studioName: (data["studioName"] as string) || "Your Studio",
     email: (data["email"] as string) || "",
     firstName: (data["firstName"] as string) || "",
+    isProPlus: data["membership"] === PRO_PLUS_MEMBERSHIP,
+    annualRevenueGoal: typeof data["annualRevenueGoal"] === "number" ? (data["annualRevenueGoal"] as number) : null,
   };
 }
 
 function studioOwnerAssistantUrl(): string {
   const baseUrl = process.env["STUDIO_OWNER_APP_URL"] || "https://studios.danceup.app";
   return `${baseUrl}/dashboard/assistant`;
+}
+
+type IncomeGoalProgress =
+  | { goalSet: false }
+  | {
+      goalSet: true;
+      annualRevenueGoal: number;
+      revenueToDate: number;
+      percentComplete: number;
+      daysElapsedInYear: number;
+      daysRemainingInYear: number;
+    };
+
+// Shared by the get_income_goal_progress read tool and the proactive digest's goal-aware
+// urgency (Feature C) — kept as one function so both always agree on the same numbers.
+async function buildIncomeGoalProgress(studioOwnerId: string, annualRevenueGoal: number | null): Promise<IncomeGoalProgress> {
+  if (annualRevenueGoal == null) return { goalSet: false };
+
+  const now = new Date();
+  const jan1 = new Date(now.getFullYear(), 0, 1);
+  const nextJan1 = new Date(now.getFullYear() + 1, 0, 1);
+
+  const monthlyRevenue = await insightsDataService.getMonthlyRevenueSince(studioOwnerId, jan1);
+  const revenueToDate = Math.round(monthlyRevenue.reduce((sum, m) => sum + m.revenue, 0) * 100) / 100;
+
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const daysElapsedInYear = Math.max(1, Math.round((now.getTime() - jan1.getTime()) / msPerDay));
+  const daysRemainingInYear = Math.max(0, Math.round((nextJan1.getTime() - now.getTime()) / msPerDay));
+  const percentComplete = annualRevenueGoal > 0 ? Math.round((revenueToDate / annualRevenueGoal) * 1000) / 10 : 0;
+
+  return { goalSet: true, annualRevenueGoal, revenueToDate, percentComplete, daysElapsedInYear, daysRemainingInYear };
 }
 
 async function persistMessage(
@@ -527,6 +604,71 @@ async function executeReadTool(name: string, studioOwnerId: string): Promise<unk
       return proposals.map((p) => ({
         id: p.id, actionType: p.actionType, summary: p.summary, payload: p.payload,
       }));
+    }
+    case "get_income_goal_progress": {
+      const contact = await getStudioOwnerContact(studioOwnerId);
+      return buildIncomeGoalProgress(studioOwnerId, contact.annualRevenueGoal);
+    }
+    case "get_revenue_forecast": {
+      const input = await insightsDataService.buildRevenueForecastInput(studioOwnerId);
+      if (!input) return { available: false, message: "No purchase history is available yet." };
+      const forecast = await aiService.generateRevenueForecast(input);
+      return { available: true, ...forecast };
+    }
+    case "get_class_demand_analysis": {
+      const input = await insightsDataService.buildClassDemandInput(studioOwnerId);
+      if (!input) return { available: false, message: "No active classes found." };
+      const result = await aiService.generateClassDemandAnalysis(input as unknown as Parameters<typeof aiService.generateClassDemandAnalysis>[0]);
+      return { available: true, ...result };
+    }
+    case "get_promo_trigger_suggestions": {
+      const input = await insightsDataService.buildPromoTriggerInput(studioOwnerId);
+      if (!input) return { available: false, message: "No underperforming classes detected — all classes have healthy fill rates." };
+      const { triggers } = await aiService.generatePromoTriggerSuggestions(input) as {
+        triggers: Array<{ classId: string; suggestion: string; urgency: "high" | "medium" | "low" }>;
+      };
+      const enriched = triggers.map((t) => ({ ...t, ...(input.underperformingClasses.find((c) => c.classId === t.classId) || {}) }));
+      return { available: true, triggers: enriched };
+    }
+    case "get_schedule_health": {
+      const input = await insightsDataService.buildScheduleHealthInput(studioOwnerId);
+      const result = await aiService.generateScheduleHealth(input);
+      return { available: true, ...result };
+    }
+    case "get_automation_rule_suggestions": {
+      const [rules, engagementData] = await Promise.all([
+        campaignRulesService.getRules(studioOwnerId),
+        insightsService.getEngagementData(studioOwnerId) as unknown as Promise<{
+          atRisk: Array<{ daysSinceAttendance: number | null; neverAttended?: boolean }>;
+          stats: { totalStudents: number; atRiskCount: number; studentsWithCredits: number };
+        }>,
+      ]);
+      const existingRules = rules.map((r) => ({ name: r.name, triggerType: r.triggerType, actionType: r.actionType }));
+      const { atRisk, stats } = engagementData;
+      const studentsNeverAttended = atRisk?.filter((s) => s.daysSinceAttendance == null || s.neverAttended).length ?? 0;
+      const daysList = atRisk?.map((s) => s.daysSinceAttendance).filter((d): d is number => d != null) ?? [];
+      const avgDaysSinceAttendance = daysList.length > 0 ? daysList.reduce((a, b) => a + b, 0) / daysList.length : null;
+      const contact = await getStudioOwnerContact(studioOwnerId);
+      const result = await aiService.generateAutomationSuggestions({
+        studioName: contact.studioName, existingRules,
+        atRiskStudentCount: stats?.atRiskCount ?? 0, totalStudents: stats?.totalStudents ?? 0,
+        studentsWithCredits: stats?.studentsWithCredits ?? 0, studentsNeverAttended, avgDaysSinceAttendance,
+      });
+      return { available: true, ...result };
+    }
+    case "get_student_ltv_insights": {
+      const input = await insightsDataService.buildStudentLTVInput(studioOwnerId);
+      if (!input) return { available: false, message: "No student data available yet." };
+      const result = await aiService.generateStudentLTVInsights({
+        studioName: input.studioName, topStudents: input.topStudents, avgLTV: input.avgLTV, totalStudents: input.totalStudents,
+      });
+      return { available: true, avgLTV: input.avgLTV, totalStudents: input.totalStudents, ...result };
+    }
+    case "get_instructor_performance": {
+      const input = await insightsDataService.buildInstructorPerformanceInput(studioOwnerId);
+      if (!input) return { available: false, message: "No instructor data available yet." };
+      const result = await aiService.generateInstructorPerformance(input as unknown as Parameters<typeof aiService.generateInstructorPerformance>[0]);
+      return { available: true, ...result };
     }
     default:
       return { error: `Unknown tool: ${name}` };
@@ -766,6 +908,8 @@ Rules you must always follow:
 - Never tell the user an action has been completed, sent, or saved — only that you've prepared a draft for their approval.
 - Before drafting a new class, call get_instructors so you use real instructor IDs. Before drafting an update to a class, package, event, or workshop, call get_schedule, get_packages, get_events, or get_workshops (as appropriate) so you use a real ID.
 - If the user asks you to change something about a draft you already proposed (e.g. "actually make it Friday instead"), call get_pending_proposals first to find that proposal's id and current values, then call the SAME draft_* tool again with that id in the proposalId field plus only the field(s) that should change — this updates the existing draft in place instead of creating a duplicate one.
+- If you have access to deeper analysis tools (revenue forecast, class demand, student LTV, instructor performance, schedule health, automation suggestions, income-goal progress), use them whenever they'd sharpen your answer or a draft — e.g. pull automation-rule suggestions before drafting one, or check income-goal progress before proposing a revenue-focused action.
+- When a coordinated plan serves the owner better than one isolated action (e.g. closing a revenue gap with both a promo email and a matching automation rule), you may call more than one draft_* tool in the same turn — each becomes its own proposal, and the owner can approve them together. Briefly explain in your reply how the pieces work together.
 - Keep replies concise and conversational.`;
 }
 
@@ -782,12 +926,16 @@ async function runTurn(
   studioOwnerId: string,
   studioName: string,
   contents: Content[],
+  isProPlus: boolean,
 ): Promise<{ finalText: string; raisedProposals: AssistantProposal[] }> {
   const genAI = await getClient();
   const model = genAI.getGenerativeModel({
     model: MODEL_NAME,
     systemInstruction: systemInstructionFor(studioName),
-    tools: [{ functionDeclarations: [...READ_TOOLS, ...DRAFT_TOOLS] }],
+    // Pro+-only tools are only declared to the model at all when the studio qualifies — a
+    // non-Pro+ studio owner's model literally cannot see or call them, rather than relying on
+    // the model to politely decline after the fact.
+    tools: [{ functionDeclarations: [...READ_TOOLS, ...(isProPlus ? PRO_PLUS_READ_TOOLS : []), ...DRAFT_TOOLS] }],
     toolConfig: { functionCallingConfig: { mode: FunctionCallingMode.AUTO } },
   });
 
@@ -883,9 +1031,9 @@ async function buildHistoryContents(studioOwnerId: string, dropLastN: number): P
 export async function handleAssistantMessage(studioOwnerId: string, userText: string): Promise<AssistantTurnResult> {
   await persistMessage(studioOwnerId, "user", userText);
 
-  const [history, studioName] = await Promise.all([
+  const [history, contact] = await Promise.all([
     buildHistoryContents(studioOwnerId, 1), // exclude the message we just persisted — sent as the new turn below
-    getStudioName(studioOwnerId),
+    getStudioOwnerContact(studioOwnerId),
   ]);
 
   // Managed by hand (rather than model.startChat()) because the SDK's ChatSession
@@ -896,7 +1044,7 @@ export async function handleAssistantMessage(studioOwnerId: string, userText: st
   // reconstructing parts from response.functionCalls()) preserves that signature as-is.
   const contents: Content[] = [...history, { role: "user", parts: [{ text: userText }] }];
 
-  const { finalText, raisedProposals } = await runTurn(studioOwnerId, studioName, contents);
+  const { finalText, raisedProposals } = await runTurn(studioOwnerId, contact.studioName, contents, contact.isProPlus);
 
   const proposedActionIds = raisedProposals.map((p) => p.id);
   await persistMessage(studioOwnerId, "model", finalText, proposedActionIds.length > 0 ? proposedActionIds : undefined);
@@ -939,9 +1087,19 @@ export async function runProactiveSuggestionForStudio(studioOwnerId: string, for
     buildHistoryContents(studioOwnerId, 0),
     getStudioOwnerContact(studioOwnerId),
   ]);
-  const contents: Content[] = [...history, { role: "user", parts: [{ text: PROACTIVE_SUGGESTION_PROMPT }] }];
 
-  const { finalText, raisedProposals } = await runTurn(studioOwnerId, contact.studioName, contents);
+  // Goal-aware urgency: fold in income-goal pacing (Pro+ + a goal is set) so the model can
+  // weigh how far behind/ahead the studio is when deciding whether and what to suggest.
+  let proactivePrompt = PROACTIVE_SUGGESTION_PROMPT;
+  if (contact.isProPlus && contact.annualRevenueGoal != null) {
+    const progress = await buildIncomeGoalProgress(studioOwnerId, contact.annualRevenueGoal);
+    if (progress.goalSet) {
+      proactivePrompt += ` Additionally, this studio is at ${progress.percentComplete}% of its $${progress.annualRevenueGoal.toLocaleString()} annual revenue goal ($${progress.revenueToDate.toLocaleString()} so far), with ${progress.daysRemainingInYear} days left in the year — factor this pacing into whether and what you suggest.`;
+    }
+  }
+  const contents: Content[] = [...history, { role: "user", parts: [{ text: proactivePrompt }] }];
+
+  const { finalText, raisedProposals } = await runTurn(studioOwnerId, contact.studioName, contents, contact.isProPlus);
   if (raisedProposals.length === 0) return { raised: false };
 
   const proposedActionIds = raisedProposals.map((p) => p.id);

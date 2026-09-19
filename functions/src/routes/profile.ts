@@ -73,6 +73,7 @@ app.get("/", async (req, res) => {
       youtube: userData["youtube"] || null,
       classrooms: userData["classrooms"] || [],
       dropInPrice: userData["dropInPrice"] ?? null,
+      annualRevenueGoal: userData["annualRevenueGoal"] ?? null,
       email: userData["email"],
       membership: userData["membership"],
       stripeAccountId: userData["stripeAccountId"] || null,
@@ -113,7 +114,7 @@ app.put("/", async (req, res) => {
     const {
       firstName, lastName, studioName, studioAddressLine1, studioAddressLine2,
       city, state, zip, facebook, instagram, tiktok, youtube, studioImageFile,
-      classrooms, dropInPrice,
+      classrooms, dropInPrice, annualRevenueGoal,
     } = req.body as Record<string, unknown>;
 
     const existingData = userDoc.data() as Record<string, unknown>;
@@ -180,6 +181,12 @@ app.put("/", async (req, res) => {
       }
       updateData["dropInPrice"] = dropInPrice;
     }
+    if (annualRevenueGoal !== undefined) {
+      if (annualRevenueGoal !== null && (typeof annualRevenueGoal !== "number" || annualRevenueGoal < 0)) {
+        return sendErrorResponse(req, res, 400, "Validation Error", "annualRevenueGoal must be a number ≥ 0 or null");
+      }
+      updateData["annualRevenueGoal"] = annualRevenueGoal;
+    }
 
     const addressChanged = studioAddressLine1 !== undefined || city !== undefined ||
       state !== undefined || zip !== undefined;
@@ -231,6 +238,7 @@ app.put("/", async (req, res) => {
       youtube: updatedData["youtube"] || null,
       classrooms: updatedData["classrooms"] || [],
       dropInPrice: updatedData["dropInPrice"] ?? null,
+      annualRevenueGoal: updatedData["annualRevenueGoal"] ?? null,
       email: updatedData["email"],
       membership: updatedData["membership"],
     });

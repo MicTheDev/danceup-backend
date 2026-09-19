@@ -4,6 +4,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import * as aiService from "../services/ai.service";
 import * as insightsService from "../services/insights.service";
+import * as insightsDataService from "../services/insights-data.service";
 import studentsService from "../services/students.service";
 import attendanceService from "../services/attendance.service";
 import { verifyToken } from "../utils/auth";
@@ -381,93 +382,8 @@ app.get("/instructor-performance", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
     }
 
-    const db = getFirestore();
-    const now = new Date();
-    const thirtyDaysAgo = new Date(now);
-    thirtyDaysAgo.setDate(now.getDate() - 30);
-
-    const [instructorsSnap, classesSnap, attendanceSnap, reviewsSnap, studioDoc] = await Promise.all([
-      db.collection("instructors").where("studioOwnerId", "==", studioOwnerId).get(),
-      db.collection("classes").where("studioOwnerId", "==", studioOwnerId).where("isActive", "==", true).get(),
-      db.collection("attendance").where("studioOwnerId", "==", studioOwnerId)
-        .where("classInstanceDate", ">=", admin.firestore.Timestamp.fromDate(thirtyDaysAgo)).get(),
-      db.collection("reviews").where("studioOwnerId", "==", studioOwnerId).where("entityType", "==", "instructor").get(),
-      db.collection("users").doc(studioOwnerId).get(),
-    ]);
-
-    const studioName = studioDoc.exists ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string || "Your Studio") : "Your Studio";
-
-    const classMap: Record<string, { instructorIds: string[]; maxCapacity: number }> = {};
-    classesSnap.forEach((doc) => {
-      const d = doc.data() as Record<string, unknown>;
-      classMap[doc.id] = {
-        instructorIds: (d["instructorIds"] as string[]) || [],
-        maxCapacity: (d["maxCapacity"] as number) || 20,
-      };
-    });
-
-    const instructorStats: Record<string, { checkIns: number; capacityTotal: number; sessionDates: Set<string> }> = {};
-    attendanceSnap.forEach((doc) => {
-      const d = doc.data() as Record<string, unknown>;
-      if (d["isRemoved"]) return;
-      const cls = classMap[d["classId"] as string];
-      if (!cls || !cls.instructorIds || cls.instructorIds.length === 0) return;
-      const ts = d["classInstanceDate"] as { toDate?: () => Date } | null;
-      const dateKey = ts?.toDate ? ts.toDate().toISOString().split("T")[0] || "" : "";
-      for (const iid of cls.instructorIds) {
-        if (!instructorStats[iid]) instructorStats[iid] = { checkIns: 0, capacityTotal: 0, sessionDates: new Set() };
-        instructorStats[iid]!.checkIns++;
-        if (dateKey) instructorStats[iid]!.sessionDates.add(`${d["classId"] as string}_${dateKey}`);
-      }
-    });
-
-    const reviewStats: Record<string, { total: number; count: number }> = {};
-    reviewsSnap.forEach((doc) => {
-      const d = doc.data() as Record<string, unknown>;
-      const iid = d["entityId"] as string;
-      if (!iid) return;
-      if (!reviewStats[iid]) reviewStats[iid] = { total: 0, count: 0 };
-      reviewStats[iid]!.total += (d["rating"] as number) || 0;
-      reviewStats[iid]!.count++;
-    });
-
-    const classCountMap: Record<string, number> = {};
-    classesSnap.forEach((doc) => {
-      for (const iid of ((doc.data() as Record<string, unknown>)["instructorIds"] as string[] || [])) {
-        classCountMap[iid] = (classCountMap[iid] || 0) + 1;
-      }
-    });
-
-    const instructors: Array<Record<string, unknown>> = [];
-    instructorsSnap.forEach((doc) => {
-      const d = doc.data() as Record<string, unknown>;
-      const iid = doc.id;
-      const stats = instructorStats[iid] || { checkIns: 0, sessionDates: new Set<string>() };
-      const sessions = stats.sessionDates ? stats.sessionDates.size : 0;
-      const classCount = classCountMap[iid] || 0;
-      const avgCapacity = classCount > 0
-        ? classesSnap.docs
-          .filter((c) => ((c.data() as Record<string, unknown>)["instructorIds"] as string[] || []).includes(iid))
-          .reduce((sum, c) => sum + ((c.data() as Record<string, unknown>)["maxCapacity"] as number || 20), 0) / classCount
-        : 20;
-      const avgFillRate = sessions > 0
-        ? Math.min(100, Math.round(((stats.checkIns / sessions) / avgCapacity) * 100))
-        : 0;
-
-      const revStats = reviewStats[iid];
-      const avgRating = revStats && revStats.count > 0 ? Math.round((revStats.total / revStats.count) * 10) / 10 : null;
-
-      instructors.push({
-        name: `${d["firstName"] || ""} ${d["lastName"] || ""}`.trim() || "Unknown",
-        classCount,
-        totalCheckIns: stats.checkIns,
-        avgFillRate,
-        avgRating,
-        reviewCount: revStats ? revStats.count : 0,
-      });
-    });
-
-    if (instructors.length === 0) {
+    const input = await insightsDataService.buildInstructorPerformanceInput(studioOwnerId);
+    if (!input) {
       return sendJsonResponse(req, res, 200, {
         summary: "No instructor data is available yet. Add instructors and track attendance to see performance insights.",
         instructorInsights: [],
@@ -476,7 +392,7 @@ app.get("/instructor-performance", async (req, res) => {
     }
 
     const { summary, instructorInsights } = await aiService.generateInstructorPerformance(
-      { studioName, instructors } as unknown as Parameters<typeof aiService.generateInstructorPerformance>[0]
+      input as unknown as Parameters<typeof aiService.generateInstructorPerformance>[0]
     ) as { summary: string; instructorInsights: unknown[] };
 
     sendJsonResponse(req, res, 200, { summary, instructorInsights, generatedAt: new Date().toISOString() });
@@ -568,51 +484,8 @@ app.get("/class-demand-analysis", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
     }
 
-    const db = getFirestore();
-    const now = new Date();
-    const thirtyDaysAgo = new Date(now);
-    thirtyDaysAgo.setDate(now.getDate() - 30);
-
-    const [classesSnap, attendanceSnap, studioDoc] = await Promise.all([
-      db.collection("classes").where("studioOwnerId", "==", studioOwnerId).where("isActive", "==", true).get(),
-      db.collection("attendance").where("studioOwnerId", "==", studioOwnerId)
-        .where("classInstanceDate", ">=", admin.firestore.Timestamp.fromDate(thirtyDaysAgo)).get(),
-      db.collection("users").doc(studioOwnerId).get(),
-    ]);
-
-    const studioName = studioDoc.exists ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string || "Your Studio") : "Your Studio";
-
-    const checkInsMap: Record<string, number> = {};
-    attendanceSnap.forEach((doc) => {
-      const d = doc.data() as Record<string, unknown>;
-      if (d["isRemoved"]) return;
-      const cid = d["classId"] as string;
-      checkInsMap[cid] = (checkInsMap[cid] || 0) + 1;
-    });
-
-    const DAY_TO_SESSIONS: Record<string, number> = { Monday: 4, Tuesday: 4, Wednesday: 4, Thursday: 4, Friday: 4, Saturday: 4, Sunday: 4 };
-
-    const classes: Array<Record<string, unknown>> = [];
-    classesSnap.forEach((doc) => {
-      const c = doc.data() as Record<string, unknown>;
-      const checkIns = checkInsMap[doc.id] || 0;
-      const sessions = DAY_TO_SESSIONS[c["dayOfWeek"] as string] || 4;
-      const maxCapacity = (c["maxCapacity"] as number) || 20;
-      const fillRate = Math.min(100, Math.round((checkIns / (sessions * maxCapacity)) * 100));
-      classes.push({
-        classId: doc.id,
-        name: c["name"],
-        genre: c["danceGenre"] || "General",
-        level: c["level"] || "All Levels",
-        dayOfWeek: c["dayOfWeek"] || "TBD",
-        startTime: c["startTime"] || "TBD",
-        maxCapacity,
-        fillRate,
-        checkIns,
-      });
-    });
-
-    if (classes.length === 0) {
+    const input = await insightsDataService.buildClassDemandInput(studioOwnerId);
+    if (!input) {
       return sendJsonResponse(req, res, 200, {
         summary: "No active classes found. Add classes to see demand analysis.",
         classes: [],
@@ -621,7 +494,7 @@ app.get("/class-demand-analysis", async (req, res) => {
     }
 
     const { summary, classes: classInsights } = await aiService.generateClassDemandAnalysis(
-      { studioName, classes } as unknown as Parameters<typeof aiService.generateClassDemandAnalysis>[0]
+      input as unknown as Parameters<typeof aiService.generateClassDemandAnalysis>[0]
     ) as { summary: string; classes: unknown[] };
 
     sendJsonResponse(req, res, 200, { summary, classes: classInsights, generatedAt: new Date().toISOString() });
@@ -689,76 +562,8 @@ app.get("/revenue-forecast", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
     }
 
-    const db = getFirestore();
-    const now = new Date();
-    const sixMonthsAgo = new Date(now);
-    sixMonthsAgo.setMonth(now.getMonth() - 6);
-
-    const [purchasesSnap, cashPurchasesSnap, packagesSnap, studioDoc] = await Promise.all([
-      db.collection("purchases").where("studioOwnerId", "==", studioOwnerId).get(),
-      db.collection("cashPurchases").where("studioOwnerId", "==", studioOwnerId).get(),
-      db.collection("packages").where("studioOwnerId", "==", studioOwnerId).where("isActive", "==", true).get(),
-      db.collection("users").doc(studioOwnerId).get(),
-    ]);
-
-    const studioName = studioDoc.exists ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string || "Your Studio") : "Your Studio";
-
-    const monthlyMap: Record<string, { stripe: number; cash: number }> = {};
-    purchasesSnap.forEach((doc) => {
-      const d = doc.data() as Record<string, unknown>;
-      if (d["status"] && d["status"] !== "completed") return;
-      if (d["paymentMethod"] === "cash") return;
-      const ts = d["createdAt"] as { toDate?: () => Date } | null;
-      const createdAt = ts?.toDate ? ts.toDate() : null;
-      if (!createdAt || createdAt < sixMonthsAgo) return;
-      const key = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, "0")}`;
-      if (!monthlyMap[key]) monthlyMap[key] = { stripe: 0, cash: 0 };
-      monthlyMap[key]!.stripe += ((d["price"] as number) ?? (d["amount"] as number) ?? 0);
-    });
-
-    cashPurchasesSnap.forEach((doc) => {
-      const d = doc.data() as Record<string, unknown>;
-      if (d["status"] && d["status"] !== "completed") return;
-      const ts = d["createdAt"] as { toDate?: () => Date } | null;
-      const createdAt = ts?.toDate ? ts.toDate() : null;
-      if (!createdAt || createdAt < sixMonthsAgo) return;
-      const key = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, "0")}`;
-      if (!monthlyMap[key]) monthlyMap[key] = { stripe: 0, cash: 0 };
-      monthlyMap[key]!.cash += ((d["amount"] as number) ?? 0);
-    });
-
-    const monthlyRevenue = Object.entries(monthlyMap)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, { stripe, cash }]) => {
-        const [year, month] = key.split("-");
-        const date = new Date(Number(year), Number(month) - 1, 1);
-        return {
-          month: date.toLocaleDateString("en-US", { month: "short", year: "numeric" }),
-          revenue: stripe + cash,
-          stripe,
-          cash,
-        };
-      });
-
-    let activeSubscriptions = 0;
-    packagesSnap.forEach((doc) => {
-      if ((doc.data() as Record<string, unknown>)["isRecurring"]) activeSubscriptions++;
-    });
-
-    let avgMonthlyGrowth = 0;
-    if (monthlyRevenue.length >= 2) {
-      const growthRates: number[] = [];
-      for (let i = 1; i < monthlyRevenue.length; i++) {
-        const prev = monthlyRevenue[i - 1]?.revenue ?? 0;
-        const curr = monthlyRevenue[i]?.revenue ?? 0;
-        if (prev > 0) growthRates.push(((curr - prev) / prev) * 100);
-      }
-      if (growthRates.length > 0) {
-        avgMonthlyGrowth = Math.round(growthRates.reduce((a, b) => a + b, 0) / growthRates.length * 10) / 10;
-      }
-    }
-
-    if (monthlyRevenue.length === 0) {
+    const input = await insightsDataService.buildRevenueForecastInput(studioOwnerId);
+    if (!input) {
       return sendJsonResponse(req, res, 200, {
         forecast: "No purchase history is available yet. Once students start purchasing packages, AI will be able to forecast revenue trends.",
         projectedRevenue: { low: 0, mid: 0, high: 0 },
@@ -768,15 +573,9 @@ app.get("/revenue-forecast", async (req, res) => {
       });
     }
 
-    const totalCash = monthlyRevenue.reduce((s, m) => s + m.cash, 0);
-    const totalStripe = monthlyRevenue.reduce((s, m) => s + m.stripe, 0);
-    const cashPercent = (totalStripe + totalCash) > 0
-      ? Math.round((totalCash / (totalStripe + totalCash)) * 100)
-      : 0;
-
-    const { forecast, projectedRevenue, drivers, risks } = await aiService.generateRevenueForecast({
-      studioName, monthlyRevenue, activeSubscriptions, avgMonthlyGrowth, cashPercent,
-    }) as { forecast: string; projectedRevenue: Record<string, number>; drivers: string[]; risks: string[] };
+    const { forecast, projectedRevenue, drivers, risks } = await aiService.generateRevenueForecast(input) as {
+      forecast: string; projectedRevenue: Record<string, number>; drivers: string[]; risks: string[];
+    };
 
     sendJsonResponse(req, res, 200, { forecast, projectedRevenue, drivers, risks, generatedAt: new Date().toISOString() });
   } catch (error) {
@@ -795,70 +594,11 @@ app.get("/schedule-health", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
     }
 
-    const db = getFirestore();
-    const now = new Date();
-    const thirtyDaysAgo = new Date(now);
-    thirtyDaysAgo.setDate(now.getDate() - 30);
+    const input = await insightsDataService.buildScheduleHealthInput(studioOwnerId);
 
-    const [classesSnap, attendanceSnap, studioDoc] = await Promise.all([
-      db.collection("classes").where("studioOwnerId", "==", studioOwnerId).where("isActive", "==", true).get(),
-      db.collection("attendance").where("studioOwnerId", "==", studioOwnerId)
-        .where("classInstanceDate", ">=", admin.firestore.Timestamp.fromDate(thirtyDaysAgo)).get(),
-      db.collection("users").doc(studioOwnerId).get(),
-    ]);
-
-    const studioName = studioDoc.exists ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string || "Your Studio") : "Your Studio";
-
-    const checkInsMap: Record<string, number> = {};
-    attendanceSnap.forEach((doc) => {
-      const d = doc.data() as Record<string, unknown>;
-      if (d["isRemoved"]) return;
-      const cid = d["classId"] as string;
-      checkInsMap[cid] = (checkInsMap[cid] || 0) + 1;
-    });
-
-    const DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-    const byDay: Record<string, string[]> = {};
-    classesSnap.forEach((doc) => {
-      const c = doc.data() as Record<string, unknown>;
-      const day = (c["dayOfWeek"] as string) || "Unscheduled";
-      if (!byDay[day]) byDay[day] = [];
-      const sessions = 4;
-      const maxCapacity = (c["maxCapacity"] as number) || 20;
-      const checkIns = checkInsMap[doc.id] || 0;
-      const fillRate = Math.min(100, Math.round((checkIns / (sessions * maxCapacity)) * 100));
-      byDay[day]!.push(`${c["startTime"] || "?"} – ${c["endTime"] || "?"}: "${c["name"]}" (${c["danceGenre"] || "?"}, ${c["level"] || "All Levels"}) — fill rate ${fillRate}%`);
-    });
-
-    const scheduleLines = DAY_ORDER
-      .filter((d) => byDay[d])
-      .map((d) => `${d}:\n${(byDay[d] as string[]).map((l) => `  • ${l}`).join("\n")}`);
-
-    if (scheduleLines.length === 0 && Object.keys(byDay).length > 0) {
-      scheduleLines.push(`Unscheduled:\n${(byDay["Unscheduled"] || []).map((l) => `  • ${l}`).join("\n")}`);
-    }
-    const scheduleContext = scheduleLines.join("\n\n") || "No active classes scheduled.";
-
-    const coveredDays = new Set(Object.keys(byDay));
-    const missingDays = DAY_ORDER.filter((d) => !coveredDays.has(d));
-    const genreSet = new Set<string>();
-    const levelSet = new Set<string>();
-    classesSnap.forEach((doc) => {
-      const c = doc.data() as Record<string, unknown>;
-      if (c["danceGenre"]) genreSet.add(c["danceGenre"] as string);
-      if (c["level"]) levelSet.add(c["level"] as string);
-    });
-
-    const coverageGaps = [
-      missingDays.length > 0 ? `No classes on: ${missingDays.join(", ")}` : "All 7 days have at least one class.",
-      `Genres offered: ${genreSet.size > 0 ? [...genreSet].join(", ") : "None"}`,
-      `Levels offered: ${levelSet.size > 0 ? [...levelSet].join(", ") : "None"}`,
-      !levelSet.has("Beginner") && !levelSet.has("beginner") ? "No beginner-level classes detected — potential barrier to new students." : "",
-    ].filter(Boolean).join("\n");
-
-    const { summary, strengths, gaps, recommendations } = await aiService.generateScheduleHealth({
-      studioName, scheduleContext, coverageGaps,
-    }) as { summary: string; strengths: string[]; gaps: string[]; recommendations: string[] };
+    const { summary, strengths, gaps, recommendations } = await aiService.generateScheduleHealth(input) as {
+      summary: string; strengths: string[]; gaps: string[]; recommendations: string[];
+    };
 
     sendJsonResponse(req, res, 200, { summary, strengths, gaps, recommendations, generatedAt: new Date().toISOString() });
   } catch (error) {
@@ -1010,78 +750,8 @@ app.get("/student-ltv", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
     }
 
-    const db = getFirestore();
-    const [studentsSnap, purchasesSnap, cashPurchasesSnap, studioDoc] = await Promise.all([
-      db.collection("students").where("studioOwnerId", "==", studioOwnerId).get(),
-      db.collection("purchases").where("studioOwnerId", "==", studioOwnerId).get(),
-      db.collection("cashPurchases").where("studioOwnerId", "==", studioOwnerId).get(),
-      db.collection("users").doc(studioOwnerId).get(),
-    ]);
-
-    const studioName = studioDoc.exists
-      ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string || "Your Studio")
-      : "Your Studio";
-
-    // Build student name + join date map
-    const studentMeta = new Map<string, { name: string; joinedAt: Date | null }>();
-    studentsSnap.forEach((doc) => {
-      const d = doc.data() as Record<string, unknown>;
-      const ts = d["createdAt"] as { toDate?: () => Date } | null;
-      studentMeta.set(doc.id, {
-        name: `${d["firstName"] || ""} ${d["lastName"] || ""}`.trim() || "Unknown",
-        joinedAt: ts?.toDate ? ts.toDate() : null,
-      });
-    });
-
-    // Aggregate spend per student
-    const spendMap = new Map<string, { total: number; firstPurchase: Date | null }>();
-    const processDoc = (d: Record<string, unknown>) => {
-      if (d["status"] && d["status"] !== "completed") return;
-      const sid = d["studentId"] as string | undefined;
-      if (!sid || !studentMeta.has(sid)) return;
-      const ts = d["createdAt"] as { toDate?: () => Date } | null;
-      const purchaseDate = ts?.toDate ? ts.toDate() : null;
-      const amount = (d["price"] as number) ?? (d["amount"] as number) ?? 0;
-      if (!spendMap.has(sid)) spendMap.set(sid, { total: 0, firstPurchase: null });
-      const entry = spendMap.get(sid)!;
-      entry.total += amount;
-      if (purchaseDate && (!entry.firstPurchase || purchaseDate < entry.firstPurchase)) {
-        entry.firstPurchase = purchaseDate;
-      }
-    };
-    purchasesSnap.forEach((doc) => processDoc(doc.data() as Record<string, unknown>));
-    cashPurchasesSnap.forEach((doc) => processDoc(doc.data() as Record<string, unknown>));
-
-    const now = new Date();
-    const ltvEntries: Array<{
-      studentId: string;
-      name: string;
-      totalSpent: number;
-      monthsAsCustomer: number;
-      avgMonthlySpend: number;
-      projected12Month: number;
-    }> = [];
-
-    studentMeta.forEach((meta, sid) => {
-      const spend = spendMap.get(sid);
-      const totalSpent = spend?.total ?? 0;
-      const firstDate = spend?.firstPurchase ?? meta.joinedAt ?? null;
-      const monthsAsCustomer = firstDate
-        ? Math.max(1, Math.round((now.getTime() - firstDate.getTime()) / (30 * 24 * 60 * 60 * 1000)))
-        : 1;
-      const avgMonthlySpend = totalSpent / monthsAsCustomer;
-      const projected12Month = avgMonthlySpend * 12;
-      ltvEntries.push({ studentId: sid, name: meta.name, totalSpent, monthsAsCustomer, avgMonthlySpend, projected12Month });
-    });
-
-    ltvEntries.sort((a, b) => b.totalSpent - a.totalSpent);
-
-    const totalStudents = ltvEntries.length;
-    const avgLTV = totalStudents > 0
-      ? ltvEntries.reduce((sum, e) => sum + e.totalSpent, 0) / totalStudents
-      : 0;
-
-    if (totalStudents === 0) {
+    const input = await insightsDataService.buildStudentLTVInput(studioOwnerId);
+    if (!input) {
       return sendJsonResponse(req, res, 200, {
         students: [], avgLTV: 0, summary: "No student data available yet.",
         insights: [], generatedAt: new Date().toISOString(),
@@ -1089,12 +759,12 @@ app.get("/student-ltv", async (req, res) => {
     }
 
     const { summary, insights } = await aiService.generateStudentLTVInsights({
-      studioName, topStudents: ltvEntries.slice(0, 10), avgLTV, totalStudents,
+      studioName: input.studioName, topStudents: input.topStudents, avgLTV: input.avgLTV, totalStudents: input.totalStudents,
     }) as { summary: string; insights: string[] };
 
     sendJsonResponse(req, res, 200, {
-      students: ltvEntries,
-      avgLTV,
+      students: input.allEntries,
+      avgLTV: input.avgLTV,
       summary,
       insights,
       generatedAt: new Date().toISOString(),
@@ -1115,79 +785,8 @@ app.get("/promo-triggers", async (req, res) => {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
     }
 
-    const db = getFirestore();
-    const now = new Date();
-    const twentyEightDaysAgo = new Date(now.getTime() - 28 * 24 * 60 * 60 * 1000);
-
-    const [classesSnap, attendanceSnap, studioDoc] = await Promise.all([
-      db.collection("classes").where("studioOwnerId", "==", studioOwnerId).where("isActive", "==", true).get(),
-      db.collection("attendance").where("studioOwnerId", "==", studioOwnerId).where("isRemoved", "==", false).get(),
-      db.collection("users").doc(studioOwnerId).get(),
-    ]);
-
-    const studioName = studioDoc.exists
-      ? ((studioDoc.data() as Record<string, unknown>)["studioName"] as string || "Your Studio")
-      : "Your Studio";
-
-    // Week boundaries (W1=most recent)
-    const weekBoundaries = [0, 1, 2, 3, 4].map((i) => new Date(now.getTime() - i * 7 * 24 * 60 * 60 * 1000));
-
-    // Count check-ins per class per week
-    const weeklyMap = new Map<string, number[]>(); // classId -> [w1, w2, w3, w4]
-    classesSnap.forEach((doc) => weeklyMap.set(doc.id, [0, 0, 0, 0]));
-
-    attendanceSnap.forEach((doc) => {
-      const d = doc.data() as Record<string, unknown>;
-      const cid = d["classId"] as string | undefined;
-      if (!cid || !weeklyMap.has(cid)) return;
-      const ts = d["classInstanceDate"] as { toDate?: () => Date } | null;
-      const date = ts?.toDate ? ts.toDate() : null;
-      if (!date || date < twentyEightDaysAgo) return;
-      const weekCounts = weeklyMap.get(cid);
-      if (weekCounts) {
-        for (let w = 0; w < 4; w++) {
-          if (date < weekBoundaries[w]! && date >= weekBoundaries[w + 1]!) {
-            weekCounts[w] = (weekCounts[w] ?? 0) + 1;
-            break;
-          }
-        }
-      }
-    });
-
-    const underperforming: Array<{
-      classId: string;
-      name: string;
-      genre: string;
-      dayOfWeek: string;
-      startTime: string;
-      maxCapacity: number;
-      weeklyFillRates: number[];
-      avgFillRate: number;
-    }> = [];
-
-    classesSnap.forEach((doc) => {
-      const c = doc.data() as Record<string, unknown>;
-      const maxCapacity = (c["maxCapacity"] as number) || 20;
-      const weekly = weeklyMap.get(doc.id) || [0, 0, 0, 0];
-      // 1 session per week
-      const weeklyFillRates = weekly.map((count) => Math.min(100, Math.round((count / maxCapacity) * 100)));
-      const weeksBelow40 = weeklyFillRates.filter((r) => r < 40).length;
-      if (weeksBelow40 >= 2) {
-        const avgFillRate = Math.round(weeklyFillRates.reduce((a, b) => a + b, 0) / weeklyFillRates.length);
-        underperforming.push({
-          classId: doc.id,
-          name: c["name"] as string,
-          genre: (c["danceGenre"] as string) || "General",
-          dayOfWeek: (c["dayOfWeek"] as string) || "TBD",
-          startTime: (c["startTime"] as string) || "TBD",
-          maxCapacity,
-          weeklyFillRates,
-          avgFillRate,
-        });
-      }
-    });
-
-    if (underperforming.length === 0) {
+    const input = await insightsDataService.buildPromoTriggerInput(studioOwnerId);
+    if (!input) {
       return sendJsonResponse(req, res, 200, {
         triggers: [],
         message: "No underperforming classes detected. All classes have healthy fill rates.",
@@ -1195,13 +794,13 @@ app.get("/promo-triggers", async (req, res) => {
       });
     }
 
-    const { triggers } = await aiService.generatePromoTriggerSuggestions({ studioName, underperformingClasses: underperforming }) as {
+    const { triggers } = await aiService.generatePromoTriggerSuggestions(input) as {
       triggers: Array<{ classId: string; suggestion: string; urgency: "high" | "medium" | "low" }>;
     };
 
     // Merge trigger suggestions back with class metadata
     const enriched = triggers.map((t) => {
-      const cls = underperforming.find((c) => c.classId === t.classId);
+      const cls = input.underperformingClasses.find((c) => c.classId === t.classId);
       return { ...t, ...(cls || {}) };
     });
 
