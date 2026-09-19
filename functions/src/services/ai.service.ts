@@ -66,6 +66,7 @@ function parseAiResponse<T>(text: string): T {
 
 interface EmailCampaignOpts {
   studioName: string;
+  studioOwnerId: string;
   classes: ContentItem[];
   events: ContentItem[];
   workshops: ContentItem[];
@@ -74,9 +75,15 @@ interface EmailCampaignOpts {
   imageUrl?: string;
 }
 
+function studentStudioUrl(studioOwnerId: string): string {
+  const baseUrl = process.env["STUDENT_APP_URL"] || "https://danceup.app";
+  return `${baseUrl}/studios/${studioOwnerId}`;
+}
+
 export async function generateEmailCampaign(opts: EmailCampaignOpts): Promise<{ subject: string; htmlBody: string }> {
-  const { studioName, classes, events, workshops, tone, instructions, imageUrl } = opts;
+  const { studioName, studioOwnerId, classes, events, workshops, tone, instructions, imageUrl } = opts;
   const genAI = await getClient();
+  const studioUrl = studentStudioUrl(studioOwnerId);
 
   const toneMap: Record<string, string> = {
     promotional: "exciting and promotional — use urgency, enthusiasm, and strong calls to action",
@@ -115,7 +122,7 @@ Requirements:
    - Header section: studio name + compelling headline with a gradient (use background: linear-gradient(135deg, #6366f1, #ec4899))
    - If an image was provided above, place it immediately after the header section
    - Content sections: clearly list each class/event/workshop with name, date/time, price, and a short enticing description
-   - One clear CTA button linking to "#" styled with the primary color
+   - One clear CTA button with href="${studioUrl}" (use this EXACT URL, do not modify or shorten it) styled with the primary color
    - Footer: small gray unsubscribe placeholder text
 5. Make it mobile-friendly with responsive inline styles
 6. Use real content from the schedule above — do not invent fake class names

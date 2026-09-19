@@ -750,7 +750,7 @@ async function prepareDraftProposal(
 
       const { studioName, classes, events, workshops } = await marketingService.getStudioContentForAI(studioOwnerId, {});
       const { subject, htmlBody } = await aiService.generateEmailCampaign({
-        studioName, classes, events, workshops, tone, instructions,
+        studioName, studioOwnerId, classes, events, workshops, tone, instructions,
       });
 
       return {
