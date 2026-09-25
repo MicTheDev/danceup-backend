@@ -20,6 +20,7 @@ export type AuditAction =
   | "assistant_event_updated"
   | "assistant_workshop_created"
   | "assistant_workshop_updated"
+  | "assistant_classes_bulk_imported"
   | "placeholder_studio_created"
   | "class_admin_created"
   | "class_admin_updated"

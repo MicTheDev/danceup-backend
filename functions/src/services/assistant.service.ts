@@ -43,7 +43,7 @@ const MODEL_NAME = "gemini-3.6-flash";
 export type AssistantRole = "user" | "model" | "system";
 export type ProposalActionType =
   | "email_campaign" | "automation_rule" | "class_create" | "class_update" | "package_update"
-  | "event_create" | "event_update" | "workshop_create" | "workshop_update";
+  | "event_create" | "event_update" | "workshop_create" | "workshop_update" | "class_bulk_import";
 export type ProposalStatus = "pending" | "approved" | "rejected";
 
 export interface AssistantMessage {
@@ -401,6 +401,37 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         reasoning: REASONING_PROPERTY,
       },
       required: ["workshopId", "reasoning"],
+    },
+  },
+  {
+    name: "draft_bulk_import_classes",
+    description: "Draft a bulk import of multiple classes at once from a studio owner's uploaded spreadsheet, for review and approval as a single proposal. Never claim any class has been created. Pass instructor as the free-text name you see in the spreadsheet, not an ID — the backend resolves it against the studio's real instructors (call get_instructors first if you want to sanity-check names yourself, but resolution also happens server-side).",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        classes: {
+          type: SchemaType.ARRAY,
+          description: "One entry per spreadsheet row.",
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              name: { type: SchemaType.STRING },
+              level: { type: SchemaType.STRING, description: "e.g. Beginner, Intermediate, Advanced, All Levels — will be normalized case-insensitively." },
+              dayOfWeek: { type: SchemaType.STRING, description: "e.g. Monday — will be normalized case-insensitively." },
+              startTime: { type: SchemaType.STRING, description: "24-hour HH:mm." },
+              endTime: { type: SchemaType.STRING, description: "24-hour HH:mm." },
+              instructorName: { type: SchemaType.STRING, description: "Instructor's name as it appears in the spreadsheet, e.g. 'Sarah M.' — resolved server-side against real instructors." },
+              cost: { type: SchemaType.NUMBER },
+              room: { type: SchemaType.STRING },
+              danceGenre: { type: SchemaType.STRING },
+              description: { type: SchemaType.STRING },
+            },
+            required: ["name", "level", "dayOfWeek", "startTime", "endTime"],
+          },
+        },
+        reasoning: REASONING_PROPERTY,
+      },
+      required: ["classes", "reasoning"],
     },
   },
 ];
@@ -885,6 +916,93 @@ async function prepareDraftProposal(
       return { valid: true, payload: { workshopId, ...rest }, summary: `Update workshop: "${label}"`, reasoning, revisedProposalId };
     }
 
+    case "draft_bulk_import_classes": {
+      const rawClasses = Array.isArray(args_["classes"]) ? (args_["classes"] as Array<Record<string, unknown>>) : [];
+      if (rawClasses.length === 0) {
+        return { valid: false, errors: [{ field: "classes", message: "classes must be a non-empty array" }] };
+      }
+      if (rawClasses.length > 200) {
+        return { valid: false, errors: [{ field: "classes", message: "Too many rows in one import — please split into batches of 200 or fewer." }] };
+      }
+
+      const instructors = await instructorsService.getInstructors(studioOwnerId);
+      const instructorFullName = (i: Record<string, unknown>): string =>
+        `${(i["firstName"] as string) || ""} ${(i["lastName"] as string) || ""}`.trim();
+
+      // Exact match only — never auto-assign on a guess, since a wrong instructor on a class
+      // is a silent, easy-to-miss mistake. A near-miss (e.g. "Bill S." for "Bill Smith") is
+      // surfaced as a suggestion in the skip reason instead, so the owner can fix and resubmit.
+      const findInstructorMatch = (rawName: unknown): { id?: string; suggestion?: string } => {
+        if (typeof rawName !== "string" || !rawName.trim()) return {};
+        const target = rawName.trim().toLowerCase();
+        const exact = instructors.find((i) => instructorFullName(i).toLowerCase() === target);
+        if (exact) return { id: exact.id };
+
+        const targetFirstWord = target.split(/\s+/)[0]?.replace(/\.$/, "") ?? "";
+        const suggestion = instructors.find((i) => {
+          const fullLower = instructorFullName(i).toLowerCase();
+          return fullLower.startsWith(target.replace(/\.$/, "")) || fullLower.split(/\s+/)[0] === targetFirstWord;
+        });
+        return { suggestion: suggestion ? instructorFullName(suggestion) : undefined };
+      };
+
+      // Same case-insensitive-match-against-valid-values approach as
+      // classes.service.ts's bulkImportClassesForAdmin (normalizeDayOfWeek/normalizeLevel).
+      const normalizeAgainst = (raw: unknown, validValues: string[]): string => {
+        const trimmed = typeof raw === "string" ? raw.trim() : "";
+        const match = validValues.find((v) => v.toLowerCase() === trimmed.toLowerCase());
+        return match ?? trimmed;
+      };
+
+      const validClasses: Record<string, unknown>[] = [];
+      const skippedRows: Array<{ row: Record<string, unknown>; reason: string }> = [];
+
+      for (const raw of rawClasses) {
+        const rawInstructorName = raw["instructorName"];
+        const { id: instructorId, suggestion } = findInstructorMatch(rawInstructorName);
+        if (typeof rawInstructorName === "string" && rawInstructorName.trim() && !instructorId) {
+          const hint = suggestion
+            ? ` Did you mean "${suggestion}"? Fix the name in your spreadsheet and re-import this row.`
+            : " Check the spelling or add them as an instructor first.";
+          skippedRows.push({ row: raw, reason: `Couldn't match instructor "${rawInstructorName}" to anyone on your instructor list.${hint}` });
+          continue;
+        }
+
+        const candidate: Record<string, unknown> = {
+          name: typeof raw["name"] === "string" ? (raw["name"] as string).trim() : "",
+          level: normalizeAgainst(raw["level"], CLASS_LEVELS),
+          dayOfWeek: normalizeAgainst(raw["dayOfWeek"], DAYS_OF_WEEK),
+          startTime: raw["startTime"],
+          endTime: raw["endTime"],
+          instructorIds: instructorId ? [instructorId] : [],
+          isActive: true,
+          ...(raw["cost"] !== undefined && raw["cost"] !== null && raw["cost"] !== "" ? { cost: Number(raw["cost"]) } : {}),
+          ...(typeof raw["room"] === "string" && raw["room"].trim() ? { room: (raw["room"] as string).trim() } : {}),
+          ...(typeof raw["danceGenre"] === "string" && raw["danceGenre"].trim() ? { danceGenre: (raw["danceGenre"] as string).trim() } : {}),
+          ...(typeof raw["description"] === "string" && raw["description"].trim() ? { description: (raw["description"] as string).trim() } : {}),
+        };
+
+        const result = validateCreateClassPayload(candidate);
+        if (!result.valid) {
+          skippedRows.push({ row: raw, reason: result.errors.map((e) => e.message).join("; ") });
+          continue;
+        }
+        validClasses.push(candidate);
+      }
+
+      if (validClasses.length === 0) {
+        return { valid: false, errors: [{ field: "classes", message: "None of the rows could be validated — nothing to import. Check the skipped reasons and try again." }] };
+      }
+
+      return {
+        valid: true,
+        payload: { classes: validClasses, skippedRows },
+        summary: `Import ${validClasses.length} class${validClasses.length === 1 ? "" : "es"}${skippedRows.length > 0 ? ` (${skippedRows.length} skipped)` : ""}`,
+        reasoning,
+        revisedProposalId,
+      };
+    }
+
     default:
       return { valid: false, errors: [{ field: "tool", message: `Unknown draft tool: ${toolName}` }] };
   }
@@ -921,6 +1039,7 @@ const TOOL_NAME_TO_ACTION_TYPE: Record<string, ProposalActionType> = {
   draft_update_event: "event_update",
   draft_create_workshop: "workshop_create",
   draft_update_workshop: "workshop_update",
+  draft_bulk_import_classes: "class_bulk_import",
 };
 
 // ─── The chat/tool loop ─────────────────────────────────────────────────────
@@ -1077,6 +1196,22 @@ export async function handleAssistantMessage(studioOwnerId: string, userText: st
   await persistMessage(studioOwnerId, "model", finalText, proposedActionIds.length > 0 ? proposedActionIds : undefined);
 
   return { reply: { text: finalText, proposedActionIds: proposedActionIds.length > 0 ? proposedActionIds : undefined }, proposals: raisedProposals };
+}
+
+const MAX_BULK_IMPORT_ROWS = 200;
+
+// Called from POST /assistant/import-classes with rows already parsed/column-mapped
+// client-side (see class-spreadsheet-import.component.ts) — never a raw file. Builds a
+// fixed, backend-controlled instruction (not subject to /message's 4000-char cap, since this
+// bypasses that route and calls handleAssistantMessage directly) so a real user's phrasing
+// can't derail a mechanical pass-the-data-to-one-tool-call step.
+export async function handleBulkImportClassesRequest(
+  studioOwnerId: string,
+  rows: Array<Record<string, unknown>>,
+): Promise<AssistantTurnResult> {
+  const trimmedRows = rows.slice(0, MAX_BULK_IMPORT_ROWS);
+  const instruction = `The studio owner uploaded a spreadsheet and confirmed these ${trimmedRows.length} classes to import (already parsed from their file — don't ask them to re-enter anything). Call draft_bulk_import_classes ONCE with this exact list as the classes argument, not draft_create_class per row. The backend re-validates each row and resolves instructor names server-side, so include every row even if something looks off — invalid or unmatched rows are safely skipped and reported back, never silently dropped or silently created wrong.\n\nRows (JSON array):\n${JSON.stringify(trimmedRows)}`;
+  return handleAssistantMessage(studioOwnerId, instruction);
 }
 
 const PROACTIVE_SUGGESTION_PROMPT = "Proactively look for the single most valuable thing to bring to this studio owner's attention right now. Check multiple angles before picking one — engagement (get_engagement_summary), the schedule and package lineup, and if you have access to them, revenue forecast, class demand, promo triggers, and income-goal pacing. An automation rule is only ONE of many possible actions (others: a one-off email campaign, a class or package tweak, a promo). Do not default to an automation rule just because engagement data is the easiest thing to check — pick whichever action type the data actually supports best. Draft exactly one proposal (or a short coordinated set, per your instructions) using the matching draft_* tool, with reasoning that cites the specific number(s) that drove your pick. If nothing stands out as worth surfacing right now, just reply with a short 'Nothing urgent today.' and don't draft anything.";
@@ -1359,6 +1494,23 @@ export async function approveProposal(
       resultResourceId = workshopId;
       message = "Workshop updated.";
       logAuditEvent(actorUid, studioOwnerId, "assistant_workshop_updated", "workshop", resultResourceId, {});
+      break;
+    }
+    case "class_bulk_import": {
+      const classes = Array.isArray(mergedPayload["classes"]) ? (mergedPayload["classes"] as Array<Record<string, unknown>>) : [];
+      if (classes.length === 0) {
+        const err = new Error("No classes to import") as Error & { status?: number };
+        err.status = 400;
+        throw err;
+      }
+      const createdIds: string[] = [];
+      for (const classData of classes) {
+        const id = await classesService.createClass(classData, studioOwnerId);
+        createdIds.push(id);
+      }
+      resultResourceId = createdIds[0] as string;
+      message = `${createdIds.length} class${createdIds.length === 1 ? "" : "es"} created.`;
+      logAuditEvent(actorUid, studioOwnerId, "assistant_classes_bulk_imported", "class", resultResourceId, { count: createdIds.length, allIds: createdIds });
       break;
     }
     default:
