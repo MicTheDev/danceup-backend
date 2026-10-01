@@ -88,8 +88,9 @@ app.post("/generate", async (req, res) => {
       selectedWorkshopIds: Array.isArray(selectedWorkshopIds) ? (selectedWorkshopIds as string[]) : undefined,
     }) as { studioName: string; classes: unknown[]; events: unknown[]; workshops: unknown[] };
 
-    const { subject, htmlBody } = await (aiService.generateEmailCampaign as (arg: { studioName: string; classes: unknown[]; events: unknown[]; workshops: unknown[]; tone: string; instructions?: string; imageUrl?: string }) => Promise<{ subject: string; htmlBody: string }>)({
+    const { subject, htmlBody } = await (aiService.generateEmailCampaign as (arg: { studioName: string; studioOwnerId: string; classes: unknown[]; events: unknown[]; workshops: unknown[]; tone: string; instructions?: string; imageUrl?: string }) => Promise<{ subject: string; htmlBody: string }>)({
       studioName,
+      studioOwnerId,
       classes,
       events,
       workshops,

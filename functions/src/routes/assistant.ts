@@ -79,6 +79,53 @@ app.post("/message", async (req, res) => {
   }
 });
 
+// Lets a studio owner manually trigger the same check the daily copilotSuggestions scheduled
+// job runs, rather than waiting for it — useful for demos and for seeing the feature work
+// without waiting until 9am UTC. Bypasses the pending-proposal/cooldown guards (force: true)
+// since this is an explicit, human-initiated request.
+app.post("/check-suggestions", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const result = await assistantService.runProactiveSuggestionForStudio(studioOwnerId, true);
+    sendJsonResponse(req, res, 200, result);
+  } catch (error) {
+    console.error("Error running manual copilot suggestion check:", error);
+    handleError(req, res, error);
+  }
+});
+
+// Accepts spreadsheet rows already parsed/column-mapped client-side (never a raw file
+// upload) and turns them into a single class_bulk_import proposal for review.
+app.post("/import-classes", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const { rows } = (req.body || {}) as { rows?: unknown };
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "rows must be a non-empty array");
+    }
+
+    const result = await assistantService.handleBulkImportClassesRequest(studioOwnerId, rows as Array<Record<string, unknown>>);
+    sendJsonResponse(req, res, 200, result);
+  } catch (error) {
+    console.error("Error importing classes via assistant:", error);
+    handleError(req, res, error);
+  }
+});
+
 app.post("/proposals/:id/approve", async (req, res) => {
   try {
     let user;

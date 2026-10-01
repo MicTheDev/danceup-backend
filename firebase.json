@@ -19,7 +19,7 @@
         "*.local"
       ],
       "predeploy": ["npm --prefix \"$RESOURCE_DIR\" run build"],
-      "runtime": "nodejs20"
+      "runtime": "nodejs24"
     }
   ],
   "emulators": {

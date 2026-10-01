@@ -1228,3 +1228,37 @@ export async function sendReviewRequestEmail(
     categories: ["review-request"],
   });
 }
+
+export async function sendCopilotSuggestionEmail(
+  to: string, firstName: string, studioName: string, summary: string, assistantUrl: string,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendCopilotSuggestionEmail: no recipient email, skipping"); return; }
+  const name = firstName?.trim() || "there";
+  const studio = studioName?.trim() || "your studio";
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">Your Co-Pilot has a suggestion, ${name}</h2>
+        <p style="color:#64748b;margin:0 0 20px">While reviewing <strong>${studio}</strong>'s schedule and engagement data, your Co-Pilot drafted this for your approval:</p>
+        <p style="color:#1e293b;background:#f1f5f9;border-left:3px solid #6366f1;padding:12px 16px;margin:0 0 24px;font-weight:500">${summary}</p>
+        <a href="${assistantUrl}" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">Review Draft →</a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">Nothing is sent or changed at ${studio} until you review and approve it.</p>
+      </div>
+    </div>`;
+  const text = [
+    `Your Co-Pilot has a suggestion, ${name}:`,
+    ``,
+    summary,
+    ``,
+    `Review it here: ${assistantUrl}`,
+    ``,
+    `Nothing is sent or changed at ${studio} until you approve it.`,
+  ].join("\n");
+
+  await sendEmail({
+    to, from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `Your Co-Pilot has a suggestion for ${studio}`, html, text, categories: ["copilot-suggestion"],
+  });
+}

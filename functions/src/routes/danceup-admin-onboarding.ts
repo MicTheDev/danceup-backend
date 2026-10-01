@@ -48,7 +48,11 @@ app.use(express.json({ limit: "10mb" }));
 applySecurityMiddleware(app);
 
 function baseResetUrl(req: Request): string {
-  return process.env["PASSWORD_RESET_URL"] || `${req.headers.origin || "https://studios.danceup.app"}/reset-password`;
+  // req.headers.origin here is danceup-admin's own domain (this route is
+  // only ever called from the admin app), not the studio-owners app the
+  // reset link needs to point to — always needs the explicit override,
+  // unlike auth.ts's native studio-owner forgot-password flow.
+  return process.env["STUDIO_OWNER_PASSWORD_RESET_URL"] || "https://studios.danceup.app/reset-password";
 }
 
 async function sendProvisioningEmail(req: Request, email: string, firstName: string, studioName: string): Promise<void> {

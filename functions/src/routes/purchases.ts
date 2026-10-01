@@ -12,6 +12,7 @@ import attendanceService from "../services/attendance.service";
 import authService from "../services/auth.service";
 import { sendConfirmationEmail } from "../services/sendgrid.service";
 import classesService from "../services/classes.service";
+import notificationsService from "../services/notifications.service";
 import {
   sendJsonResponse,
   sendErrorResponse,
@@ -1728,6 +1729,60 @@ app.post("/:purchaseId/check-out", async (req, res) => {
     sendJsonResponse(req, res, 200, { message: "Check-in removed successfully" });
   } catch (error) {
     console.error("Error removing check-in:", error);
+    handleError(req, res, error);
+  }
+});
+
+// POST /:purchaseId/report-lost-ticket — the ticket holder flags that their pass
+// wasn't scanned correctly (e.g. shows as checked in when they weren't, or vice
+// versa) so studio staff can verify them manually at the door.
+app.post("/:purchaseId/report-lost-ticket", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const purchaseId = req.params["purchaseId"] as string;
+    const db = getFirestore();
+
+    const purchaseRef = db.collection("purchases").doc(purchaseId);
+    const purchaseDoc = await purchaseRef.get();
+
+    if (!purchaseDoc.exists) {
+      return sendErrorResponse(req, res, 404, "Not Found", "Purchase not found");
+    }
+
+    const purchase = purchaseDoc.data() as Record<string, unknown>;
+
+    if (purchase["authUid"] !== user.uid) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "You do not have permission to report this ticket");
+    }
+
+    const studioOwnerId = purchase["studioOwnerId"] as string;
+    const studentId = (purchase["studentId"] as string) || null;
+    const itemName = (purchase["itemName"] as string) || "their event";
+
+    let studentName = "A student";
+    if (studentId) {
+      const studentDoc = await db.collection("students").doc(studentId).get();
+      if (studentDoc.exists) {
+        const studentData = studentDoc.data() as Record<string, unknown>;
+        const name = `${(studentData["firstName"] as string) || ""} ${(studentData["lastName"] as string) || ""}`.trim();
+        if (name) studentName = name;
+      }
+    }
+
+    await notificationsService.createNotification(
+      studioOwnerId,
+      null,
+      "lost_ticket",
+      "Lost Ticket Reported",
+      `${studentName} reported a lost ticket for "${itemName}". Verify their identity at the door before allowing entry.`,
+      studentId,
+    );
+
+    sendJsonResponse(req, res, 200, { message: "Studio notified" });
+  } catch (error) {
+    console.error("Error reporting lost ticket:", error);
     handleError(req, res, error);
   }
 });

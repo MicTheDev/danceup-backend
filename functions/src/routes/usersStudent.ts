@@ -1227,6 +1227,7 @@ app.get("/event-passes", async (req, res) => {
         eventCode: doc.id,
         eventId: purchaseType === "event" ? itemId : undefined,
         workshopId: purchaseType === "workshop" ? itemId : undefined,
+        checkedIn: Boolean(data["checkedIn"]),
       };
     });
 
@@ -1248,7 +1249,14 @@ app.post("/forgot-password", async (req, res) => {
     }
 
     const { email } = req.body as { email: string };
-    const baseResetUrl = process.env["PASSWORD_RESET_URL"] || `${req.headers.origin || "https://danceup.app"}/reset-password`;
+    // Was sharing PASSWORD_RESET_URL with the studio-owner flow (auth.ts) —
+    // that var was only ever configured for the studio-owners app, and only
+    // for dev/staging (no production override existed), so students in every
+    // environment silently got a studio-owner dev link. Own env var per app,
+    // with req.headers.origin as a safety net for browser callers even if a
+    // future environment's var is missing (mobile apps send no Origin header,
+    // so the hardcoded production fallback only ever applies to them).
+    const baseResetUrl = process.env["STUDENT_PASSWORD_RESET_URL"] || `${req.headers.origin || "https://danceup.app"}/reset-password`;
 
     try {
       const oobCode = await authService.generatePasswordResetOobCode(email);
