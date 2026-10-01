@@ -25,6 +25,6 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "firebase-tools": "^13.35.1"
+    "firebase-tools": "^15.32.1"
   }
 }
