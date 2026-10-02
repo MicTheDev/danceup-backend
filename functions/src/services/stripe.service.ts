@@ -133,11 +133,30 @@ export function isReservedTierProductName(name: string): boolean {
   return RESERVED_TIER_NAME_SUBSTRINGS.some((s) => lower.includes(s));
 }
 
+interface ProductsCacheEntry {
+  data: Array<Record<string, unknown>>;
+  expiresAt: number;
+}
+
+// Pricing rarely changes and this list is fetched on every /pricing page
+// load (SSR, not prerendered, so it reflects live Stripe prices) — a short
+// TTL cache turns two live Stripe API round-trips into zero for the large
+// majority of requests without giving up "always reflects live prices" in
+// any meaningful sense.
+let productsCache: ProductsCacheEntry | null = null;
+const PRODUCTS_CACHE_TTL_MS = 5 * 60 * 1000;
+
 export async function getProducts(): Promise<Array<Record<string, unknown>>> {
+  if (productsCache && productsCache.expiresAt > Date.now()) {
+    return productsCache.data;
+  }
+
   const stripe = await getStripeClient();
   try {
-    const products = await stripe.products.list({ active: true, limit: 100 });
-    const prices = await stripe.prices.list({ active: true, limit: 100 });
+    const [products, prices] = await Promise.all([
+      stripe.products.list({ active: true, limit: 100 }),
+      stripe.prices.list({ active: true, limit: 100 }),
+    ]);
 
     const tierPatterns: TierPattern[] = [
       { tier: "studio_owner_pro_plus", patterns: ["studio_owner_pro_plus", "studio owner pro+", "studio owner pro plus", "pro+"] },
@@ -179,7 +198,7 @@ export async function getProducts(): Promise<Array<Record<string, unknown>>> {
 
     const order: Record<string, number> = { event_host: 0, individual_instructor: 1, studio_owner: 2, studio_owner_pro_plus: 3 };
 
-    return Array.from(productsByTier.values())
+    const result = Array.from(productsByTier.values())
       .map((product) => {
         const tier = getTierFromProduct(product);
         const productPrices = prices.data.filter((price) => price.product === product.id && price.active);
@@ -227,6 +246,9 @@ export async function getProducts(): Promise<Array<Record<string, unknown>>> {
         };
       })
       .sort((a, b) => (order[a.membershipTier as string] ?? 99) - (order[b.membershipTier as string] ?? 99));
+
+    productsCache = { data: result, expiresAt: Date.now() + PRODUCTS_CACHE_TTL_MS };
+    return result;
   } catch (error) {
     throw new Error(`Failed to fetch products: ${(error as Error).message}`);
   }
