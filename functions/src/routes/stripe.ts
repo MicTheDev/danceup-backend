@@ -1822,6 +1822,18 @@ app.post("/webhook", async (req, res) => {
         if (userId) {
           const userDoc = await db.collection("users").doc(userId).get();
           if (userDoc.exists) {
+            const userData = userDoc.data() as Record<string, unknown>;
+            // Same guard as subscription.deleted below: /create-checkout-session creates a
+            // real but unconfirmed subscription the moment a membership is picked, before
+            // the card screen. Until /subscription-payment-success confirms one and records
+            // it as stripeSubscriptionId, status updates on that pending/abandoned
+            // subscription (including skip-pending-subscription cancelling it, or Stripe's
+            // own 23h auto-expiry) must never overwrite a trial's active status.
+            if (userData["stripeSubscriptionId"] !== subscription.id) {
+              console.log(`[webhook] subscription.updated userId=${userId} ignored — not the confirmed subscription (sub=${subscription.id})`);
+              break;
+            }
+
             const activeStatuses = ["active", "trialing"];
             const updateData: Record<string, unknown> = {
               stripeSubscriptionStatus: subscription.status,
@@ -1849,12 +1861,23 @@ app.post("/webhook", async (req, res) => {
         if (userId) {
           const userDoc = await db.collection("users").doc(userId).get();
           if (userDoc.exists) {
-            await userDoc.ref.update({
-              stripeSubscriptionStatus: "canceled",
-              subscriptionActive: false,
-              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            });
-            console.log(`[webhook] subscription.deleted userId=${userId}`);
+            const userData = userDoc.data() as Record<string, unknown>;
+            // Only a user's CONFIRMED subscription (stripeSubscriptionId, set by
+            // /subscription-payment-success once payment actually completes) should be
+            // able to flip subscriptionActive. /create-checkout-session creates a real but
+            // unconfirmed subscription the moment a membership is picked, before the card
+            // screen — cancelling that abandoned/pending one (e.g. skip-pending-subscription,
+            // or Stripe's own 23h auto-expiry) must never touch a trial's active status.
+            if (userData["stripeSubscriptionId"] === subscription.id) {
+              await userDoc.ref.update({
+                stripeSubscriptionStatus: "canceled",
+                subscriptionActive: false,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+              console.log(`[webhook] subscription.deleted userId=${userId}`);
+            } else {
+              console.log(`[webhook] subscription.deleted userId=${userId} ignored — not the confirmed subscription (sub=${subscription.id})`);
+            }
           }
         }
         break;
@@ -1873,6 +1896,16 @@ app.post("/webhook", async (req, res) => {
           if (userId) {
             const userDoc = await db.collection("users").doc(userId).get();
             if (userDoc.exists) {
+              const userData = userDoc.data() as Record<string, unknown>;
+              // Same guard as the subscription.updated/deleted handlers above — only the
+              // user's CONFIRMED subscription (stripeSubscriptionId) may touch
+              // subscriptionActive; a still-pending/abandoned one (e.g. from skipping card
+              // entry at signup) must never flip an active trial to inactive.
+              if (userData["stripeSubscriptionId"] !== subscriptionId) {
+                console.log(`[webhook] invoice.payment_failed userId=${userId} ignored — not the confirmed subscription (sub=${subscriptionId})`);
+                break;
+              }
+
               await userDoc.ref.update({
                 stripeSubscriptionStatus: subscription.status,
                 subscriptionActive: false,
@@ -1880,7 +1913,6 @@ app.post("/webhook", async (req, res) => {
               });
               console.log(`[webhook] invoice.payment_failed userId=${userId} sub=${subscriptionId} status=${subscription.status}`);
 
-              const userData = userDoc.data() as Record<string, unknown>;
               const nextAttempt = invoice["next_payment_attempt"] as number | null;
               sendStudioSubscriptionPaymentFailedEmail(
                 (userData["email"] as string) || "",
@@ -1915,12 +1947,19 @@ app.post("/webhook", async (req, res) => {
           try {
             const userDoc = await db.collection("users").doc(userId).get();
             if (userDoc.exists) {
-              await userDoc.ref.update({
-                stripeSubscriptionStatus: "active",
-                subscriptionActive: true,
-                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-              });
-              console.log(`[webhook] invoice.payment_succeeded (platform) userId=${userId} — access restored`);
+              const userData = userDoc.data() as Record<string, unknown>;
+              // Same guard as the other platform-subscription webhook handlers — only
+              // write for the user's CONFIRMED subscription.
+              if (userData["stripeSubscriptionId"] !== subscriptionId) {
+                console.log(`[webhook] invoice.payment_succeeded userId=${userId} ignored — not the confirmed subscription (sub=${subscriptionId})`);
+              } else {
+                await userDoc.ref.update({
+                  stripeSubscriptionStatus: "active",
+                  subscriptionActive: true,
+                  updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+                console.log(`[webhook] invoice.payment_succeeded (platform) userId=${userId} — access restored`);
+              }
             }
           } catch (err) {
             console.error("[webhook] Error restoring platform subscription access:", err);
