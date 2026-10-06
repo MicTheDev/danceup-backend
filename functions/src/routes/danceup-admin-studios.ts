@@ -53,6 +53,14 @@ function deriveStatus(data: Record<string, unknown>): string {
   if (ss === "trialing") return "trial";
   if (ss === "past_due") return "past_due";
   if (ss === "canceled" || ss === "unpaid" || ss === "incomplete_expired") return "churned";
+
+  // Studio owners who skipped card entry during signup never get a real Stripe
+  // subscription (so stripeSubscriptionStatus is never set at all) — stripeTrialEnd is
+  // the only signal they're on a trial. Only onboardedByAdmin===true accounts and
+  // pre-trial-feature accounts have neither field set, correctly falling through below.
+  const trialEnd = data["stripeTrialEnd"] as admin.firestore.Timestamp | undefined;
+  if (data["membership"] && trialEnd && trialEnd.toDate().getTime() > Date.now()) return "trial";
+
   return "pending";
 }
 

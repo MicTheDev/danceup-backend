@@ -272,8 +272,11 @@ app.get("/", async (req: Request, res: Response) => {
           if (idx >= 0 && idx < 30) newSignupsDailyTrend[idx] = (newSignupsDailyTrend[idx] ?? 0) + 1;
         }
       }
-      // Expiring trials
-      if (d["stripeSubscriptionStatus"] === "trialing") {
+      // Expiring trials — "trialing" covers a real Stripe trial subscription; studio
+      // owners who skipped card entry never get one, so stripeTrialEnd alone (with no
+      // subscription having converted to active/past_due/etc.) is the fallback signal.
+      const subStatus = d["stripeSubscriptionStatus"] as string | undefined;
+      if (subStatus === "trialing" || (d["membership"] && !subStatus)) {
         const trialEnd = d["stripeTrialEnd"] as admin.firestore.Timestamp | undefined;
         if (trialEnd) {
           const ms = trialEnd.toDate().getTime();

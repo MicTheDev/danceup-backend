@@ -607,6 +607,53 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
   }
 });
 
+// POST /skip-pending-subscription
+// Called when a studio owner skips card entry during signup (see checkout.component.ts).
+// /create-checkout-session already created a real (incomplete) Stripe subscription the
+// moment they picked a membership, before they ever saw the card form — left alone it
+// just auto-expires in ~23h, but cancelling it explicitly keeps Stripe tidy and avoids a
+// stale pendingSubscriptionId sitting on the user doc. Best-effort: skipping must never
+// block on this succeeding.
+app.post("/skip-pending-subscription", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const db = getFirestore();
+    const userQuery = await db.collection("users")
+      .where("authUid", "==", user.uid)
+      .limit(1)
+      .get();
+
+    if (userQuery.empty) return sendErrorResponse(req, res, 404, "Not Found", "User not found");
+
+    const userDoc = userQuery.docs[0]!;
+    const userData = userDoc.data() as Record<string, unknown>;
+    const pendingSubscriptionId = userData["pendingSubscriptionId"] as string | undefined;
+
+    if (pendingSubscriptionId) {
+      try {
+        const stripe = await stripeService.getStripeClient() as import("stripe").default;
+        await stripe.subscriptions.cancel(pendingSubscriptionId);
+      } catch (err) {
+        // Already expired/canceled, or never confirmed enough to cancel cleanly — fine,
+        // it was never going to charge anything either way.
+        console.warn("[skip-pending-subscription] Could not cancel subscription:", (err as Error).message);
+      }
+    }
+
+    await userDoc.ref.update({
+      pendingSubscriptionId: admin.firestore.FieldValue.delete(),
+      pendingPaymentIntentId: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    sendJsonResponse(req, res, 200, { message: "Pending subscription cleared" });
+  } catch (error) {
+    handleError(req, res, error);
+  }
+});
+
 // POST /create-payment-link
 app.post("/create-payment-link", promoCodeLimiter, async (req, res) => {
   try {
@@ -707,6 +754,13 @@ app.get("/subscription", async (req, res) => {
     const currentMembership = (userData["membership"] as string | undefined) ?? null;
 
     if (!userData["stripeSubscriptionId"]) {
+      // No confirmed Stripe subscription — either they haven't picked a plan yet, or they
+      // skipped card entry during signup (see routes/auth.ts). stripeTrialEnd is the only
+      // signal of trial status in the latter case, so surface it for the UI to show.
+      const trialEndTimestamp = userData["stripeTrialEnd"] as admin.firestore.Timestamp | undefined;
+      const trialEndIso = trialEndTimestamp ? trialEndTimestamp.toDate().toISOString() : null;
+      const onTrial = !!(currentMembership && trialEndIso && trialEndTimestamp!.toDate().getTime() > Date.now());
+
       return sendJsonResponse(req, res, 200, {
         subscriptionId: null,
         membership: currentMembership,
@@ -717,6 +771,8 @@ app.get("/subscription", async (req, res) => {
         priceId: null,
         subscriptionItemId: null,
         plan: null,
+        onTrial,
+        trialEnd: trialEndIso,
       });
     }
 
@@ -748,6 +804,8 @@ app.get("/subscription", async (req, res) => {
         interval: price?.recurring?.interval ?? "month",
         intervalCount: price?.recurring?.interval_count ?? 1,
       },
+      onTrial: subscription.status === "trialing",
+      trialEnd: subscription.trial_end ? new Date(subscription.trial_end * 1000).toISOString() : null,
     });
   } catch (error) {
     handleError(req, res, error);
