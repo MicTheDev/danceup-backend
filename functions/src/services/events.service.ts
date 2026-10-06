@@ -4,6 +4,7 @@ import { getFirestore } from "../utils/firestore";
 import { geocodeAddress } from "../utils/geocoding";
 import { haversineDistance } from "../utils/distance";
 import { AdminStudioInfo, batchGetStudios, toIso } from "../utils/admin-studio-enrichment";
+import { grossUpPrice } from "../utils/fees";
 
 interface EventFilters {
   type?: string | null;
@@ -22,14 +23,6 @@ interface EventFilters {
 
 interface PriceTier {
   price?: number;
-}
-
-// When passFees=true the studio nets the face price; the customer pays the gross.
-// Stripe: 2.9% + $0.30, platform: 1% + $0.25 → gross = ceil((face_cents + 55) / 0.961)
-function grossUpPrice(facePrice: number): number {
-  const faceCents = Math.round(facePrice * 100);
-  const grossCents = Math.ceil((faceCents + 55) / 0.961);
-  return grossCents / 100;
 }
 
 function applyPassFees(priceTiers: unknown): unknown {

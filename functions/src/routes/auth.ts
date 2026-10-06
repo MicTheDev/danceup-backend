@@ -106,6 +106,11 @@ app.post("/register", registerLimiter, async (req, res) => {
         }
       }
 
+      // 14-day free trial starts at account creation, not whenever (or whether) a card
+      // gets added later — see createSubscriptionCheckout, which pins any Stripe-side
+      // trial to this same deadline rather than granting a fresh trial_period_days.
+      const trialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+
       const userData: Record<string, unknown> = {
         email: userRecord.email,
         firstName: (firstName as string).trim(),
@@ -122,6 +127,8 @@ app.post("/register", registerLimiter, async (req, res) => {
         instagram: instagram ? instagram.trim() : null,
         tiktok: tiktok ? tiktok.trim() : null,
         youtube: youtube ? youtube.trim() : null,
+        stripeTrialEnd: admin.firestore.Timestamp.fromDate(trialEnd),
+        subscriptionActive: true,
       };
 
       if (membership !== undefined && membership !== null) {

@@ -14,6 +14,7 @@ export { classes } from "./routes/classes";
 export { emailTemplates } from "./routes/email-templates";
 export { events } from "./routes/events";
 export { expireCredits, expireCreditsManual } from "./routes/credit-expiration";
+export { trialReminders } from "./routes/trial-reminders";
 export { health } from "./routes/health";
 export { instructors } from "./routes/instructors";
 export { flyers } from "./routes/flyers";

@@ -867,6 +867,20 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "stripeSubscriptionStatus",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "stripeTrialEnd",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

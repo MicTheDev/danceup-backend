@@ -1753,11 +1753,19 @@ app.post("/webhook", async (req, res) => {
           const userDoc = await db.collection("users").doc(userId).get();
           if (userDoc.exists) {
             const activeStatuses = ["active", "trialing"];
-            await userDoc.ref.update({
+            const updateData: Record<string, unknown> = {
               stripeSubscriptionStatus: subscription.status,
               subscriptionActive: activeStatuses.includes(subscription.status),
               updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            });
+            };
+            // Keeps stripeTrialEnd in sync with Stripe's own trial_end — same field the
+            // admin "trials expiring" alerting already reads (danceup-admin-comms.ts,
+            // danceup-admin-overview.ts), so it starts working the moment a trial
+            // subscription exists, with no further changes needed there.
+            if (subscription.trial_end) {
+              updateData["stripeTrialEnd"] = admin.firestore.Timestamp.fromMillis(subscription.trial_end * 1000);
+            }
+            await userDoc.ref.update(updateData);
             console.log(`[webhook] subscription.updated userId=${userId} status=${subscription.status}`);
           }
         }

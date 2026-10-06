@@ -741,6 +741,34 @@ export async function sendReEngagementEmail(
   });
 }
 
+export async function sendTrialEndingEmail(
+  to: string, firstName: string, studioName: string, daysLeft: number,
+): Promise<void> {
+  if (!to) { console.warn("[SendGrid] sendTrialEndingEmail: no recipient email, skipping"); return; }
+  const name = firstName?.trim() || "there";
+  const studio = studioName?.trim() || "your studio";
+  const dayWord = daysLeft === 1 ? "day" : "days";
+  const baseUrl = process.env["STUDIO_OWNER_APP_URL"] || "https://studios.danceup.app";
+  const billingUrl = `${baseUrl}/dashboard/settings/billing`;
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:540px;margin:0 auto;padding:32px 24px;background:#f8fafc">
+      <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0">
+        <h2 style="color:#1e293b;margin:0 0 8px">${daysLeft} ${dayWord} left in your free trial, ${name}</h2>
+        <p style="color:#64748b;margin:0 0 20px">Your free trial for <strong>${studio}</strong> ends in <strong>${daysLeft} ${dayWord}</strong>. Add a payment method before then to keep using DanceUp without interruption.</p>
+        <a href="${billingUrl}" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#ec4899);color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:24px">Add Payment Method →</a>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0"/>
+        <p style="color:#94a3b8;font-size:12px;margin:0">You're receiving this because you started a free trial of DanceUp for ${studio}.</p>
+      </div>
+    </div>`;
+  const text = `${daysLeft} ${dayWord} left in your free trial, ${name}.\n\nYour free trial for ${studio} ends in ${daysLeft} ${dayWord}. Add a payment method to keep using DanceUp without interruption:\n${billingUrl}`;
+
+  await sendEmail({
+    to, from: { email: "info@danceup.app", name: "DanceUp" },
+    subject: `${daysLeft} ${dayWord} left in your DanceUp free trial`, html, text, categories: ["trial-ending"],
+  });
+}
+
 export async function sendCreditExpiryEmail(
   to: string, firstName: string, studioName: string, creditCount: number, expiryDate: string,
 ): Promise<void> {

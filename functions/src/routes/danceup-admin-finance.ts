@@ -13,6 +13,7 @@ import {
 } from "../utils/http";
 import { getFirestore } from "../utils/firestore";
 import { getStripeClient } from "../services/stripe.service";
+import { platformFeeCents } from "../utils/fees";
 
 const THIRTY_DAYS_S = 30 * 24 * 60 * 60;
 
@@ -157,7 +158,7 @@ app.get("/", async (req: Request, res: Response) => {
               displayAmount = charge.amount / 100;
               platformFee = bt.amount / 100;
             } else {
-              platformFee = Math.round((0.30 + displayAmount * 0.0125) * 100) / 100;
+              platformFee = platformFeeCents(displayAmount * 100) / 100;
             }
           } else if (bt.type === "application_fee") {
             // Charge not expanded — platform fee is still bt.amount
@@ -201,8 +202,8 @@ app.get("/", async (req: Request, res: Response) => {
         const source = bt.source as Stripe.ApplicationFee | Stripe.Charge | string | null;
         const charge = resolveCharge(bt.type, source);
         const platformFeeAmt = bt.type === "application_fee"
-          ? bt.amount / 100                                    // direct: app fee amount
-          : Math.round((0.30 + (bt.amount / 100) * 0.0125) * 100) / 100; // computed: $0.30 + 1.25%
+          ? bt.amount / 100                   // direct: app fee amount
+          : platformFeeCents(bt.amount) / 100; // computed estimate using the real flat rate
         const grossAmt = charge
           ? charge.amount / 100
           : bt.type === "application_fee"

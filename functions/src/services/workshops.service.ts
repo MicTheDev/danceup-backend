@@ -4,6 +4,7 @@ import { getFirestore } from "../utils/firestore";
 import { geocodeAddress } from "../utils/geocoding";
 import { haversineDistance } from "../utils/distance";
 import { AdminStudioInfo, batchGetStudios, toIso } from "../utils/admin-studio-enrichment";
+import { grossUpPrice } from "../utils/fees";
 
 interface WorkshopFilters {
   level?: string | null;
@@ -22,12 +23,6 @@ interface WorkshopFilters {
 
 interface PriceTier {
   price?: number;
-}
-
-function grossUpPrice(facePrice: number): number {
-  const faceCents = Math.round(facePrice * 100);
-  const grossCents = Math.ceil((faceCents + 55) / 0.961);
-  return grossCents / 100;
 }
 
 function applyPassFees(priceTiers: unknown): unknown {
