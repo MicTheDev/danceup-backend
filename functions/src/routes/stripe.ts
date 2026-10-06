@@ -204,6 +204,18 @@ app.post("/create-account", async (req, res) => {
       return sendErrorResponse(req, res, 400, "Validation Error", "User email not found");
     }
 
+    // Persists the membership the owner selected during registration when it was never
+    // otherwise recorded — happens when they skip payment before this step, since
+    // /subscription-payment-success (the only other writer of this field) never runs.
+    const requestedMembership = (req.body as Record<string, unknown>)["membership"] as string | undefined;
+    if (!userData["membership"] && requestedMembership) {
+      await userDoc.ref.update({
+        membership: requestedMembership,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      userData["membership"] = requestedMembership;
+    }
+
     if (userData["stripeAccountId"]) {
       const origin = (req.headers.origin as string | undefined) ||
         (req.headers.referer as string | undefined)?.split("/").slice(0, 3).join("/") ||
