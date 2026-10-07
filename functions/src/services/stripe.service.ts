@@ -1018,7 +1018,8 @@ export async function createSubscriptionCheckout(
   membership: string,
   promotionCodeId?: string,
   couponId?: string,
-): Promise<{ subscriptionId: string; paymentIntentId: string | null; clientSecret: string | null }> {
+  trialEnd?: Date,
+): Promise<{ subscriptionId: string; paymentIntentId: string | null; setupIntentId: string | null; clientSecret: string | null }> {
   const stripe = await getStripeClient();
   try {
     const subscriptionParams: Stripe.SubscriptionCreateParams = {
@@ -1029,6 +1030,12 @@ export async function createSubscriptionCheckout(
       expand: ["latest_invoice.payment_intent"],
       metadata: { userId: userId || "", membership },
     };
+
+    // Pinned to the account's original 14-day trial deadline (set at registration), not a
+    // fresh trial_period_days — so entering a card late never extends the trial.
+    if (trialEnd && trialEnd.getTime() > Date.now()) {
+      subscriptionParams.trial_end = Math.floor(trialEnd.getTime() / 1000);
+    }
 
     if (promotionCodeId) {
       subscriptionParams.discounts = [{ promotion_code: promotionCodeId }];
@@ -1043,10 +1050,23 @@ export async function createSubscriptionCheckout(
 
     if (!paymentIntent?.client_secret) {
       // Stripe doesn't create a PaymentIntent when the invoice has nothing to
-      // collect (a free $0 plan, or a 100%-off coupon) — the subscription is
-      // already active and there's no payment step to confirm.
+      // collect (a free $0 plan, a 100%-off coupon, or — the common case here — an
+      // active trial, since nothing is due until trial_end).
       if (invoice && invoice.amount_due === 0) {
-        return { subscriptionId: subscription.id, paymentIntentId: null, clientSecret: null };
+        if (trialEnd) {
+          // Still want to collect+save a card now for when the trial ends, even though
+          // nothing is due today — a SetupIntent does that without charging anything.
+          // The frontend's Elements/confirmPayment flow (stripe-elements.service.ts) uses
+          // Stripe's unified confirmPayment API, which already handles SetupIntent client
+          // secrets the same way as PaymentIntent ones — no frontend mounting changes needed.
+          const setupIntent = await stripe.setupIntents.create({
+            customer: customerId,
+            payment_method_types: ["card"],
+            metadata: { subscriptionId: subscription.id, userId: userId || "", membership },
+          });
+          return { subscriptionId: subscription.id, paymentIntentId: null, setupIntentId: setupIntent.id, clientSecret: setupIntent.client_secret };
+        }
+        return { subscriptionId: subscription.id, paymentIntentId: null, setupIntentId: null, clientSecret: null };
       }
       throw new Error("Subscription did not produce a pending PaymentIntent");
     }
@@ -1054,6 +1074,7 @@ export async function createSubscriptionCheckout(
     return {
       subscriptionId: subscription.id,
       paymentIntentId: paymentIntent.id,
+      setupIntentId: null,
       clientSecret: paymentIntent.client_secret,
     };
   } catch (error) {

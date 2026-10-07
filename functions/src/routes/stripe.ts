@@ -535,6 +535,8 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
       membership,
     }) as { id: string };
 
+    let stripeTrialEnd: Date | undefined;
+
     if (userId) {
       const userRef = db.collection("users").doc(userId);
       const userDoc = await userRef.get();
@@ -547,6 +549,13 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           });
         }
+        // Pins any Stripe-side trial to the deadline set at registration (routes/auth.ts) —
+        // never a fresh trial from whenever checkout happens to be completed. Accounts that
+        // registered before the trial feature shipped have no stripeTrialEnd, so they get none.
+        const trialEndTimestamp = userData["stripeTrialEnd"] as admin.firestore.Timestamp | undefined;
+        if (trialEndTimestamp && trialEndTimestamp.toDate().getTime() > Date.now()) {
+          stripeTrialEnd = trialEndTimestamp.toDate();
+        }
       }
     }
 
@@ -557,6 +566,7 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
 
     let subscriptionId: string | null = null;
     let paymentIntentId: string | null;
+    let setupIntentId: string | null = null;
     let clientSecret: string | null;
 
     if (isOneTime) {
@@ -585,9 +595,11 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
         membership,
         promotionCodeId,
         couponId,
-      ) as { subscriptionId: string; paymentIntentId: string | null; clientSecret: string | null };
+        stripeTrialEnd,
+      ) as { subscriptionId: string; paymentIntentId: string | null; setupIntentId: string | null; clientSecret: string | null };
       subscriptionId = result.subscriptionId;
       paymentIntentId = result.paymentIntentId;
+      setupIntentId = result.setupIntentId;
       clientSecret = result.clientSecret;
     }
 
@@ -597,10 +609,11 @@ app.post("/create-checkout-session", promoCodeLimiter, async (req, res) => {
       };
       if (paymentIntentId) pendingUpdate["pendingPaymentIntentId"] = paymentIntentId;
       if (subscriptionId) pendingUpdate["pendingSubscriptionId"] = subscriptionId;
+      if (setupIntentId) pendingUpdate["pendingSetupIntentId"] = setupIntentId;
       await db.collection("users").doc(userId).update(pendingUpdate);
     }
 
-    sendJsonResponse(req, res, 200, { subscriptionId, paymentIntentId, clientSecret });
+    sendJsonResponse(req, res, 200, { subscriptionId, paymentIntentId, setupIntentId, clientSecret });
   } catch (error) {
     console.error("Create checkout session error:", error);
     handleError(req, res, error);
@@ -630,6 +643,7 @@ app.post("/skip-pending-subscription", async (req, res) => {
     const userDoc = userQuery.docs[0]!;
     const userData = userDoc.data() as Record<string, unknown>;
     const pendingSubscriptionId = userData["pendingSubscriptionId"] as string | undefined;
+    const pendingSetupIntentId = userData["pendingSetupIntentId"] as string | undefined;
 
     if (pendingSubscriptionId) {
       try {
@@ -642,9 +656,20 @@ app.post("/skip-pending-subscription", async (req, res) => {
       }
     }
 
+    if (pendingSetupIntentId) {
+      try {
+        const stripe = await stripeService.getStripeClient() as import("stripe").default;
+        await stripe.setupIntents.cancel(pendingSetupIntentId);
+      } catch (err) {
+        // Already succeeded/canceled/expired — fine, it never charges anything regardless.
+        console.warn("[skip-pending-subscription] Could not cancel setup intent:", (err as Error).message);
+      }
+    }
+
     await userDoc.ref.update({
       pendingSubscriptionId: admin.firestore.FieldValue.delete(),
       pendingPaymentIntentId: admin.firestore.FieldValue.delete(),
+      pendingSetupIntentId: admin.firestore.FieldValue.delete(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -1094,11 +1119,18 @@ app.post("/subscription/start", async (req, res) => {
       return sendErrorResponse(req, res, 400, "Bad Request", "No saved payment method found. Please add a card before subscribing.");
     }
 
-    // Create the subscription; payment is collected immediately via the saved card
+    // If this account is still within its original trial window (set at registration —
+    // see routes/auth.ts), defer the charge to that deadline instead of billing the saved
+    // card immediately. Otherwise (e.g. a true Event Host -> paid upgrade with no trial),
+    // payment is collected immediately as before.
+    const trialEndTimestamp = userData["stripeTrialEnd"] as admin.firestore.Timestamp | undefined;
+    const trialEnd = trialEndTimestamp && trialEndTimestamp.toDate().getTime() > Date.now() ? trialEndTimestamp.toDate() : null;
+
     const subscription = await stripe.subscriptions.create({
       customer: customerId,
       items: [{ price: priceId }],
       default_payment_method: defaultPmId,
+      ...(trialEnd ? { trial_end: Math.floor(trialEnd.getTime() / 1000) } : {}),
       metadata: {
         userId: userDoc.id,
         authUid: user.uid,
@@ -1142,6 +1174,8 @@ app.post("/subscription/start", async (req, res) => {
         interval: (subPrice?.recurring?.interval) ?? "month",
         intervalCount: (subPrice?.recurring?.interval_count) ?? 1,
       },
+      onTrial: subscription.status === "trialing",
+      trialEnd: subscription.trial_end ? new Date(subscription.trial_end * 1000).toISOString() : null,
     });
   } catch (error) {
     handleError(req, res, error);
@@ -1441,15 +1475,16 @@ app.post("/subscription-payment-success", async (req, res) => {
     const body = req.body as Record<string, unknown>;
     const paymentIntentId = body["paymentIntentId"] as string | undefined;
     const freeSubscriptionId = body["subscriptionId"] as string | undefined;
+    const setupIntentId = body["setupIntentId"] as string | undefined;
 
-    if (!paymentIntentId && !freeSubscriptionId) {
-      return sendErrorResponse(req, res, 400, "Validation Error", "paymentIntentId or subscriptionId is required");
+    if (!paymentIntentId && !freeSubscriptionId && !setupIntentId) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "paymentIntentId, subscriptionId, or setupIntentId is required");
     }
 
     const db = getFirestore();
 
     // Idempotency: return early if this payment/subscription was already processed
-    const idempotencyKey = paymentIntentId ? `pi_${paymentIntentId}` : `sub_${freeSubscriptionId}`;
+    const idempotencyKey = paymentIntentId ? `pi_${paymentIntentId}` : setupIntentId ? `seti_${setupIntentId}` : `sub_${freeSubscriptionId}`;
     const processedRef = db.collection("processedStripeEvents").doc(idempotencyKey);
     const processedDoc = await processedRef.get();
     if (processedDoc.exists) {
@@ -1485,6 +1520,30 @@ app.post("/subscription-payment-success", async (req, res) => {
       // One-time payments don't have a subscription — read metadata from the PaymentIntent directly.
       userId = subscription?.metadata?.["userId"] ?? pi.metadata?.["userId"];
       membership = subscription?.metadata?.["membership"] ?? pi.metadata?.["membership"];
+    } else if (setupIntentId) {
+      // Trial signup with a card entered up front — the subscription was created with
+      // trial_end (so nothing was due, no PaymentIntent) and a SetupIntent collected the
+      // card instead. Confirming here means: attach the saved card as the subscription's
+      // default payment method so Stripe can actually charge it when the trial ends.
+      const si = await stripe.setupIntents.retrieve(setupIntentId);
+
+      if (si.status !== "succeeded") {
+        return sendErrorResponse(req, res, 400, "Validation Error", `Card setup not completed (status: ${si.status})`);
+      }
+
+      const setupSubscriptionId = si.metadata?.["subscriptionId"];
+      const paymentMethodId = typeof si.payment_method === "string" ? si.payment_method : si.payment_method?.id;
+
+      if (!setupSubscriptionId || !paymentMethodId) {
+        return sendErrorResponse(req, res, 400, "Validation Error", "SetupIntent is missing subscription or payment method information");
+      }
+
+      subscription = await stripe.subscriptions.update(setupSubscriptionId, {
+        default_payment_method: paymentMethodId,
+      });
+      customerId = subscription.customer;
+      userId = si.metadata?.["userId"] || subscription.metadata?.["userId"];
+      membership = si.metadata?.["membership"] || subscription.metadata?.["membership"];
     } else {
       // Free ($0) subscription — created moments earlier by /create-checkout-session with
       // no PaymentIntent to confirm (Stripe skips it when there's nothing to collect), so
@@ -1514,11 +1573,15 @@ app.post("/subscription-payment-success", async (req, res) => {
       stripeCustomerId: customerId,
       membership: membership || userData["membership"],
       pendingPaymentIntentId: admin.firestore.FieldValue.delete(),
+      pendingSetupIntentId: admin.firestore.FieldValue.delete(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
     if (subscription?.id) {
       updateData["stripeSubscriptionId"] = subscription.id;
-      updateData["stripeSubscriptionStatus"] = "active";
+      // Reflects the subscription's real status — "trialing" for a deferred-billing
+      // signup (trial_end in the future), "active" otherwise. Previously hardcoded to
+      // "active", which was only ever correct before trials existed.
+      updateData["stripeSubscriptionStatus"] = subscription.status;
       updateData["pendingSubscriptionId"] = admin.firestore.FieldValue.delete();
     }
 
