@@ -48,6 +48,11 @@ app.get("/history", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
+    const contact = await assistantService.getStudioOwnerContact(studioOwnerId);
+    if (!contact.isProPlus) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Co-Pilot is available on Studio Owner Pro+ only");
+    }
+
     const { messages, pendingProposals } = await assistantService.getHistory(studioOwnerId);
     sendJsonResponse(req, res, 200, { messages, pendingProposals });
   } catch (error) {
@@ -64,6 +69,11 @@ app.post("/message", async (req, res) => {
     const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const contact = await assistantService.getStudioOwnerContact(studioOwnerId);
+    if (!contact.isProPlus) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Co-Pilot is available on Studio Owner Pro+ only");
     }
 
     const { text } = (req.body || {}) as { text?: string };
@@ -93,6 +103,11 @@ app.post("/check-suggestions", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
+    const contact = await assistantService.getStudioOwnerContact(studioOwnerId);
+    if (!contact.isProPlus) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Co-Pilot is available on Studio Owner Pro+ only");
+    }
+
     const result = await assistantService.runProactiveSuggestionForStudio(studioOwnerId, true);
     sendJsonResponse(req, res, 200, result);
   } catch (error) {
@@ -111,6 +126,11 @@ app.post("/import-classes", async (req, res) => {
     const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const contact = await assistantService.getStudioOwnerContact(studioOwnerId);
+    if (!contact.isProPlus) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Co-Pilot is available on Studio Owner Pro+ only");
     }
 
     const { rows } = (req.body || {}) as { rows?: unknown };
@@ -134,6 +154,11 @@ app.post("/proposals/:id/approve", async (req, res) => {
     const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const contact = await assistantService.getStudioOwnerContact(studioOwnerId);
+    if (!contact.isProPlus) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Co-Pilot is available on Studio Owner Pro+ only");
     }
 
     const proposalId = req.params["id"] as string;
@@ -165,6 +190,11 @@ app.post("/proposals/:id/reject", async (req, res) => {
     const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const contact = await assistantService.getStudioOwnerContact(studioOwnerId);
+    if (!contact.isProPlus) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Co-Pilot is available on Studio Owner Pro+ only");
     }
 
     const proposalId = req.params["id"] as string;

@@ -448,7 +448,7 @@ function tsToIso(val: unknown): string | null {
   return null;
 }
 
-interface StudioOwnerContact {
+export interface StudioOwnerContact {
   studioName: string;
   email: string;
   firstName: string;
@@ -458,7 +458,9 @@ interface StudioOwnerContact {
 
 const PRO_PLUS_MEMBERSHIP = "studio_owner_pro_plus";
 
-async function getStudioOwnerContact(studioOwnerId: string): Promise<StudioOwnerContact> {
+// Exported so routes/assistant.ts can gate Co-Pilot access to Pro+ only without a second
+// Firestore read — this is the same per-studio-owner doc every caller here already fetches.
+export async function getStudioOwnerContact(studioOwnerId: string): Promise<StudioOwnerContact> {
   const db = getFirestore();
   const doc = await db.collection("users").doc(studioOwnerId).get();
   const data = (doc.exists ? doc.data() : {}) as Record<string, unknown>;
@@ -1239,21 +1241,23 @@ async function hasRecentProactiveSuggestion(studioOwnerId: string): Promise<bool
 // owner — force:true (an explicit, human-initiated check) bypasses both of those guards, since
 // the whole point of that path is "show me this working right now."
 export async function runProactiveSuggestionForStudio(studioOwnerId: string, force = false): Promise<{ raised: boolean; proposal?: AssistantProposal }> {
+  // Co-Pilot (including its proactive digest) is Pro+ only — checked first so a non-Pro+
+  // studio never triggers the history build or an LLM call, not just the notification/email send.
+  const contact = await getStudioOwnerContact(studioOwnerId);
+  if (!contact.isProPlus) return { raised: false };
+
   if (!force) {
     const pending = await loadPendingProposals(studioOwnerId);
     if (pending.length > 0) return { raised: false };
     if (await hasRecentProactiveSuggestion(studioOwnerId)) return { raised: false };
   }
 
-  const [history, contact] = await Promise.all([
-    buildHistoryContents(studioOwnerId, 0),
-    getStudioOwnerContact(studioOwnerId),
-  ]);
+  const history = await buildHistoryContents(studioOwnerId, 0);
 
-  // Goal-aware urgency: fold in income-goal pacing (Pro+ + a goal is set) so the model can
+  // Goal-aware urgency: fold in income-goal pacing (a goal is set) so the model can
   // weigh how far behind/ahead the studio is when deciding whether and what to suggest.
   let proactivePrompt = PROACTIVE_SUGGESTION_PROMPT;
-  if (contact.isProPlus && contact.annualRevenueGoal != null) {
+  if (contact.annualRevenueGoal != null) {
     const progress = await buildIncomeGoalProgress(studioOwnerId, contact.annualRevenueGoal);
     if (progress.goalSet) {
       proactivePrompt += ` Additionally, this studio is at ${progress.percentComplete}% of its $${progress.annualRevenueGoal.toLocaleString()} annual revenue goal ($${progress.revenueToDate.toLocaleString()} so far), with ${progress.daysRemainingInYear} days left in the year — factor this pacing into whether and what you suggest.`;
