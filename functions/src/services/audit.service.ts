@@ -15,6 +15,7 @@ export type AuditAction =
   | "assistant_automation_rule_created"
   | "assistant_class_created"
   | "assistant_class_updated"
+  | "assistant_package_created"
   | "assistant_package_updated"
   | "assistant_event_created"
   | "assistant_event_updated"

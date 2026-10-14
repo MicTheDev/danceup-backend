@@ -26,6 +26,7 @@ import { sendStudioOwnerPush } from "../utils/push-notifications";
 import {
   validateCreateClassPayload,
   validateUpdateClassPayload,
+  validateCreatePackagePayload,
   validateUpdatePackagePayload,
   validateCreateEventPayload,
   validateUpdateEventPayload,
@@ -44,7 +45,7 @@ const MODEL_NAME = "gemini-3.6-flash";
 
 export type AssistantRole = "user" | "model" | "system";
 export type ProposalActionType =
-  | "email_campaign" | "automation_rule" | "class_create" | "class_update" | "package_update"
+  | "email_campaign" | "automation_rule" | "class_create" | "class_update" | "package_create" | "package_update"
   | "event_create" | "event_update" | "workshop_create" | "workshop_update" | "class_bulk_import"
   | "instructor_create" | "instructor_update" | "instructor_delete" | "instructor_bulk_import";
 export type ProposalStatus = "pending" | "approved" | "rejected";
@@ -292,6 +293,25 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         reasoning: REASONING_PROPERTY,
       },
       required: ["classId", "reasoning"],
+    },
+  },
+  {
+    name: "draft_create_package",
+    description: "Draft a brand-new credit package for the studio owner to review and approve. Never claim the package has been created. classIds is required — pass an empty array if the package isn't tied to specific classes, or call get_schedule first to use real class doc IDs.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        name: { type: SchemaType.STRING },
+        price: { type: SchemaType.NUMBER },
+        credits: { type: SchemaType.NUMBER },
+        expirationDays: { type: SchemaType.NUMBER },
+        isActive: { type: SchemaType.BOOLEAN },
+        classIds: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING }, description: "Class doc IDs this package applies to, from get_schedule. Pass an empty array if not tying it to specific classes." },
+        description: { type: SchemaType.STRING },
+        proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
+      },
+      required: ["name", "price", "credits", "expirationDays", "isActive", "classIds", "reasoning"],
     },
   },
   {
@@ -929,6 +949,13 @@ async function prepareDraftProposal(
       return { valid: true, payload: { classId, ...rest }, summary: `Update class: "${label}"`, reasoning, revisedProposalId };
     }
 
+    case "draft_create_package": {
+      const payload: Record<string, unknown> = { ...args_ };
+      const result = validateCreatePackagePayload(payload);
+      if (!result.valid) return { valid: false, errors: result.errors };
+      return { valid: true, payload, summary: `New package: "${payload["name"]}" (${payload["credits"]} credits)`, reasoning, revisedProposalId };
+    }
+
     case "draft_update_package": {
       const packageId = typeof args_["packageId"] === "string" ? args_["packageId"] : "";
       if (!packageId) return { valid: false, errors: [{ field: "packageId", message: "packageId is required" }] };
@@ -1197,6 +1224,7 @@ const TOOL_NAME_TO_ACTION_TYPE: Record<string, ProposalActionType> = {
   draft_automation_rule: "automation_rule",
   draft_create_class: "class_create",
   draft_update_class: "class_update",
+  draft_create_package: "package_create",
   draft_update_package: "package_update",
   draft_create_event: "event_create",
   draft_update_event: "event_update",
@@ -1215,9 +1243,9 @@ function systemInstructionFor(studioName: string): string {
   return `You are DanceUp's studio co-pilot for "${studioName}". You help the studio owner by answering questions using the read tools (schedule, packages, instructors, events, workshops, automation rules, engagement stats, insights) and by preparing drafts using the draft_* tools.
 
 Rules you must always follow:
-- You can NEVER send an email, create/update an automation rule, create/update a class, event, workshop, or instructor, delete an instructor, or update a package directly. The only way to propose any of those is to call the matching draft_* tool, which prepares a draft for the studio owner to review and explicitly approve.
+- You can NEVER send an email, create/update an automation rule, create/update a class, package, event, workshop, or instructor, or delete an instructor directly. The only way to propose any of those is to call the matching draft_* tool, which prepares a draft for the studio owner to review and explicitly approve.
 - Never tell the user an action has been completed, sent, or saved — only that you've prepared a draft for their approval.
-- Before drafting a new class, call get_instructors so you use real instructor IDs. Before drafting an update to a class, package, event, workshop, or instructor — or deleting an instructor — call get_schedule, get_packages, get_events, get_workshops, or get_instructors (as appropriate) so you use a real ID.
+- Before drafting a new class, call get_instructors so you use real instructor IDs. Before drafting a new package tied to specific classes, call get_schedule so you use real class IDs (an empty classIds array is fine if it isn't tied to specific classes). Before drafting an update to a class, package, event, workshop, or instructor — or deleting an instructor — call get_schedule, get_packages, get_events, get_workshops, or get_instructors (as appropriate) so you use a real ID.
 - If the user asks you to change something about a draft you already proposed (e.g. "actually make it Friday instead"), call get_pending_proposals first to find that proposal's id and current values, then call the SAME draft_* tool again with that id in the proposalId field plus only the field(s) that should change — this updates the existing draft in place instead of creating a duplicate one.
 - Every draft_* tool call requires a 'reasoning' argument — always cite the specific number, name, or date from a tool you actually called (e.g. "6 students haven't attended in 21+ days" or "this class averaged 18% fill rate over 4 weeks"). Never a generic reason like "to boost engagement." Also mention that same reasoning, briefly, in your reply text — the studio owner should never see a draft with no visible logic behind it.
 - Don't default to an automation rule just because it's the easiest thing to justify from engagement stats. An email campaign, a class/package tweak, or a promo can all be better fits depending on what the data actually shows — pick based on the data, not on which read tool is quickest to call.
@@ -1604,6 +1632,19 @@ export async function approveProposal(
       resultResourceId = classId;
       message = "Class updated.";
       logAuditEvent(actorUid, studioOwnerId, "assistant_class_updated", "class", resultResourceId, {});
+      break;
+    }
+    case "package_create": {
+      const result = validateCreatePackagePayload(mergedPayload);
+      if (!result.valid) {
+        const err = new Error("Validation Error") as Error & { status?: number; errors?: unknown[] };
+        err.status = 400;
+        err.errors = result.errors;
+        throw err;
+      }
+      resultResourceId = await packagesService.createPackage(mergedPayload, studioOwnerId);
+      message = "Package created.";
+      logAuditEvent(actorUid, studioOwnerId, "assistant_package_created", "package", resultResourceId, {});
       break;
     }
     case "package_update": {
