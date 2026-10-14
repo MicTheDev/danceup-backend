@@ -31,6 +31,8 @@ import {
   validateUpdateEventPayload,
   validateCreateWorkshopPayload,
   validateUpdateWorkshopPayload,
+  validateCreateInstructorPayload,
+  validateUpdateInstructorPayload,
 } from "../utils/validation";
 import { logAuditEvent } from "./audit.service";
 
@@ -43,7 +45,8 @@ const MODEL_NAME = "gemini-3.6-flash";
 export type AssistantRole = "user" | "model" | "system";
 export type ProposalActionType =
   | "email_campaign" | "automation_rule" | "class_create" | "class_update" | "package_update"
-  | "event_create" | "event_update" | "workshop_create" | "workshop_update" | "class_bulk_import";
+  | "event_create" | "event_update" | "workshop_create" | "workshop_update" | "class_bulk_import"
+  | "instructor_create" | "instructor_update" | "instructor_delete" | "instructor_bulk_import";
 export type ProposalStatus = "pending" | "approved" | "rejected";
 
 export interface AssistantMessage {
@@ -432,6 +435,82 @@ const DRAFT_TOOLS: FunctionDeclaration[] = [
         reasoning: REASONING_PROPERTY,
       },
       required: ["classes", "reasoning"],
+    },
+  },
+  {
+    name: "draft_create_instructor",
+    description: "Draft a brand-new instructor for the studio owner to review and approve. Never claim the instructor has been created.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        firstName: { type: SchemaType.STRING },
+        lastName: { type: SchemaType.STRING },
+        email: { type: SchemaType.STRING },
+        phone: { type: SchemaType.STRING },
+        bio: { type: SchemaType.STRING },
+        privateRate: { type: SchemaType.NUMBER, description: "Hourly rate in dollars for private lessons, if any." },
+        proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
+      },
+      required: ["firstName", "lastName", "reasoning"],
+    },
+  },
+  {
+    name: "draft_update_instructor",
+    description: "Draft an update to an existing instructor for the studio owner to review and approve. Never claim the instructor has been updated. Call get_instructors first to get the instructorId.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        instructorId: { type: SchemaType.STRING, description: "The instructor doc ID from get_instructors." },
+        firstName: { type: SchemaType.STRING },
+        lastName: { type: SchemaType.STRING },
+        email: { type: SchemaType.STRING },
+        phone: { type: SchemaType.STRING },
+        bio: { type: SchemaType.STRING },
+        privateRate: { type: SchemaType.NUMBER },
+        proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
+      },
+      required: ["instructorId", "reasoning"],
+    },
+  },
+  {
+    name: "draft_delete_instructor",
+    description: "Draft the deletion of an existing instructor for the studio owner to review and approve. Never claim the instructor has been deleted. Call get_instructors first to get the instructorId.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        instructorId: { type: SchemaType.STRING, description: "The instructor doc ID from get_instructors." },
+        proposalId: PROPOSAL_ID_PROPERTY,
+        reasoning: REASONING_PROPERTY,
+      },
+      required: ["instructorId", "reasoning"],
+    },
+  },
+  {
+    name: "draft_bulk_import_instructors",
+    description: "Draft a bulk import of multiple instructors at once from a studio owner's uploaded spreadsheet, for review and approval as a single proposal. Never claim any instructor has been created.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        instructors: {
+          type: SchemaType.ARRAY,
+          description: "One entry per spreadsheet row.",
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              firstName: { type: SchemaType.STRING },
+              lastName: { type: SchemaType.STRING },
+              email: { type: SchemaType.STRING },
+              phone: { type: SchemaType.STRING },
+              bio: { type: SchemaType.STRING },
+            },
+            required: ["firstName", "lastName"],
+          },
+        },
+        reasoning: REASONING_PROPERTY,
+      },
+      required: ["instructors", "reasoning"],
     },
   },
 ];
@@ -1005,6 +1084,88 @@ async function prepareDraftProposal(
       };
     }
 
+    case "draft_create_instructor": {
+      const payload: Record<string, unknown> = { ...args_ };
+      const result = validateCreateInstructorPayload(payload);
+      if (!result.valid) return { valid: false, errors: result.errors };
+      return { valid: true, payload, summary: `New instructor: "${payload["firstName"]} ${payload["lastName"]}"`, reasoning, revisedProposalId };
+    }
+
+    case "draft_update_instructor": {
+      const instructorId = typeof args_["instructorId"] === "string" ? args_["instructorId"] : "";
+      if (!instructorId) return { valid: false, errors: [{ field: "instructorId", message: "instructorId is required" }] };
+      const { instructorId: _omit, ...rest } = args_;
+      const result = validateUpdateInstructorPayload(rest);
+      if (!result.valid) return { valid: false, errors: result.errors };
+
+      let label = instructorId;
+      try {
+        const existing = await instructorsService.getInstructorById(instructorId, studioOwnerId);
+        if (existing) label = `${(existing["firstName"] as string) || ""} ${(existing["lastName"] as string) || ""}`.trim() || instructorId;
+      } catch {
+        // best-effort label only — approval-time write still re-validates ownership
+      }
+
+      return { valid: true, payload: { instructorId, ...rest }, summary: `Update instructor: "${label}"`, reasoning, revisedProposalId };
+    }
+
+    case "draft_delete_instructor": {
+      const instructorId = typeof args_["instructorId"] === "string" ? args_["instructorId"] : "";
+      if (!instructorId) return { valid: false, errors: [{ field: "instructorId", message: "instructorId is required" }] };
+
+      let label = instructorId;
+      try {
+        const existing = await instructorsService.getInstructorById(instructorId, studioOwnerId);
+        if (existing) label = `${(existing["firstName"] as string) || ""} ${(existing["lastName"] as string) || ""}`.trim() || instructorId;
+      } catch {
+        // best-effort label only — approval-time write still re-validates ownership
+      }
+
+      return { valid: true, payload: { instructorId }, summary: `Delete instructor: "${label}"`, reasoning, revisedProposalId };
+    }
+
+    case "draft_bulk_import_instructors": {
+      const rawInstructors = Array.isArray(args_["instructors"]) ? (args_["instructors"] as Array<Record<string, unknown>>) : [];
+      if (rawInstructors.length === 0) {
+        return { valid: false, errors: [{ field: "instructors", message: "instructors must be a non-empty array" }] };
+      }
+      if (rawInstructors.length > 200) {
+        return { valid: false, errors: [{ field: "instructors", message: "Too many rows in one import — please split into batches of 200 or fewer." }] };
+      }
+
+      const validInstructors: Record<string, unknown>[] = [];
+      const skippedRows: Array<{ row: Record<string, unknown>; reason: string }> = [];
+
+      for (const raw of rawInstructors) {
+        const candidate: Record<string, unknown> = {
+          firstName: typeof raw["firstName"] === "string" ? (raw["firstName"] as string).trim() : "",
+          lastName: typeof raw["lastName"] === "string" ? (raw["lastName"] as string).trim() : "",
+          ...(typeof raw["email"] === "string" && raw["email"].trim() ? { email: (raw["email"] as string).trim() } : {}),
+          ...(typeof raw["phone"] === "string" && raw["phone"].trim() ? { phone: (raw["phone"] as string).trim() } : {}),
+          ...(typeof raw["bio"] === "string" && raw["bio"].trim() ? { bio: (raw["bio"] as string).trim() } : {}),
+        };
+
+        const result = validateCreateInstructorPayload(candidate);
+        if (!result.valid) {
+          skippedRows.push({ row: raw, reason: result.errors.map((e) => e.message).join("; ") });
+          continue;
+        }
+        validInstructors.push(candidate);
+      }
+
+      if (validInstructors.length === 0) {
+        return { valid: false, errors: [{ field: "instructors", message: "None of the rows could be validated — nothing to import. Check the skipped reasons and try again." }] };
+      }
+
+      return {
+        valid: true,
+        payload: { instructors: validInstructors, skippedRows },
+        summary: `Import ${validInstructors.length} instructor${validInstructors.length === 1 ? "" : "s"}${skippedRows.length > 0 ? ` (${skippedRows.length} skipped)` : ""}`,
+        reasoning,
+        revisedProposalId,
+      };
+    }
+
     default:
       return { valid: false, errors: [{ field: "tool", message: `Unknown draft tool: ${toolName}` }] };
   }
@@ -1042,6 +1203,10 @@ const TOOL_NAME_TO_ACTION_TYPE: Record<string, ProposalActionType> = {
   draft_create_workshop: "workshop_create",
   draft_update_workshop: "workshop_update",
   draft_bulk_import_classes: "class_bulk_import",
+  draft_create_instructor: "instructor_create",
+  draft_update_instructor: "instructor_update",
+  draft_delete_instructor: "instructor_delete",
+  draft_bulk_import_instructors: "instructor_bulk_import",
 };
 
 // ─── The chat/tool loop ─────────────────────────────────────────────────────
@@ -1050,9 +1215,9 @@ function systemInstructionFor(studioName: string): string {
   return `You are DanceUp's studio co-pilot for "${studioName}". You help the studio owner by answering questions using the read tools (schedule, packages, instructors, events, workshops, automation rules, engagement stats, insights) and by preparing drafts using the draft_* tools.
 
 Rules you must always follow:
-- You can NEVER send an email, create/update an automation rule, create/update a class, event, or workshop, or update a package directly. The only way to propose any of those is to call the matching draft_* tool, which prepares a draft for the studio owner to review and explicitly approve.
+- You can NEVER send an email, create/update an automation rule, create/update a class, event, workshop, or instructor, delete an instructor, or update a package directly. The only way to propose any of those is to call the matching draft_* tool, which prepares a draft for the studio owner to review and explicitly approve.
 - Never tell the user an action has been completed, sent, or saved — only that you've prepared a draft for their approval.
-- Before drafting a new class, call get_instructors so you use real instructor IDs. Before drafting an update to a class, package, event, or workshop, call get_schedule, get_packages, get_events, or get_workshops (as appropriate) so you use a real ID.
+- Before drafting a new class, call get_instructors so you use real instructor IDs. Before drafting an update to a class, package, event, workshop, or instructor — or deleting an instructor — call get_schedule, get_packages, get_events, get_workshops, or get_instructors (as appropriate) so you use a real ID.
 - If the user asks you to change something about a draft you already proposed (e.g. "actually make it Friday instead"), call get_pending_proposals first to find that proposal's id and current values, then call the SAME draft_* tool again with that id in the proposalId field plus only the field(s) that should change — this updates the existing draft in place instead of creating a duplicate one.
 - Every draft_* tool call requires a 'reasoning' argument — always cite the specific number, name, or date from a tool you actually called (e.g. "6 students haven't attended in 21+ days" or "this class averaged 18% fill rate over 4 weeks"). Never a generic reason like "to boost engagement." Also mention that same reasoning, briefly, in your reply text — the studio owner should never see a draft with no visible logic behind it.
 - Don't default to an automation rule just because it's the easiest thing to justify from engagement stats. An email campaign, a class/package tweak, or a promo can all be better fits depending on what the data actually shows — pick based on the data, not on which read tool is quickest to call.
@@ -1213,6 +1378,18 @@ export async function handleBulkImportClassesRequest(
 ): Promise<AssistantTurnResult> {
   const trimmedRows = rows.slice(0, MAX_BULK_IMPORT_ROWS);
   const instruction = `The studio owner uploaded a spreadsheet and confirmed these ${trimmedRows.length} classes to import (already parsed from their file — don't ask them to re-enter anything). Call draft_bulk_import_classes ONCE with this exact list as the classes argument, not draft_create_class per row. The backend re-validates each row and resolves instructor names server-side, so include every row even if something looks off — invalid or unmatched rows are safely skipped and reported back, never silently dropped or silently created wrong.\n\nRows (JSON array):\n${JSON.stringify(trimmedRows)}`;
+  return handleAssistantMessage(studioOwnerId, instruction);
+}
+
+// Called from POST /assistant/import-instructors with rows already parsed/column-mapped
+// client-side (see instructor-spreadsheet-import.component.ts) — never a raw file. Same
+// fixed-instruction pattern as handleBulkImportClassesRequest above.
+export async function handleBulkImportInstructorsRequest(
+  studioOwnerId: string,
+  rows: Array<Record<string, unknown>>,
+): Promise<AssistantTurnResult> {
+  const trimmedRows = rows.slice(0, MAX_BULK_IMPORT_ROWS);
+  const instruction = `The studio owner uploaded a spreadsheet and confirmed these ${trimmedRows.length} instructors to import (already parsed from their file — don't ask them to re-enter anything). Call draft_bulk_import_instructors ONCE with this exact list as the instructors argument, not draft_create_instructor per row. The backend re-validates each row, so include every row even if something looks off — invalid rows are safely skipped and reported back, never silently dropped or silently created wrong.\n\nRows (JSON array):\n${JSON.stringify(trimmedRows)}`;
   return handleAssistantMessage(studioOwnerId, instruction);
 }
 
@@ -1515,6 +1692,65 @@ export async function approveProposal(
       resultResourceId = createdIds[0] as string;
       message = `${createdIds.length} class${createdIds.length === 1 ? "" : "es"} created.`;
       logAuditEvent(actorUid, studioOwnerId, "assistant_classes_bulk_imported", "class", resultResourceId, { count: createdIds.length, allIds: createdIds });
+      break;
+    }
+    case "instructor_create": {
+      const result = validateCreateInstructorPayload(mergedPayload);
+      if (!result.valid) {
+        const err = new Error("Validation Error") as Error & { status?: number; errors?: unknown[] };
+        err.status = 400;
+        err.errors = result.errors;
+        throw err;
+      }
+      resultResourceId = await instructorsService.createInstructor(mergedPayload, studioOwnerId);
+      message = "Instructor created.";
+      logAuditEvent(actorUid, studioOwnerId, "assistant_instructor_created", "instructor", resultResourceId, {});
+      break;
+    }
+    case "instructor_update": {
+      const { instructorId, ...updates } = mergedPayload as { instructorId: string } & Record<string, unknown>;
+      const result = validateUpdateInstructorPayload(updates);
+      if (!result.valid) {
+        const err = new Error("Validation Error") as Error & { status?: number; errors?: unknown[] };
+        err.status = 400;
+        err.errors = result.errors;
+        throw err;
+      }
+      await instructorsService.updateInstructor(instructorId, updates, studioOwnerId);
+      resultResourceId = instructorId;
+      message = "Instructor updated.";
+      logAuditEvent(actorUid, studioOwnerId, "assistant_instructor_updated", "instructor", resultResourceId, {});
+      break;
+    }
+    case "instructor_delete": {
+      const instructorId = mergedPayload["instructorId"] as string | undefined;
+      if (!instructorId) {
+        const err = new Error("Validation Error") as Error & { status?: number; errors?: unknown[] };
+        err.status = 400;
+        err.errors = [{ field: "instructorId", message: "instructorId is required" }];
+        throw err;
+      }
+      await instructorsService.deleteInstructor(instructorId, studioOwnerId);
+      resultResourceId = instructorId;
+      message = "Instructor deleted.";
+      logAuditEvent(actorUid, studioOwnerId, "assistant_instructor_deleted", "instructor", resultResourceId, {});
+      break;
+    }
+    case "instructor_bulk_import": {
+      const instructorsToImport = Array.isArray(mergedPayload["instructors"]) ? (mergedPayload["instructors"] as Array<Record<string, unknown>>) : [];
+      if (instructorsToImport.length === 0) {
+        const err = new Error("No instructors to import") as Error & { status?: number };
+        err.status = 400;
+        throw err;
+      }
+      const createdIds: string[] = [];
+      for (const instructorData of instructorsToImport) {
+        const id = await instructorsService.createInstructor(instructorData, studioOwnerId);
+        createdIds.push(id);
+      }
+      resultResourceId = createdIds[0] as string;
+      message = `${createdIds.length} instructor${createdIds.length === 1 ? "" : "s"} created.`;
+      logAuditEvent(actorUid, studioOwnerId, "assistant_instructors_bulk_imported", "instructor", resultResourceId, { count: createdIds.length, allIds: createdIds });
       break;
     }
     default:

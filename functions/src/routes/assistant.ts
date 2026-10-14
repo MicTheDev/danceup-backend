@@ -146,6 +146,37 @@ app.post("/import-classes", async (req, res) => {
   }
 });
 
+// Accepts spreadsheet rows already parsed/column-mapped client-side (never a raw file
+// upload) and turns them into a single instructor_bulk_import proposal for review —
+// mirrors /import-classes exactly.
+app.post("/import-instructors", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const contact = await assistantService.getStudioOwnerContact(studioOwnerId);
+    if (!contact.isProPlus) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Co-Pilot is available on Studio Owner Pro+ only");
+    }
+
+    const { rows } = (req.body || {}) as { rows?: unknown };
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "rows must be a non-empty array");
+    }
+
+    const result = await assistantService.handleBulkImportInstructorsRequest(studioOwnerId, rows as Array<Record<string, unknown>>);
+    sendJsonResponse(req, res, 200, result);
+  } catch (error) {
+    console.error("Error importing instructors via assistant:", error);
+    handleError(req, res, error);
+  }
+});
+
 app.post("/proposals/:id/approve", async (req, res) => {
   try {
     let user;
