@@ -6,7 +6,10 @@ import storageService from "../services/storage.service";
 import instructorLinkingService from "../services/instructor-linking.service";
 import { logAuditEvent } from "../services/audit.service";
 import { verifyToken } from "../utils/auth";
-import { validateCreateInstructorPayload, validateUpdateInstructorPayload } from "../utils/validation";
+import {
+  validateBulkImportInstructorsPayload, validateCreateInstructorPayload, validateUpdateInstructorPayload,
+} from "../utils/validation";
+import { STUDIO_PLAN_REQUIRED_MESSAGE, studioHasStudioPlan } from "../utils/membership";
 import { getFirestore } from "../utils/firestore";
 import {
   sendJsonResponse,
@@ -106,6 +109,39 @@ app.post("/", async (req, res) => {
     sendJsonResponse(req, res, 201, { id: instructorId, message: "Instructor created successfully" });
   } catch (error) {
     console.error("Error creating instructor:", error);
+    handleError(req, res, error);
+  }
+});
+
+// Self-serve spreadsheet import from the Instructors page. Rows arrive already parsed and
+// column-mapped client-side; each row is re-validated in instructorsService.bulkImportInstructors.
+// Available to Studio Owner and Pro+, unlike the Co-Pilot's /assistant/import-instructors.
+app.post("/bulk-import", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const studioOwnerId = await instructorsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    if (!(await studioHasStudioPlan(studioOwnerId))) {
+      return sendErrorResponse(req, res, 403, "Forbidden", STUDIO_PLAN_REQUIRED_MESSAGE);
+    }
+
+    const validation = validateBulkImportInstructorsPayload(req.body);
+    if (!validation.valid) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid import data", {
+        errors: (validation as { valid: false; errors: unknown[] }).errors,
+      });
+    }
+
+    const rows = (req.body as { rows: Array<Record<string, unknown>> }).rows;
+    const result = await instructorsService.bulkImportInstructors(rows, studioOwnerId);
+    sendJsonResponse(req, res, 200, { created: result.created, errors: result.errors });
+  } catch (error) {
+    console.error("Error bulk importing instructors:", error);
     handleError(req, res, error);
   }
 });

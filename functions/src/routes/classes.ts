@@ -7,6 +7,7 @@ import { autoGenerateClassFlyer } from "../services/auto-flyer.service";
 import { verifyToken } from "../utils/auth";
 import { validateCreateClassPayload, validateUpdateClassPayload, validateBulkImportClassesPayload } from "../utils/validation";
 import { sanitizeRichText } from "../utils/sanitize";
+import { STUDIO_PLAN_REQUIRED_MESSAGE, studioHasStudioPlan } from "../utils/membership";
 import {
   sendJsonResponse,
   sendErrorResponse,
@@ -149,8 +150,8 @@ app.post("/", async (req, res) => {
 // Self-serve spreadsheet import from the studio owner's own Classes page. rows arrive
 // already parsed/column-mapped client-side (never a raw file upload) with a free-text
 // instructorName per row — matched server-side in classesService.bulkImportClasses,
-// never trusted/pre-resolved from the client. Available to every paid tier, unlike the
-// Co-Pilot's /assistant/import-classes which is Pro+ only.
+// never trusted/pre-resolved from the client. Available to Studio Owner and Pro+, unlike
+// the Co-Pilot's /assistant/import-classes which is Pro+ only.
 app.post("/bulk-import", async (req, res) => {
   try {
     let user;
@@ -159,6 +160,10 @@ app.post("/bulk-import", async (req, res) => {
     const studioOwnerId = await classesService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    if (!(await studioHasStudioPlan(studioOwnerId))) {
+      return sendErrorResponse(req, res, 403, "Forbidden", STUDIO_PLAN_REQUIRED_MESSAGE);
     }
 
     const validation = validateBulkImportClassesPayload(req.body);

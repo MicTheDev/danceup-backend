@@ -39,6 +39,17 @@ export function hasProPlusAccess(userData: Record<string, unknown> | undefined):
   return userData["membership"] === PRO_PLUS_MEMBERSHIP && userData["subscriptionActive"] !== false;
 }
 
+/**
+ * Studio tools (classes, instructors, spreadsheet import) = Studio Owner or Pro+
+ * with a subscription that hasn't lapsed.
+ */
+export function hasStudioPlanAccess(userData: Record<string, unknown> | undefined): boolean {
+  if (!userData) return false;
+  const membership = userData["membership"];
+  const isStudioPlan = membership === "studio_owner" || membership === PRO_PLUS_MEMBERSHIP;
+  return isStudioPlan && userData["subscriptionActive"] !== false;
+}
+
 export async function getStudioOwnerData(studioOwnerId: string): Promise<Record<string, unknown> | undefined> {
   const doc = await getFirestore().collection("users").doc(studioOwnerId).get();
   return doc.exists ? (doc.data() as Record<string, unknown>) : undefined;
@@ -51,3 +62,10 @@ export async function studioHasProPlus(studioOwnerId: string): Promise<boolean> 
 export function proPlusRequiredMessage(feature: string): string {
   return `${feature} is included with Studio Owner Pro+. Upgrade your plan to use it.`;
 }
+
+export async function studioHasStudioPlan(studioOwnerId: string): Promise<boolean> {
+  return hasStudioPlanAccess(await getStudioOwnerData(studioOwnerId));
+}
+
+export const STUDIO_PLAN_REQUIRED_MESSAGE =
+  "Spreadsheet import is included with Studio Owner and Studio Owner Pro+. Upgrade your plan to use it.";
