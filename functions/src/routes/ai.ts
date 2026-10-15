@@ -530,6 +530,12 @@ app.post("/promo-copy", async (req, res) => {
       db.collection("users").doc(studioOwnerId).get(),
     ]);
 
+    // AI promo copy is a Studio Owner Pro+ feature ("ultimate" is the legacy name for that tier).
+    const membership = studioDoc.exists ? (studioDoc.data() as Record<string, unknown>)["membership"] : undefined;
+    if (membership !== "studio_owner_pro_plus" && membership !== "ultimate") {
+      return sendErrorResponse(req, res, 403, "Forbidden", "AI promo copy is included with Studio Owner Pro+. Upgrade your plan to use it.");
+    }
+
     const entityData = entityDoc.data() as Record<string, unknown>;
     if (!entityDoc.exists || entityData["studioOwnerId"] !== studioOwnerId) {
       return sendErrorResponse(req, res, 404, "Not Found", `${entityType as string} not found`);

@@ -778,8 +778,12 @@ export class AttendanceService {
       .where("isRemoved", "==", false)
       .get();
 
-    const cutoff = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
-    const activeStudentIds = new Set<string>();
+    // At-risk = attended within the last 90 days but not in the last 14. Students whose last
+    // check-in is older than 90 days have already lapsed and would only inflate the count.
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const atRiskCutoff = new Date(now.getTime() - 14 * DAY_MS);
+    const lapsedCutoff = new Date(now.getTime() - 90 * DAY_MS);
+    const lastCheckIn = new Map<string, Date>();
     let weekCheckIns = 0;
 
     allAttSnap.forEach((doc) => {
@@ -789,8 +793,10 @@ export class AttendanceService {
       if (!date) return;
       // Count this week's check-ins
       if (date >= weekStart && date < weekEnd) weekCheckIns++;
-      // Track students active in last 14 days
-      if (date >= cutoff && sid) activeStudentIds.add(sid);
+      if (sid) {
+        const existing = lastCheckIn.get(sid);
+        if (!existing || date > existing) lastCheckIn.set(sid, date);
+      }
     });
 
     const emptySpots = Math.max(0, totalCapacity - weekCheckIns);
@@ -800,7 +806,10 @@ export class AttendanceService {
     const studentsSnap = await db.collection("students")
       .where("studioOwnerId", "==", studioOwnerId)
       .get();
-    const atRiskCount = studentsSnap.docs.filter((d) => !activeStudentIds.has(d.id)).length;
+    const atRiskCount = studentsSnap.docs.filter((d) => {
+      const last = lastCheckIn.get(d.id);
+      return !!last && last >= lapsedCutoff && last < atRiskCutoff;
+    }).length;
     const atRiskValue = atRiskCount * avgClassPrice * 4; // estimated monthly value (4 classes/mo)
 
     // --- Unused credits (equality-only query, no composite index needed) ---
