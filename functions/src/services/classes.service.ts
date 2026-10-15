@@ -1,5 +1,6 @@
 import * as admin from "firebase-admin";
 import authService from "./auth.service";
+import instructorsService from "./instructors.service";
 import { getFirestore } from "../utils/firestore";
 import { geocodeAddress } from "../utils/geocoding";
 import { haversineDistance } from "../utils/distance";
@@ -375,6 +376,149 @@ export class ClassesService {
           ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
           lastModifiedByAdminUid: adminUid,
           lastModifiedByAdminAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    }
+
+    return { created: validRows.length, errors };
+  }
+
+  // Self-serve bulk import for a studio owner's own Classes page — unlike
+  // bulkImportClassesForAdmin above, rows arrive with a free-text instructorName
+  // (never a pre-resolved instructorId) since there's no admin operator in this flow
+  // to have already looked instructors up. Matching logic mirrors the Co-Pilot's
+  // findInstructorMatch (assistant.service.ts): exact match only, a near-miss surfaces
+  // as a "did you mean" row error rather than ever auto-assigning on a guess.
+  async bulkImportClasses(
+    rows: Array<Record<string, unknown>>, studioOwnerId: string,
+  ): Promise<{ created: number; errors: Array<{ row: number; message: string }> }> {
+    const db = getFirestore();
+    const errors: Array<{ row: number; message: string }> = [];
+    const validRows: Record<string, unknown>[] = [];
+
+    const studioOwnerDoc = await db.collection("users").doc(studioOwnerId).get();
+    let imageUrl: string = STUDIO_PLACEHOLDER_IMAGE;
+    let coords: { lat: number; lng: number } | null = null;
+    if (studioOwnerDoc.exists) {
+      const sd = studioOwnerDoc.data() as Record<string, unknown>;
+      imageUrl = (sd["studioImageUrl"] as string | undefined) || STUDIO_PLACEHOLDER_IMAGE;
+      if (sd["studioAddressLine1"] && sd["city"] && sd["state"]) {
+        coords = await geocodeAddress(
+          sd["studioAddressLine1"] as string,
+          sd["city"] as string,
+          sd["state"] as string,
+          (sd["zip"] as string) || "",
+        );
+      }
+    }
+
+    const validDays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    const normalizeDayOfWeek = (raw: string): string => {
+      const lower = raw.trim().toLowerCase();
+      const match = validDays.find((d) => d.toLowerCase() === lower);
+      return match ?? raw.trim();
+    };
+
+    const validLevels = ["Beginner", "Intermediate", "Advanced", "All Levels"];
+    const normalizeLevel = (raw: string): string => {
+      const lower = raw.trim().toLowerCase();
+      const match = validLevels.find((l) => l.toLowerCase() === lower);
+      return match ?? raw.trim();
+    };
+
+    const instructors = await instructorsService.getInstructors(studioOwnerId);
+    const instructorFullName = (i: Record<string, unknown>): string =>
+      `${(i["firstName"] as string) || ""} ${(i["lastName"] as string) || ""}`.trim();
+    const findInstructorMatch = (rawName: unknown): { id?: string; suggestion?: string } => {
+      if (typeof rawName !== "string" || !rawName.trim()) return {};
+      const target = rawName.trim().toLowerCase();
+      const exact = instructors.find((i) => instructorFullName(i).toLowerCase() === target);
+      if (exact) return { id: exact["id"] as string };
+
+      const targetFirstWord = target.split(/\s+/)[0]?.replace(/\.$/, "") ?? "";
+      const suggestion = instructors.find((i) => {
+        const fullLower = instructorFullName(i).toLowerCase();
+        return fullLower.startsWith(target.replace(/\.$/, "")) || fullLower.split(/\s+/)[0] === targetFirstWord;
+      });
+      return { suggestion: suggestion ? instructorFullName(suggestion) : undefined };
+    };
+
+    rows.forEach((row, index) => {
+      const rowNum = index + 1;
+
+      const name = typeof row["name"] === "string" ? (row["name"] as string).trim() : "";
+      if (!name) { errors.push({ row: rowNum, message: "Missing class name" }); return; }
+
+      const level = normalizeLevel(typeof row["level"] === "string" ? (row["level"] as string) : "");
+      const levelV = validateClassLevel(level);
+      if (!levelV.valid) { errors.push({ row: rowNum, message: levelV.message ?? "Invalid level" }); return; }
+
+      const dayOfWeek = normalizeDayOfWeek(typeof row["dayOfWeek"] === "string" ? (row["dayOfWeek"] as string) : "");
+      const dayV = validateDayOfWeek(dayOfWeek);
+      if (!dayV.valid) { errors.push({ row: rowNum, message: dayV.message ?? "Invalid day of week" }); return; }
+
+      const startTime = typeof row["startTime"] === "string" ? (row["startTime"] as string).trim() : "";
+      const startV = validateTimeFormat(startTime);
+      if (!startV.valid) { errors.push({ row: rowNum, message: startV.message ?? "Invalid start time" }); return; }
+
+      const endTime = typeof row["endTime"] === "string" ? (row["endTime"] as string).trim() : "";
+      const endV = validateTimeFormat(endTime);
+      if (!endV.valid) { errors.push({ row: rowNum, message: endV.message ?? "Invalid end time" }); return; }
+
+      let danceGenre: string | undefined;
+      const rawGenre = row["danceGenre"];
+      if (rawGenre !== undefined && rawGenre !== null && String(rawGenre).trim() !== "") {
+        danceGenre = String(rawGenre).trim().toLowerCase();
+        const genreV = validateDanceGenre(danceGenre);
+        if (!genreV.valid) { errors.push({ row: rowNum, message: genreV.message ?? "Invalid dance genre" }); return; }
+      }
+
+      let cost: number | undefined;
+      const rawCost = row["cost"];
+      if (rawCost !== undefined && rawCost !== null && String(rawCost).trim() !== "") {
+        cost = Number(rawCost);
+        const costV = validateCost(cost);
+        if (!costV.valid) { errors.push({ row: rowNum, message: costV.message ?? "Invalid cost" }); return; }
+      }
+
+      const room = typeof row["room"] === "string" ? (row["room"] as string).trim() || undefined : undefined;
+      const description = typeof row["description"] === "string" ? (row["description"] as string).trim() || undefined : undefined;
+
+      const rawInstructorName = row["instructorName"];
+      const { id: instructorId, suggestion } = findInstructorMatch(rawInstructorName);
+      if (typeof rawInstructorName === "string" && rawInstructorName.trim() && !instructorId) {
+        const hint = suggestion
+          ? ` Did you mean "${suggestion}"? Fix the name in your spreadsheet and re-import this row.`
+          : " Check the spelling or add them as an instructor first.";
+        errors.push({ row: rowNum, message: `Couldn't match instructor "${rawInstructorName}" to anyone on your instructor list.${hint}` });
+        return;
+      }
+
+      validRows.push({
+        name, level, dayOfWeek, startTime, endTime,
+        ...(danceGenre ? { danceGenre } : {}),
+        ...(cost !== undefined ? { cost } : {}),
+        ...(room ? { room } : {}),
+        ...(description ? { description } : {}),
+        isActive: true,
+        instructorIds: instructorId ? [instructorId] : [],
+      });
+    });
+
+    const BATCH_SIZE = 500;
+    for (let i = 0; i < validRows.length; i += BATCH_SIZE) {
+      const batch = db.batch();
+      for (const row of validRows.slice(i, i + BATCH_SIZE)) {
+        const ref = db.collection("classes").doc();
+        batch.set(ref, {
+          ...row,
+          cost: row["cost"] ?? 0,
+          studioOwnerId,
+          imageUrl,
+          ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });

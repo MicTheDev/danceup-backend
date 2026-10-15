@@ -5,7 +5,7 @@ import classesService from "../services/classes.service";
 import storageService from "../services/storage.service";
 import { autoGenerateClassFlyer } from "../services/auto-flyer.service";
 import { verifyToken } from "../utils/auth";
-import { validateCreateClassPayload, validateUpdateClassPayload } from "../utils/validation";
+import { validateCreateClassPayload, validateUpdateClassPayload, validateBulkImportClassesPayload } from "../utils/validation";
 import { sanitizeRichText } from "../utils/sanitize";
 import {
   sendJsonResponse,
@@ -142,6 +142,37 @@ app.post("/", async (req, res) => {
     sendJsonResponse(req, res, 201, { id: classId, message: "Class created successfully", flyer });
   } catch (error) {
     console.error("Error creating class:", error);
+    handleError(req, res, error);
+  }
+});
+
+// Self-serve spreadsheet import from the studio owner's own Classes page. rows arrive
+// already parsed/column-mapped client-side (never a raw file upload) with a free-text
+// instructorName per row — matched server-side in classesService.bulkImportClasses,
+// never trusted/pre-resolved from the client. Available to every paid tier, unlike the
+// Co-Pilot's /assistant/import-classes which is Pro+ only.
+app.post("/bulk-import", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+
+    const studioOwnerId = await classesService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const validation = validateBulkImportClassesPayload(req.body);
+    if (!validation.valid) {
+      return sendErrorResponse(req, res, 400, "Validation Error", "Invalid import data", {
+        errors: (validation as { valid: false; errors: unknown[] }).errors,
+      });
+    }
+
+    const rows = (req.body as { rows: Array<Record<string, unknown>> }).rows;
+    const result = await classesService.bulkImportClasses(rows, studioOwnerId);
+    sendJsonResponse(req, res, 200, { created: result.created, errors: result.errors });
+  } catch (error) {
+    console.error("Error bulk importing classes:", error);
     handleError(req, res, error);
   }
 });
