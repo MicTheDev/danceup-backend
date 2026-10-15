@@ -9,6 +9,7 @@ import {
   type Part,
 } from "@google/generative-ai";
 import { getFirestore } from "../utils/firestore";
+import { hasProPlusAccess } from "../utils/membership";
 import { getSecret } from "../utils/secret-manager";
 import classesService from "./classes.service";
 import packagesService from "./packages.service";
@@ -555,7 +556,6 @@ export interface StudioOwnerContact {
   annualRevenueGoal: number | null;
 }
 
-const PRO_PLUS_MEMBERSHIP = "studio_owner_pro_plus";
 
 // Exported so routes/assistant.ts can gate Co-Pilot access to Pro+ only without a second
 // Firestore read — this is the same per-studio-owner doc every caller here already fetches.
@@ -567,7 +567,7 @@ export async function getStudioOwnerContact(studioOwnerId: string): Promise<Stud
     studioName: (data["studioName"] as string) || "Your Studio",
     email: (data["email"] as string) || "",
     firstName: (data["firstName"] as string) || "",
-    isProPlus: data["membership"] === PRO_PLUS_MEMBERSHIP,
+    isProPlus: hasProPlusAccess(data),
     annualRevenueGoal: typeof data["annualRevenueGoal"] === "number" ? (data["annualRevenueGoal"] as number) : null,
   };
 }

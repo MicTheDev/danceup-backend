@@ -8,6 +8,7 @@ import rateLimit from "express-rate-limit";
 import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
 import { getSecret } from "../utils/secret-manager";
+import { isMembershipTier } from "../utils/membership";
 import * as stripeService from "../services/stripe.service";
 import {
   sendConfirmationEmail,
@@ -207,7 +208,8 @@ app.post("/create-account", async (req, res) => {
     // Persists the membership the owner selected during registration when it was never
     // otherwise recorded — happens when they skip payment before this step, since
     // /subscription-payment-success (the only other writer of this field) never runs.
-    const requestedMembership = (req.body as Record<string, unknown>)["membership"] as string | undefined;
+    const rawRequestedMembership = (req.body as Record<string, unknown>)["membership"];
+    const requestedMembership = isMembershipTier(rawRequestedMembership) ? rawRequestedMembership : undefined;
     if (!userData["membership"] && requestedMembership) {
       await userDoc.ref.update({
         membership: requestedMembership,

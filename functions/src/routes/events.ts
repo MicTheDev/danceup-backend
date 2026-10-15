@@ -6,6 +6,7 @@ import eventsService from "../services/events.service";
 import storageService from "../services/storage.service";
 import { autoGenerateEventOrWorkshopFlyer } from "../services/auto-flyer.service";
 import { verifyToken } from "../utils/auth";
+import { getStudioOwnerData, getTierLimit } from "../utils/membership";
 import { validateCreateEventPayload, validateUpdateEventPayload } from "../utils/validation";
 import { sanitizeRichText } from "../utils/sanitize";
 import { getFirestore } from "../utils/firestore";
@@ -164,6 +165,15 @@ app.post("/", async (req, res) => {
     const studioOwnerId = await eventsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const eventsLimit = getTierLimit((await getStudioOwnerData(studioOwnerId))?.["membership"], "events");
+    if (eventsLimit !== null) {
+      const existing = await getFirestore().collection("events").where("studioOwnerId", "==", studioOwnerId).count().get();
+      if (existing.data().count >= eventsLimit) {
+        return sendErrorResponse(req, res, 403, "Plan Limit Reached",
+          `Your plan allows up to ${eventsLimit} events. Upgrade your plan to create more.`);
+      }
     }
 
     const eventId = await eventsService.createEvent(eventData, studioOwnerId);

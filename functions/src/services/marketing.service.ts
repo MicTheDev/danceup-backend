@@ -1,6 +1,7 @@
 import * as crypto from "crypto";
 import * as admin from "firebase-admin";
 import { getFirestore } from "../utils/firestore";
+import { getStudioOwnerData, getTierLimit } from "../utils/membership";
 import authService from "./auth.service";
 import studentsService from "./students.service";
 import { getApiKey, sendEmail } from "./sendgrid.service";
@@ -184,6 +185,11 @@ export async function sendCampaignToRecipients(
   }
   if (toSend.length === 0) {
     throw new Error("Validation Error: No recipients selected or no subscribed students");
+  }
+
+  const recipientLimit = getTierLimit((await getStudioOwnerData(studioOwnerId))?.["membership"], "emailRecipients");
+  if (recipientLimit !== null && toSend.length > recipientLimit) {
+    throw new Error(`Validation Error: Your plan allows up to ${recipientLimit} recipients. Upgrade your plan to send to more recipients.`);
   }
 
   const campaignResult = await createCampaign(

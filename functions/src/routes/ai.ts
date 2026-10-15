@@ -9,6 +9,7 @@ import studentsService from "../services/students.service";
 import attendanceService from "../services/attendance.service";
 import { verifyToken } from "../utils/auth";
 import { getFirestore } from "../utils/firestore";
+import { hasProPlusAccess, proPlusRequiredMessage, studioHasProPlus } from "../utils/membership";
 import {
   sendJsonResponse,
   sendErrorResponse,
@@ -69,6 +70,9 @@ app.get("/studio-insights", async (req, res) => {
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
     }
+    if (!(await studioHasProPlus(studioOwnerId))) {
+      return sendErrorResponse(req, res, 403, "Forbidden", proPlusRequiredMessage("AI Insights"));
+    }
 
     const { studioName, dashboardStats, topClasses } = await insightsService.getInsightsData(studioOwnerId) as {
       studioName: string;
@@ -96,6 +100,9 @@ app.get("/engagement-summary", async (req, res) => {
     const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
+    }
+    if (!(await studioHasProPlus(studioOwnerId))) {
+      return sendErrorResponse(req, res, 403, "Forbidden", proPlusRequiredMessage("AI Insights"));
     }
 
     const { atRisk, mostActive, stats } = await insightsService.getEngagementData(studioOwnerId) as {
@@ -303,6 +310,9 @@ app.post("/re-engagement-email", async (req, res) => {
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
     }
+    if (!(await studioHasProPlus(studioOwnerId))) {
+      return sendErrorResponse(req, res, 403, "Forbidden", proPlusRequiredMessage("AI re-engagement emails"));
+    }
 
     const db = getFirestore();
     const now = new Date();
@@ -380,6 +390,9 @@ app.get("/instructor-performance", async (req, res) => {
     const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
+    }
+    if (!(await studioHasProPlus(studioOwnerId))) {
+      return sendErrorResponse(req, res, 403, "Forbidden", proPlusRequiredMessage("AI instructor performance summaries"));
     }
 
     const input = await insightsDataService.buildInstructorPerformanceInput(studioOwnerId);
@@ -483,6 +496,9 @@ app.get("/class-demand-analysis", async (req, res) => {
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
     }
+    if (!(await studioHasProPlus(studioOwnerId))) {
+      return sendErrorResponse(req, res, 403, "Forbidden", proPlusRequiredMessage("AI class demand analysis"));
+    }
 
     const input = await insightsDataService.buildClassDemandInput(studioOwnerId);
     if (!input) {
@@ -530,10 +546,8 @@ app.post("/promo-copy", async (req, res) => {
       db.collection("users").doc(studioOwnerId).get(),
     ]);
 
-    // AI promo copy is a Studio Owner Pro+ feature ("ultimate" is the legacy name for that tier).
-    const membership = studioDoc.exists ? (studioDoc.data() as Record<string, unknown>)["membership"] : undefined;
-    if (membership !== "studio_owner_pro_plus" && membership !== "ultimate") {
-      return sendErrorResponse(req, res, 403, "Forbidden", "AI promo copy is included with Studio Owner Pro+. Upgrade your plan to use it.");
+    if (!hasProPlusAccess(studioDoc.exists ? (studioDoc.data() as Record<string, unknown>) : undefined)) {
+      return sendErrorResponse(req, res, 403, "Forbidden", proPlusRequiredMessage("AI promo copy"));
     }
 
     const entityData = entityDoc.data() as Record<string, unknown>;
@@ -566,6 +580,9 @@ app.get("/revenue-forecast", async (req, res) => {
     const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
+    }
+    if (!(await studioHasProPlus(studioOwnerId))) {
+      return sendErrorResponse(req, res, 403, "Forbidden", proPlusRequiredMessage("AI revenue forecasting"));
     }
 
     const input = await insightsDataService.buildRevenueForecastInput(studioOwnerId);
@@ -621,6 +638,9 @@ app.get("/churn-scores", async (req, res) => {
     const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
+    }
+    if (!(await studioHasProPlus(studioOwnerId))) {
+      return sendErrorResponse(req, res, 403, "Forbidden", proPlusRequiredMessage("AI churn scoring"));
     }
 
     const db = getFirestore();
@@ -755,6 +775,9 @@ app.get("/student-ltv", async (req, res) => {
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
     }
+    if (!(await studioHasProPlus(studioOwnerId))) {
+      return sendErrorResponse(req, res, 403, "Forbidden", proPlusRequiredMessage("AI lifetime value projections"));
+    }
 
     const input = await insightsDataService.buildStudentLTVInput(studioOwnerId);
     if (!input) {
@@ -879,6 +902,9 @@ app.post("/suggest-automations", async (req, res) => {
     const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 404, "Not Found", "Studio owner not found");
+    }
+    if (!(await studioHasProPlus(studioOwnerId))) {
+      return sendErrorResponse(req, res, 403, "Forbidden", proPlusRequiredMessage("AI-suggested automations"));
     }
 
     const db = getFirestore();

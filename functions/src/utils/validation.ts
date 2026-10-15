@@ -1,4 +1,5 @@
 import type { ValidationResult, ValidationErrors } from "../types/api";
+import { isMembershipTier, MEMBERSHIP_TIERS } from "./membership";
 
 type ValidationErrorList = Array<{ field: string; message: string }>;
 
@@ -71,11 +72,10 @@ export function validateMembership(membership: unknown): ValidationResult {
   if (!membership || membership === null || membership === undefined) {
     return { valid: true, message: "" };
   }
-  const validMemberships = ["individual_instructor", "studio_owner", "event_organizer", "ultimate"];
-  if (!validMemberships.includes(membership as string)) {
+  if (!isMembershipTier(membership)) {
     return {
       valid: false,
-      message: `Membership must be one of: ${validMemberships.join(", ")}`,
+      message: `Membership must be one of: ${MEMBERSHIP_TIERS.join(", ")}`,
     };
   }
   return { valid: true, message: "" };

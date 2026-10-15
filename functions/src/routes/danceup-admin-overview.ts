@@ -86,7 +86,7 @@ function cardMethodStr(charge: Stripe.Charge): string | null {
 }
 
 function derivePlan(membership: string | null | undefined): string {
-  if (membership === "ultimate") return "Studio";
+  if (membership === "studio_owner_pro_plus" || membership === "custom") return "Studio";
   if (membership === "studio_owner") return "Pro";
   if (membership === "individual_instructor" || membership === "event_organizer") return "Starter";
   return "Free";

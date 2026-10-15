@@ -65,11 +65,10 @@ function deriveStatus(data: Record<string, unknown>): string {
 }
 
 function derivePlan(membership: string | null | undefined): string {
-  // "ultimate"/"event_organizer" are the old pre-Stripe-driven tier names
-  // (see validateMembership); "studio_owner_pro_plus"/"event_host"/"custom" are
-  // what getMembershipForPriceId actually returns today. Both eras are mapped
-  // here since existing rows may still carry the old values.
-  if (membership === "ultimate" || membership === "studio_owner_pro_plus" || membership === "custom") return "studio";
+  // "event_organizer" is an old pre-Stripe tier name kept for any rows that still carry
+  // it; "studio_owner_pro_plus"/"event_host"/"custom" are what getMembershipForPriceId
+  // returns today.
+  if (membership === "studio_owner_pro_plus" || membership === "custom") return "studio";
   if (membership === "studio_owner") return "pro";
   if (membership === "individual_instructor" || membership === "event_organizer") return "starter";
   return "free";

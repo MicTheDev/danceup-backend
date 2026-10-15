@@ -1,3 +1,4 @@
+import type { MembershipTier } from "../utils/membership";
 import type * as admin from "firebase-admin";
 
 type Timestamp = admin.firestore.Timestamp | admin.firestore.FieldValue;
@@ -16,7 +17,7 @@ export interface StudioOwner {
   state: string;
   zip: string;
   studioImageUrl: string | null;
-  membership: "individual_instructor" | "studio_owner" | "event_organizer" | "ultimate";
+  membership: MembershipTier;
   facebook: string | null;
   instagram: string | null;
   tiktok: string | null;

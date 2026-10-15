@@ -5,6 +5,7 @@ import workshopsService from "../services/workshops.service";
 import storageService from "../services/storage.service";
 import { autoGenerateEventOrWorkshopFlyer } from "../services/auto-flyer.service";
 import { verifyToken } from "../utils/auth";
+import { getStudioOwnerData, getTierLimit } from "../utils/membership";
 import { validateCreateWorkshopPayload, validateUpdateWorkshopPayload } from "../utils/validation";
 import { sanitizeRichText } from "../utils/sanitize";
 import { getFirestore } from "../utils/firestore";
@@ -158,6 +159,15 @@ app.post("/", async (req, res) => {
     const studioOwnerId = await workshopsService.getStudioOwnerId(user.uid);
     if (!studioOwnerId) {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+
+    const workshopsLimit = getTierLimit((await getStudioOwnerData(studioOwnerId))?.["membership"], "workshops");
+    if (workshopsLimit !== null) {
+      const existing = await getFirestore().collection("workshops").where("studioOwnerId", "==", studioOwnerId).count().get();
+      if (existing.data().count >= workshopsLimit) {
+        return sendErrorResponse(req, res, 403, "Plan Limit Reached",
+          `Your plan allows up to ${workshopsLimit} workshops. Upgrade your plan to create more.`);
+      }
     }
 
     const workshopId = await workshopsService.createWorkshop(workshopData, studioOwnerId);
