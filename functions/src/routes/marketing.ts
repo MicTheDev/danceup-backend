@@ -267,6 +267,33 @@ app.get("/unsubscribe", async (req, res) => {
   }
 });
 
+// Unsubscribe link in automated (automation-rule and retention) emails. GET is the link a
+// person clicks; POST is RFC 8058 one-click unsubscribe from mail clients (token in query).
+async function handleAutomationUnsubscribe(req: Request, res: Response): Promise<void> {
+  const token = req.query["token"] as string | undefined;
+  const htmlPage = (message: string, success = true): string => {
+    const title = success ? "Unsubscribed" : "Error";
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title></head><body style="font-family:sans-serif;max-width:480px;margin:48px auto;padding:24px;"><h1>${title}</h1><p>${message}</p></body></html>`;
+  };
+  if (!token) {
+    res.status(400).set("Content-Type", "text/html").send(htmlPage("Missing unsubscribe token.", false));
+    return;
+  }
+  try {
+    const studentId = await marketingService.verifyAutomationUnsubscribeToken(token);
+    await marketingService.unsubscribeStudentFromAutomations(studentId);
+    res.status(200).set("Content-Type", "text/html").send(htmlPage("You have been unsubscribed. You will no longer receive automated emails from this studio."));
+  } catch (err) {
+    console.error("Automation unsubscribe error:", err);
+    const errMsg = (err as Error).message || "";
+    const msg = errMsg.includes("expired") || errMsg.includes("Invalid") ? errMsg : "This link is invalid or has expired.";
+    res.status(400).set("Content-Type", "text/html").send(htmlPage(msg, false));
+  }
+}
+
+app.get("/unsubscribe-automations", handleAutomationUnsubscribe);
+app.post("/unsubscribe-automations", handleAutomationUnsubscribe);
+
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => handleError(_req, res, err));
 
 export const marketing = functions.https.onRequest(app);

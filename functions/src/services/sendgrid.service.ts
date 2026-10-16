@@ -86,6 +86,27 @@ export async function sendEmail(msg: sgMail.MailDataRequired): Promise<[sgMail.C
   return sgMail.send(msgWithTracking) as unknown as Promise<[sgMail.ClientResponse, Record<string, unknown>]>;
 }
 
+/**
+ * Adds a visible unsubscribe link plus RFC 8058 one-click List-Unsubscribe headers to a
+ * marketing/automation email. No-op when no URL is given (e.g. transactional sends).
+ */
+export function withUnsubscribe(msg: sgMail.MailDataRequired, unsubscribeUrl?: string): sgMail.MailDataRequired {
+  if (!unsubscribeUrl) return msg;
+  const m = msg as unknown as Record<string, unknown>;
+  const footerHtml = `<p style="font-family:sans-serif;text-align:center;color:#94a3b8;font-size:12px;margin:16px 0 0">` +
+    `Don't want these emails? <a href="${unsubscribeUrl}" style="color:#94a3b8">Unsubscribe</a></p>`;
+  return {
+    ...msg,
+    html: typeof m["html"] === "string" ? (m["html"] as string) + footerHtml : m["html"],
+    text: typeof m["text"] === "string" ? `${m["text"] as string}\n\nUnsubscribe: ${unsubscribeUrl}` : m["text"],
+    headers: {
+      ...((m["headers"] as Record<string, string> | undefined) ?? {}),
+      "List-Unsubscribe": `<${unsubscribeUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+  } as sgMail.MailDataRequired;
+}
+
 export async function getApiKey(): Promise<string> {
   await ensureApiKey();
   return cachedApiKey as string;
@@ -716,7 +737,7 @@ export async function sendConfirmationEmail(
 }
 
 export async function sendReEngagementEmail(
-  to: string, firstName: string, studioName: string,
+  to: string, firstName: string, studioName: string, unsubscribeUrl?: string,
 ): Promise<void> {
   if (!to) { console.warn("[SendGrid] sendReEngagementEmail: no recipient email, skipping"); return; }
   const name = firstName?.trim() || "there";
@@ -735,10 +756,10 @@ export async function sendReEngagementEmail(
     </div>`;
   const text = `Hey ${name}, we miss you!\n\nIt's been a little while since we've seen you at ${studio}. We'd love to have you back.\n\nhttps://danceup.app`;
 
-  await sendEmail({
+  await sendEmail(withUnsubscribe({
     to, from: { email: "info@danceup.app", name: "DanceUp" },
     subject: `We miss you at ${studio}!`, html, text, categories: ["re-engagement"],
-  });
+  }, unsubscribeUrl));
 }
 
 export async function sendTrialEndingEmail(
@@ -770,7 +791,7 @@ export async function sendTrialEndingEmail(
 }
 
 export async function sendCreditExpiryEmail(
-  to: string, firstName: string, studioName: string, creditCount: number, expiryDate: string,
+  to: string, firstName: string, studioName: string, creditCount: number, expiryDate: string, unsubscribeUrl?: string,
 ): Promise<void> {
   if (!to) { console.warn("[SendGrid] sendCreditExpiryEmail: no recipient email, skipping"); return; }
   const name = firstName?.trim() || "there";
@@ -790,10 +811,10 @@ export async function sendCreditExpiryEmail(
     </div>`;
   const text = `Your credits at ${studio} expire on ${expiryDate}, ${name}.\n\nYou have ${credits} — book a class before they expire.\n\nhttps://danceup.app`;
 
-  await sendEmail({
+  await sendEmail(withUnsubscribe({
     to, from: { email: "info@danceup.app", name: "DanceUp" },
     subject: `Your credits at ${studio} expire on ${expiryDate}`, html, text, categories: ["credit-expiry"],
-  });
+  }, unsubscribeUrl));
 }
 
 export async function sendWaitlistNotificationEmail(
@@ -831,7 +852,7 @@ export async function sendWaitlistNotificationEmail(
 }
 
 export async function sendMilestoneEmail(
-  to: string, firstName: string, studioName: string, checkInCount: number,
+  to: string, firstName: string, studioName: string, checkInCount: number, unsubscribeUrl?: string,
 ): Promise<void> {
   if (!to) { console.warn("[SendGrid] sendMilestoneEmail: no recipient email, skipping"); return; }
   const name = firstName?.trim() || "there";
@@ -849,10 +870,10 @@ export async function sendMilestoneEmail(
     </div>`;
   const text = `🎉 ${checkInCount} classes, ${name}!\n\nYou've just hit ${checkInCount} check-ins at ${studio}. That's a huge milestone!\n\nKeep showing up — we'll see you on the dance floor!`;
 
-  await sendEmail({
+  await sendEmail(withUnsubscribe({
     to, from: { email: "info@danceup.app", name: "DanceUp" },
     subject: `🎉 You've hit ${checkInCount} classes at ${studio}!`, html, text, categories: ["milestone-email"],
-  });
+  }, unsubscribeUrl));
 }
 
 export async function sendVendorConfirmationEmail(
@@ -940,7 +961,7 @@ export async function sendVendorDeclineEmail(
 }
 
 export async function sendFirstClassEmail(
-  to: string, firstName: string, studioName: string,
+  to: string, firstName: string, studioName: string, unsubscribeUrl?: string,
 ): Promise<void> {
   if (!to) { console.warn("[SendGrid] sendFirstClassEmail: no recipient email, skipping"); return; }
   const name = firstName?.trim() || "there";
@@ -959,14 +980,14 @@ export async function sendFirstClassEmail(
     </div>`;
   const text = `You did it, ${name}!\n\nYou just completed your first class at ${studio}. That first step is the hardest — and you crushed it.\n\nKeep showing up and book your next class at https://danceup.app`;
 
-  await sendEmail({
+  await sendEmail(withUnsubscribe({
     to, from: { email: "info@danceup.app", name: "DanceUp" },
     subject: `You crushed your first class at ${studio}! 🎉`, html, text, categories: ["first-class"],
-  });
+  }, unsubscribeUrl));
 }
 
 export async function sendCreditsDepletedEmail(
-  to: string, firstName: string, studioName: string,
+  to: string, firstName: string, studioName: string, unsubscribeUrl?: string,
 ): Promise<void> {
   if (!to) { console.warn("[SendGrid] sendCreditsDepletedEmail: no recipient email, skipping"); return; }
   const name = firstName?.trim() || "there";
@@ -985,14 +1006,14 @@ export async function sendCreditsDepletedEmail(
     </div>`;
   const text = `You've used all your credits at ${studio}, ${name}!\n\nYour balance has reached zero — keep the momentum going by grabbing another package.\n\nhttps://danceup.app`;
 
-  await sendEmail({
+  await sendEmail(withUnsubscribe({
     to, from: { email: "info@danceup.app", name: "DanceUp" },
     subject: `Your credits at ${studio} are all used up`, html, text, categories: ["credits-depleted"],
-  });
+  }, unsubscribeUrl));
 }
 
 export async function sendSignupNudgeEmail(
-  to: string, firstName: string, studioName: string, daysSinceSignup: number,
+  to: string, firstName: string, studioName: string, daysSinceSignup: number, unsubscribeUrl?: string,
 ): Promise<void> {
   if (!to) { console.warn("[SendGrid] sendSignupNudgeEmail: no recipient email, skipping"); return; }
   const name = firstName?.trim() || "there";
@@ -1010,10 +1031,10 @@ export async function sendSignupNudgeEmail(
     </div>`;
   const text = `Your first class is waiting, ${name}!\n\nYou signed up at ${studio} ${daysSinceSignup} days ago but haven't attended yet.\n\nCheck the schedule — we'd love to see you soon!`;
 
-  await sendEmail({
+  await sendEmail(withUnsubscribe({
     to, from: { email: "info@danceup.app", name: "DanceUp" },
     subject: `${name}, your first class at ${studio} is waiting!`, html, text, categories: ["signup-nudge"],
-  });
+  }, unsubscribeUrl));
 }
 
 // Sent to the PARENT's own (verified) email as a backup reference when they generate a
@@ -1215,7 +1236,7 @@ export async function sendStudentPaymentFailedEmailToStudio(
 // review — linked to the specific class they most recently attended (freshest in
 // mind), landing directly on that class's review section rather than a generic page.
 export async function sendReviewRequestEmail(
-  to: string, firstName: string, studioName: string, className: string, classId: string,
+  to: string, firstName: string, studioName: string, className: string, classId: string, unsubscribeUrl?: string,
 ): Promise<void> {
   if (!to) { console.warn("[SendGrid] sendReviewRequestEmail: no recipient email, skipping"); return; }
   const name = firstName?.trim() || "there";
@@ -1247,14 +1268,14 @@ export async function sendReviewRequestEmail(
     `Leave a review: ${reviewUrl}`,
   ].join("\n");
 
-  await sendEmail({
+  await sendEmail(withUnsubscribe({
     to,
     from: { email: "info@danceup.app", name: "DanceUp" },
     subject: `Enjoying ${cls} at ${studio}?`,
     html,
     text,
     categories: ["review-request"],
-  });
+  }, unsubscribeUrl));
 }
 
 export async function sendCopilotSuggestionEmail(

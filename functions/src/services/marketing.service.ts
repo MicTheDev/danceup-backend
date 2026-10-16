@@ -5,6 +5,7 @@ import { getStudioOwnerData, getTierLimit } from "../utils/membership";
 import authService from "./auth.service";
 import studentsService from "./students.service";
 import { getApiKey, sendEmail } from "./sendgrid.service";
+import { getDeployedFunctionBaseUrl } from "../utils/http";
 
 const TOKEN_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 export const CAMPAIGNS_COLLECTION = "marketingCampaigns";
@@ -46,6 +47,76 @@ export async function createUnsubscribeToken(authUid: string): Promise<string> {
   const payloadB64 = Buffer.from(payload, "utf8").toString("base64url");
   const signature = crypto.createHmac("sha256", secret).update(payloadB64).digest("base64url");
   return `${payloadB64}.${signature}`;
+}
+
+// Automation/retention emails: the token names one studio's student record, so an
+// unsubscribe stops that studio's automated emails even for students without an app account.
+// 90 days comfortably exceeds CAN-SPAM's 30-day minimum for a working opt-out link.
+const AUTOMATION_TOKEN_EXPIRY_MS = 90 * 24 * 60 * 60 * 1000;
+
+export async function createAutomationUnsubscribeToken(studentId: string): Promise<string> {
+  const secret = await getUnsubscribeSecret();
+  const payload = JSON.stringify({ sid: studentId, kind: "automation", exp: Date.now() + AUTOMATION_TOKEN_EXPIRY_MS });
+  const payloadB64 = Buffer.from(payload, "utf8").toString("base64url");
+  const signature = crypto.createHmac("sha256", secret).update(payloadB64).digest("base64url");
+  return `${payloadB64}.${signature}`;
+}
+
+export async function verifyAutomationUnsubscribeToken(token: string): Promise<string> {
+  const parts = typeof token === "string" ? token.split(".") : [];
+  const [payloadB64, signature] = parts;
+  if (parts.length !== 2 || !payloadB64 || !signature) throw new Error("Invalid token format");
+  const secret = await getUnsubscribeSecret();
+  const expectedSig = crypto.createHmac("sha256", secret).update(payloadB64).digest("base64url");
+  if (signature !== expectedSig) throw new Error("Invalid token signature");
+  let payload: { sid?: string; kind?: string; exp?: number };
+  try {
+    payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8")) as typeof payload;
+  } catch {
+    throw new Error("Invalid token payload");
+  }
+  if (payload.kind !== "automation" || !payload.sid || !payload.exp) throw new Error("Invalid token payload");
+  if (Date.now() > payload.exp) throw new Error("Token expired");
+  return payload.sid;
+}
+
+/** Unsubscribe link for an automated email to one studio's student, or undefined if it can't be built. */
+export async function getAutomationUnsubscribeUrl(studentId: string): Promise<string | undefined> {
+  const base = getDeployedFunctionBaseUrl("marketing");
+  if (!base) return undefined;
+  const token = await createAutomationUnsubscribeToken(studentId);
+  return `${base}/unsubscribe-automations?token=${encodeURIComponent(token)}`;
+}
+
+export async function unsubscribeStudentFromAutomations(studentId: string): Promise<void> {
+  const ref = getFirestore().collection("students").doc(studentId);
+  const doc = await ref.get();
+  if (!doc.exists) throw new Error("Student not found");
+  await ref.update({
+    emailOptOut: true,
+    emailOptOutAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+/**
+ * Returns a check for whether a student has opted out of automated emails: either they
+ * unsubscribed from this studio's automations (students.emailOptOut) or they unsubscribed
+ * from DanceUp marketing via a campaign link (usersStudentProfiles.emailOptOut).
+ * subscribeToNewsletter=false is NOT treated as an opt-out — it's also the signup default.
+ */
+export async function getEmailOptOutChecker(): Promise<(student: Record<string, unknown>) => boolean> {
+  const snap = await getFirestore().collection("usersStudentProfiles").where("emailOptOut", "==", true).get();
+  const optedOutAuthUids = new Set<string>();
+  snap.forEach((doc) => {
+    const uid = (doc.data() as Record<string, unknown>)["authUid"];
+    if (typeof uid === "string") optedOutAuthUids.add(uid);
+  });
+  return (student) => {
+    if (student["emailOptOut"] === true) return true;
+    const uid = student["authUid"];
+    return typeof uid === "string" && optedOutAuthUids.has(uid);
+  };
 }
 
 export async function verifyUnsubscribeToken(token: string): Promise<string> {
@@ -293,6 +364,9 @@ export async function unsubscribeByAuthUid(authUid: string): Promise<void> {
   const db = getFirestore();
   await db.collection("usersStudentProfiles").doc(profileDoc.id).update({
     subscribeToNewsletter: false,
+    // Explicit opt-out (distinct from the false signup default) so automated emails honor it too.
+    emailOptOut: true,
+    emailOptOutAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 }

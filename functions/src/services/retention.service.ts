@@ -1,6 +1,7 @@
 import * as admin from "firebase-admin";
 import { getFirestore } from "../utils/firestore";
 import { sendReEngagementEmail, sendCreditExpiryEmail } from "./sendgrid.service";
+import { getAutomationUnsubscribeUrl, getEmailOptOutChecker } from "./marketing.service";
 
 const RE_ENGAGEMENT_DAYS = 14;
 const RE_ENGAGEMENT_COOLDOWN_DAYS = 30;
@@ -75,11 +76,13 @@ export class RetentionService {
       : "your studio";
 
     let sent = 0;
+    const isOptedOut = await getEmailOptOutChecker();
 
     for (const studentDoc of studentsSnapshot.docs) {
       if (activeStudentIds.has(studentDoc.id)) continue;
       const studentData = studentDoc.data() as Record<string, unknown>;
       if (!studentData["email"]) continue;
+      if (isOptedOut(studentData)) continue;
 
       const recentEmail = await db.collection("retention_emails")
         .where("studentId", "==", studentDoc.id)
@@ -94,6 +97,7 @@ export class RetentionService {
           studentData["email"] as string,
           (studentData["firstName"] as string) || (studentData["name"] as string) || "there",
           studioName,
+          await getAutomationUnsubscribeUrl(studentDoc.id),
         );
         await db.collection("retention_emails").add({
           studentId: studentDoc.id,
@@ -141,6 +145,7 @@ export class RetentionService {
       : "your studio";
 
     let sent = 0;
+    const isOptedOut = await getEmailOptOutChecker();
 
     for (const [studentId, creditInfo] of studentCreditMap.entries()) {
       const recentEmail = await db.collection("retention_emails")
@@ -155,6 +160,7 @@ export class RetentionService {
       if (!studentDoc.exists) continue;
       const studentData = studentDoc.data() as Record<string, unknown>;
       if (!studentData["email"]) continue;
+      if (isOptedOut(studentData)) continue;
 
       const expiryDateStr = creditInfo.expiresAt
         ? creditInfo.expiresAt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
@@ -167,6 +173,7 @@ export class RetentionService {
           studioName,
           creditInfo.count,
           expiryDateStr,
+          await getAutomationUnsubscribeUrl(studentId),
         );
         await db.collection("retention_emails").add({
           studentId,

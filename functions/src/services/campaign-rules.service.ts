@@ -9,6 +9,7 @@ import {
   sendCreditsDepletedEmail,
   sendReviewRequestEmail,
 } from "./sendgrid.service";
+import { getAutomationUnsubscribeUrl, getEmailOptOutChecker } from "./marketing.service";
 
 export type TriggerType = "inactive_days" | "credits_expiring_days" | "signup_no_attend" | "milestone_checkins" | "first_class_attended" | "credits_depleted" | "review_request_days";
 export type ActionType = "re_engagement_email" | "credit_reminder_email" | "milestone_email" | "signup_nudge_email" | "first_class_email" | "credits_depleted_email" | "review_request_email";
@@ -205,6 +206,7 @@ class CampaignRulesService {
     }
 
     let totalSent = 0;
+    const isOptedOut = await getEmailOptOutChecker();
     const classNameCache = new Map<string, string>();
     async function getClassName(classId: string): Promise<string> {
       const cached = classNameCache.get(classId);
@@ -226,6 +228,7 @@ class CampaignRulesService {
         const sid = studentDoc.id;
         const email = studentData["email"] as string | undefined;
         if (!email) continue;
+        if (isOptedOut(studentData)) continue;
         const firstName = (studentData["firstName"] as string) || (studentData["name"] as string) || "there";
 
         let shouldSend = false;
@@ -291,20 +294,21 @@ class CampaignRulesService {
         if (lastSent && now.getTime() - lastSent.getTime() < cooldownMs) continue;
 
         try {
+          const unsubscribeUrl = await getAutomationUnsubscribeUrl(sid);
           switch (rule.actionType) {
             case "re_engagement_email":
-              await sendReEngagementEmail(email, firstName, studioName);
+              await sendReEngagementEmail(email, firstName, studioName, unsubscribeUrl);
               break;
             case "credit_reminder_email": {
               const daysUntil = expiringCreditsMap.get(sid) ?? 0;
               const expiryDateStr = new Date(now.getTime() + daysUntil * 24 * 60 * 60 * 1000)
                 .toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
-              await sendCreditExpiryEmail(email, firstName, studioName, 1, expiryDateStr);
+              await sendCreditExpiryEmail(email, firstName, studioName, 1, expiryDateStr, unsubscribeUrl);
               break;
             }
             case "milestone_email": {
               const total = totalCheckInsMap.get(sid) || 0;
-              await sendMilestoneEmail(email, firstName, studioName, total);
+              await sendMilestoneEmail(email, firstName, studioName, total, unsubscribeUrl);
               break;
             }
             case "signup_nudge_email": {
@@ -312,20 +316,20 @@ class CampaignRulesService {
               const daysSince = joinedDate
                 ? Math.floor((now.getTime() - joinedDate.getTime()) / (24 * 60 * 60 * 1000))
                 : rule.triggerValue;
-              await sendSignupNudgeEmail(email, firstName, studioName, daysSince);
+              await sendSignupNudgeEmail(email, firstName, studioName, daysSince, unsubscribeUrl);
               break;
             }
             case "first_class_email":
-              await sendFirstClassEmail(email, firstName, studioName);
+              await sendFirstClassEmail(email, firstName, studioName, unsubscribeUrl);
               break;
             case "credits_depleted_email":
-              await sendCreditsDepletedEmail(email, firstName, studioName);
+              await sendCreditsDepletedEmail(email, firstName, studioName, unsubscribeUrl);
               break;
             case "review_request_email": {
               const classId = lastAttendedClassMap.get(sid);
               if (!classId) break;
               const className = await getClassName(classId);
-              await sendReviewRequestEmail(email, firstName, studioName, className, classId);
+              await sendReviewRequestEmail(email, firstName, studioName, className, classId, unsubscribeUrl);
               break;
             }
           }

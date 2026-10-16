@@ -140,6 +140,13 @@ export function extractPathParams(url: string, pattern: string): Record<string, 
   return params;
 }
 
+/** Public base URL of a deployed function, for links built outside a request (e.g. scheduled jobs). */
+export function getDeployedFunctionBaseUrl(functionName: string): string | null {
+  const project = process.env["GCLOUD_PROJECT"] || process.env["GCP_PROJECT"];
+  const region = process.env["FUNCTION_REGION"] || "us-central1";
+  return project ? `https://${region}-${project}.cloudfunctions.net/${functionName}` : null;
+}
+
 export function getFunctionBaseUrl(functionName: string, req: Request): string {
   const project = process.env["GCLOUD_PROJECT"] || process.env["GCP_PROJECT"];
   const region = process.env["FUNCTION_REGION"] || "us-central1";
