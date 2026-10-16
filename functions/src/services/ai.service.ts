@@ -350,7 +350,7 @@ export async function generateEngagementSummary(data: { stats: Record<string, un
   const contextBlock = `Student Engagement Snapshot:
 - Total students: ${stats["totalStudents"]}
 - Active this month (at least 1 check-in): ${stats["activeThisMonth"]}
-- At-risk students (30+ days inactive): ${stats["atRiskCount"]} (${(stats["totalStudents"] as number) > 0 ? Math.round(((stats["atRiskCount"] as number) / (stats["totalStudents"] as number)) * 100) : 0}% of roster)
+- At-risk students (last class 14–90 days ago): ${stats["atRiskCount"]} (${(stats["totalStudents"] as number) > 0 ? Math.round(((stats["atRiskCount"] as number) / (stats["totalStudents"] as number)) * 100) : 0}% of roster)
 - At-risk students with unused credits: ${stats["atRiskWithCredits"]}
 - Average check-ins per active student this month: ${stats["avgCheckInsPerActiveStudent"]}
 - Students with credit balances: ${stats["studentsWithCredits"]}`;

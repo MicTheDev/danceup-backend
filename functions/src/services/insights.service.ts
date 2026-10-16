@@ -70,8 +70,8 @@ export async function getEngagementData(studioOwnerId: string): Promise<{
   thirtyDaysAgo.setDate(now.getDate() - 30);
   const ninetyDaysAgo = new Date(now);
   ninetyDaysAgo.setDate(now.getDate() - 90);
-  const sevenDaysAgo = new Date(now);
-  sevenDaysAgo.setDate(now.getDate() - 7);
+  const fourteenDaysAgo = new Date(now);
+  fourteenDaysAgo.setDate(now.getDate() - 14);
 
   const [studentsSnap, attendanceSnap] = await Promise.all([
     db.collection("students").where("studioOwnerId", "==", studioOwnerId).get(),
@@ -117,11 +117,13 @@ export async function getEngagementData(studioOwnerId: string): Promise<{
 
   const totalStudents = students.length;
 
-  const atRisk: AtRiskStudent[] = students
+  // At-risk = last check-in 14–90 days ago, the same window the Lost Revenue Tracker uses
+  // (attendance.service getLostRevenueStats). Attendance is only loaded for 90 days, so
+  // longer-lapsed and never-attended students have no lastAttendanceDate and are excluded.
+  const allAtRisk: AtRiskStudent[] = students
     .filter((s) => {
       const last = lastAttendanceDate[s.id];
-      if (!last) return s.createdAt < sevenDaysAgo;
-      return last < thirtyDaysAgo;
+      return !!last && last >= ninetyDaysAgo && last < fourteenDaysAgo;
     })
     .map((s) => {
       const last = lastAttendanceDate[s.id];
@@ -137,8 +139,9 @@ export async function getEngagementData(studioOwnerId: string): Promise<{
         neverAttended: !last,
       };
     })
-    .sort((a, b) => (b.daysSinceAttendance ?? 9999) - (a.daysSinceAttendance ?? 9999))
-    .slice(0, 15);
+    .sort((a, b) => (b.daysSinceAttendance ?? 9999) - (a.daysSinceAttendance ?? 9999));
+  // Counts use the full list; only the displayed list is capped.
+  const atRisk = allAtRisk.slice(0, 15);
 
   const mostActive: MostActiveStudent[] = students
     .filter((s) => (checkIns30Days[s.id] ?? 0) > 0)
@@ -163,11 +166,11 @@ export async function getEngagementData(studioOwnerId: string): Promise<{
     : 0;
 
   const studentsWithCredits = students.filter((s) => s.credits > 0).length;
-  const atRiskWithCredits = atRisk.filter((s) => s.credits > 0).length;
+  const atRiskWithCredits = allAtRisk.filter((s) => s.credits > 0).length;
 
   const stats: EngagementStats = {
     totalStudents,
-    atRiskCount: atRisk.length,
+    atRiskCount: allAtRisk.length,
     activeThisMonth,
     avgCheckInsPerActiveStudent: avgCheckIns,
     studentsWithCredits,
