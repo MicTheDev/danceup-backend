@@ -122,6 +122,22 @@ app.get("/recipients", async (req, res) => {
   }
 });
 
+// Recipients plus a breakdown of who can't be emailed and why, for the campaign screen.
+app.get("/audience", async (req, res) => {
+  try {
+    let user;
+    try { user = await verifyToken(req); } catch (authError) { return handleError(req, res, authError); }
+    const studioOwnerId = await studentsService.getStudioOwnerId(user.uid);
+    if (!studioOwnerId) {
+      return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
+    }
+    sendJsonResponse(req, res, 200, await marketingService.getCampaignAudience(studioOwnerId));
+  } catch (error) {
+    console.error("Error getting campaign audience:", error);
+    handleError(req, res, error);
+  }
+});
+
 app.get("/templates", async (req, res) => {
   try {
     let user;
@@ -282,7 +298,7 @@ async function handleAutomationUnsubscribe(req: Request, res: Response): Promise
   try {
     const studentId = await marketingService.verifyAutomationUnsubscribeToken(token);
     await marketingService.unsubscribeStudentFromAutomations(studentId);
-    res.status(200).set("Content-Type", "text/html").send(htmlPage("You have been unsubscribed. You will no longer receive automated emails from this studio."));
+    res.status(200).set("Content-Type", "text/html").send(htmlPage("You have been unsubscribed. You will no longer receive emails from this studio."));
   } catch (err) {
     console.error("Automation unsubscribe error:", err);
     const errMsg = (err as Error).message || "";

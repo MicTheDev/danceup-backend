@@ -1,7 +1,7 @@
 import * as functions from "firebase-functions";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
-import studentsService from "../services/students.service";
+import studentsService, { applyEmailConsent } from "../services/students.service";
 import creditTrackingService from "../services/credit-tracking.service";
 import authService from "../services/auth.service";
 import { sendStudentImportInviteEmail } from "../services/sendgrid.service";
@@ -90,7 +90,9 @@ app.post("/", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
-    const studentId = await studentsService.createStudent(req.body, studioOwnerId);
+    const studentId = await studentsService.createStudent(
+      applyEmailConsent(req.body as Record<string, unknown>, user.uid, "manual"), studioOwnerId,
+    );
     sendJsonResponse(req, res, 201, { id: studentId, message: "Student created successfully" });
   } catch (error) {
     console.error("Error creating student:", error);
@@ -116,7 +118,10 @@ app.post("/bulk-import", async (req, res) => {
     }
 
     const rows = (req.body as { rows: Array<Record<string, unknown>> }).rows;
-    const result = await studentsService.bulkImportStudents(rows, studioOwnerId);
+    const emailConsent = (req.body as Record<string, unknown>)["emailConsent"] === true;
+    const result = await studentsService.bulkImportStudents(
+      rows, studioOwnerId, emailConsent ? { actorUid: user.uid } : undefined,
+    );
 
     if (result.newPlaceholders.length > 0) {
       const userDoc = await authService.getUserDocumentByAuthUid(user.uid);
@@ -192,7 +197,9 @@ app.put("/:id", async (req, res) => {
       return sendErrorResponse(req, res, 403, "Access Denied", "Studio owner not found or insufficient permissions");
     }
 
-    await studentsService.updateStudent(req.params["id"] as string, req.body, studioOwnerId);
+    await studentsService.updateStudent(
+      req.params["id"] as string, applyEmailConsent(req.body as Record<string, unknown>, user.uid, "manual"), studioOwnerId,
+    );
     sendJsonResponse(req, res, 200, { message: "Student updated successfully" });
   } catch (error) {
     console.error("Error updating student:", error);

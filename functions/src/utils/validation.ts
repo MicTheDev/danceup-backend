@@ -1378,6 +1378,9 @@ export function validateUpdatePackagePayload(payload: Record<string, unknown>): 
 
 export function validateCreateStudentPayload(payload: Record<string, unknown>): ValidationErrors {
   const errors: ValidationErrorList = [];
+  if (payload["emailConsent"] !== undefined && typeof payload["emailConsent"] !== "boolean") {
+    errors.push({ field: "emailConsent", message: "emailConsent must be true or false" });
+  }
 
   const fnV = validateRequiredString(payload["firstName"], "First name");
   if (!fnV.valid) errors.push({ field: "firstName", message: fnV.message ?? "" });
@@ -1403,6 +1406,9 @@ export function validateCreateStudentPayload(payload: Record<string, unknown>): 
 
 export function validateUpdateStudentPayload(payload: Record<string, unknown>): ValidationErrors {
   const errors: ValidationErrorList = [];
+  if (payload["emailConsent"] !== undefined && typeof payload["emailConsent"] !== "boolean") {
+    errors.push({ field: "emailConsent", message: "emailConsent must be true or false" });
+  }
 
   if (payload["firstName"] !== undefined) {
     const v = validateRequiredString(payload["firstName"], "First name");

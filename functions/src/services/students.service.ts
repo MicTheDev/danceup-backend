@@ -53,6 +53,30 @@ const DAY_MAP: Record<string, number> = {
   Sunday: 0,
 };
 
+
+// Fields only the server may write. Studios can't clear a student's opt-out or forge the
+// consent audit trail through create/update payloads.
+const PROTECTED_EMAIL_FIELDS = ["emailOptOut", "emailOptOutAt", "emailConsentAt", "emailConsentBy", "emailConsentSource"];
+
+/**
+ * Strips server-only email fields and turns a studio's emailConsent boolean into an audited
+ * consent record. Returns the payload to write.
+ */
+export function applyEmailConsent(
+  data: Record<string, unknown>, actorUid: string, source: "manual" | "import",
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...data };
+  for (const f of PROTECTED_EMAIL_FIELDS) delete out[f];
+  if (out["emailConsent"] === true) {
+    out["emailConsentAt"] = admin.firestore.FieldValue.serverTimestamp();
+    out["emailConsentBy"] = actorUid;
+    out["emailConsentSource"] = source;
+  } else if (out["emailConsent"] !== undefined) {
+    out["emailConsent"] = false;
+  }
+  return out;
+}
+
 export class StudentsService {
   async getStudioOwnerId(authUid: string): Promise<string | null> {
     const userDoc = await authService.getUserDocumentByAuthUid(authUid);
@@ -152,6 +176,7 @@ export class StudentsService {
 
   async bulkImportStudents(
     rows: Array<Record<string, unknown>>, studioOwnerId: string,
+    consent?: { actorUid: string },
   ): Promise<BulkImportResult> {
     const db = getFirestore();
     const errors: BulkImportRowError[] = [];
@@ -246,6 +271,8 @@ export class StudentsService {
           if (row.email) updateData["email"] = row.email;
           if (row.phone) updateData["phone"] = row.phone;
           if (willLink && profileMatch) updateData["authUid"] = profileMatch.authUid;
+          // Consent is only ever added by an import, never revoked by one.
+          if (consent) Object.assign(updateData, applyEmailConsent({ emailConsent: true }, consent.actorUid, "import"));
           batch.update(ref, updateData as FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData>);
           if (willLink) linked++; else updated++;
         } else {
@@ -257,6 +284,7 @@ export class StudentsService {
             phone: row.phone,
             authUid: profileMatch?.authUid ?? null,
             studioOwnerId,
+            ...(consent ? applyEmailConsent({ emailConsent: true }, consent.actorUid, "import") : {}),
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           });

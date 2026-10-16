@@ -149,41 +149,84 @@ export async function verifyUnsubscribeToken(token: string): Promise<string> {
   return payload.authUid;
 }
 
-export async function getSubscribedRecipients(studioOwnerId: string): Promise<Array<{
+export interface CampaignRecipient {
   id: string;
   email: string;
-  authUid: string;
+  /** null for roster-only students without a DanceUp account. */
+  authUid: string | null;
   firstName?: string;
   lastName?: string;
-}>> {
+}
+
+export interface CampaignAudienceBreakdown {
+  eligible: number;
+  optedOut: number;
+  noEmail: number;
+  /** Students with a DanceUp account who didn't opt in, and the studio hasn't confirmed consent. */
+  notOptedIn: number;
+  /** Roster-only students the studio hasn't confirmed consent for. */
+  noConsent: number;
+}
+
+/**
+ * Who a studio's campaigns can reach:
+ * - Opted out (students.emailOptOut or usersStudentProfiles.emailOptOut) — never.
+ * - Students with a DanceUp account — if they opted in (subscribeToNewsletter) or the
+ *   studio confirmed consent for them (students.emailConsent).
+ * - Roster-only students (no account) — if the studio confirmed consent.
+ */
+export async function getCampaignAudience(studioOwnerId: string): Promise<{
+  recipients: CampaignRecipient[];
+  breakdown: CampaignAudienceBreakdown;
+}> {
   const { students } = await studentsService.getStudents(studioOwnerId);
-  const result: Array<{ id: string; email: string; authUid: string; firstName?: string; lastName?: string }> = [];
+  const recipients: CampaignRecipient[] = [];
+  const breakdown: CampaignAudienceBreakdown = { eligible: 0, optedOut: 0, noEmail: 0, notOptedIn: 0, noConsent: 0 };
+
   for (const student of students) {
-    const authUid = student["authUid"] as string | undefined;
-    if (!authUid) continue;
-    const profileDoc = await authService.getStudentProfileByAuthUid(authUid);
-    if (!profileDoc) continue;
-    const profile = profileDoc.data() as Record<string, unknown> | undefined;
-    if (!profile || profile["subscribeToNewsletter"] !== true) continue;
-    let email = profile["email"] as string | undefined;
-    if (!email) {
-      try {
-        const firebaseUser = await admin.auth().getUser(authUid);
-        email = firebaseUser.email;
-      } catch {
-        email = undefined;
+    const authUid = (student["authUid"] as string | undefined) || null;
+    const studioConsent = student["emailConsent"] === true;
+    let email = (student["email"] as string | undefined) || undefined;
+    let optedOut = student["emailOptOut"] === true;
+    let eligible: boolean;
+
+    const profile = authUid
+      ? ((await authService.getStudentProfileByAuthUid(authUid))?.data() as Record<string, unknown> | undefined)
+      : undefined;
+    if (authUid && profile) {
+      optedOut = optedOut || profile["emailOptOut"] === true;
+      email = (profile["email"] as string | undefined) || email;
+      if (!email) {
+        try {
+          email = (await admin.auth().getUser(authUid)).email;
+        } catch {
+          email = undefined;
+        }
       }
+      eligible = profile["subscribeToNewsletter"] === true || studioConsent;
+      if (!eligible && !optedOut && email) { breakdown.notOptedIn++; continue; }
+    } else {
+      eligible = studioConsent;
+      if (!eligible && !optedOut && email) { breakdown.noConsent++; continue; }
     }
-    if (!email) continue;
-    result.push({
+
+    if (!email) { breakdown.noEmail++; continue; }
+    if (optedOut) { breakdown.optedOut++; continue; }
+
+    breakdown.eligible++;
+    recipients.push({
       id: student["id"] as string,
       email,
       authUid,
-      firstName: (student["firstName"] as string | undefined) || (profile["firstName"] as string | undefined),
-      lastName: (student["lastName"] as string | undefined) || (profile["lastName"] as string | undefined),
+      firstName: (student["firstName"] as string | undefined) || undefined,
+      lastName: (student["lastName"] as string | undefined) || undefined,
     });
   }
-  return result;
+  return { recipients, breakdown };
+}
+
+export async function getSubscribedRecipients(studioOwnerId: string): Promise<CampaignRecipient[]> {
+  return (await getCampaignAudience(studioOwnerId)).recipients;
 }
 
 export async function createCampaign(
@@ -275,8 +318,10 @@ export async function sendCampaignToRecipients(
   const from = { email: opts.fromEmail, name: opts.fromName };
 
   for (const recipient of toSend) {
-    const token = await createUnsubscribeToken(recipient.authUid);
-    const unsubscribeUrl = `${opts.unsubscribeBaseUrl}/unsubscribe?token=${encodeURIComponent(token)}`;
+    // Account holders unsubscribe from DanceUp marketing; roster-only students from this studio.
+    const unsubscribeUrl = recipient.authUid
+      ? `${opts.unsubscribeBaseUrl}/unsubscribe?token=${encodeURIComponent(await createUnsubscribeToken(recipient.authUid))}`
+      : `${opts.unsubscribeBaseUrl}/unsubscribe-automations?token=${encodeURIComponent(await createAutomationUnsubscribeToken(recipient.id))}`;
 
     let msg: Record<string, unknown>;
     if (hasTemplate) {
